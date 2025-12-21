@@ -8,9 +8,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use tmcp::{
-        Client, Result, Server, ServerAPI, ServerConn, ServerCtx, schema::*, testutils::*,
-    };
+    use tmcp::{Client, Result, Server, ServerAPI, ServerConn, ServerCtx, schema::*, testutils::*};
     use tokio::{
         net::TcpListener,
         sync::Mutex,
@@ -69,10 +67,9 @@ mod tests {
 
         // Create stream pair
         let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
-        let server_handle =
-            tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
-                .await
-                .unwrap();
+        let server_handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
+            .await
+            .unwrap();
 
         // Connect client
         let mut client = Client::new("test-client", "1.0.0");
@@ -239,10 +236,9 @@ mod tests {
         // Test basic client-server interaction
         let server = Server::default().with_connection(LifecycleTestServer::default);
         let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
-        let _server_handle =
-            tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
-                .await
-                .unwrap();
+        let _server_handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
+            .await
+            .unwrap();
 
         // Create client
         let mut client = Client::new("test-client", "1.0.0");

@@ -120,10 +120,9 @@ mod tests {
             });
 
         // Start tmcp server in background using the new serve_stream method
-        let server_handle =
-            tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
-                .await
-                .expect("Failed to start server");
+        let server_handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
+            .await
+            .expect("Failed to start server");
 
         // Give server time to start
         sleep(Duration::from_millis(100)).await;

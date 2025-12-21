@@ -29,21 +29,13 @@ mod tests {
     impl TestServer {
         #[tool]
         /// Echo the message
-        async fn echo(
-            &self,
-            _ctx: &tmcp::ServerCtx,
-            params: EchoParams,
-        ) -> Result<CallToolResult> {
+        async fn echo(&self, _ctx: &tmcp::ServerCtx, params: EchoParams) -> Result<CallToolResult> {
             Ok(CallToolResult::new().with_text_content(params.message))
         }
 
         #[tool]
         /// Add two numbers
-        async fn add(
-            &self,
-            _ctx: &tmcp::ServerCtx,
-            params: AddParams,
-        ) -> Result<CallToolResult> {
+        async fn add(&self, _ctx: &tmcp::ServerCtx, params: AddParams) -> Result<CallToolResult> {
             Ok(CallToolResult::new().with_text_content(format!("{}", params.a + params.b)))
         }
     }
