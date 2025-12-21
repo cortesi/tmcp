@@ -1060,20 +1060,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
-name = "macros"
-version = "0.2.0"
-dependencies = [
- "heck",
- "pretty_assertions",
- "proc-macro2",
- "proc-macro2-diagnostics",
- "quote",
- "structmeta",
- "syn",
- "thiserror 2.0.17",
-]
-
-[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2128,7 +2114,6 @@ dependencies = [
  "http",
  "hyper",
  "hyper-util",
- "macros",
  "mime_guess",
  "oauth2",
  "reqwest",
@@ -2137,6 +2122,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
+ "tmcp-macros",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
@@ -2147,6 +2133,20 @@ dependencies = [
  "url",
  "uuid",
  "webbrowser",
+]
+
+[[package]]
+name = "tmcp-macros"
+version = "0.2.0"
+dependencies = [
+ "heck",
+ "pretty_assertions",
+ "proc-macro2",
+ "proc-macro2-diagnostics",
+ "quote",
+ "structmeta",
+ "syn",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

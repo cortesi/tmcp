@@ -99,14 +99,14 @@ pub use client::Client;
 pub use connection::{ClientConn, ServerConn};
 pub use context::{ClientCtx, ServerCtx};
 pub use error::{Error, Result};
-// Export user-facing macros directly from the crate root
-pub use macros::{mcp_server, tool};
 pub use server::{Server, ServerHandle};
+// Export user-facing macros directly from the crate root
+pub use tmcp_macros::{mcp_server, tool};
 
 // Keep the full macros module available for internal use
 /// Re-exported macros module for internal use.
 mod macros {
-    pub use ::macros::*;
+    pub use ::tmcp_macros::*;
 }
 
 // Re-export schemars for users
