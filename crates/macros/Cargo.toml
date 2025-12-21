@@ -11,6 +11,8 @@ keywords.workspace = true
 [lib]
 proc-macro = true
 
+[lints]
+workspace = true
 
 [dependencies]
 heck = "0.5"

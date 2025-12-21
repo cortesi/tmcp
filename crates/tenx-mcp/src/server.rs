@@ -1,8 +1,12 @@
+use std::{collections::HashMap, sync::Arc};
+
 use futures::{SinkExt, StreamExt};
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{Mutex, broadcast};
-use tokio::task::JoinHandle;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::{TcpListener, ToSocketAddrs},
+    sync::{Mutex, broadcast, mpsc},
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -18,7 +22,9 @@ use crate::{
 
 /// MCP Server implementation
 pub struct Server<F = fn() -> Box<dyn ServerConn>> {
+    /// Server capability configuration.
     capabilities: ServerCapabilities,
+    /// Factory for creating per-connection handlers.
     connection_factory: Option<F>,
 }
 
@@ -94,8 +100,8 @@ where
     /// This is a convenience method that creates a StreamTransport from the provided streams
     pub async fn serve_stream<R, W>(self, reader: R, writer: W) -> Result<()>
     where
-        R: tokio::io::AsyncRead + Send + Sync + Unpin + 'static,
-        W: tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
+        R: AsyncRead + Send + Sync + Unpin + 'static,
+        W: AsyncWrite + Send + Sync + Unpin + 'static,
     {
         let duplex = GenericDuplex::new(reader, writer);
         let transport = Box::new(StreamTransport::new(duplex));
@@ -104,13 +110,10 @@ where
 
     /// Serve TCP connections by accepting them in a loop
     /// This is a convenience method for the common TCP server use case
-    pub async fn serve_tcp(self, addr: impl tokio::net::ToSocketAddrs) -> Result<()>
+    pub async fn serve_tcp(self, addr: impl ToSocketAddrs) -> Result<()>
     where
         F: Clone,
     {
-        use std::sync::Arc;
-        use tokio::net::TcpListener;
-
         let listener = TcpListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
         info!("MCP server listening on {}", local_addr);
@@ -131,7 +134,7 @@ where
                     // Handle each connection in a separate task
                     tokio::spawn(async move {
                         // Create a new server with cloned factory
-                        let server = Server {
+                        let server = Self {
                             capabilities: (*caps).clone(),
                             connection_factory: factory.as_ref().clone(),
                         };
@@ -167,11 +170,15 @@ where
 
 /// Handle for controlling a running MCP server instance
 pub struct ServerHandle {
+    /// Join handle for the server task.
     pub handle: JoinHandle<()>,
+    /// Sender for outbound server notifications.
     notification_tx: broadcast::Sender<ServerNotification>,
+    /// Token used to signal shutdown to the server loop.
     shutdown_token: CancellationToken,
     /// The actual bound address (for servers that bind to a network port)
     pub bound_addr: Option<String>,
+    /// Capabilities advertised to clients.
     capabilities: ServerCapabilities,
 }
 
@@ -191,8 +198,7 @@ impl ServerHandle {
         let (notification_tx, mut notification_rx) = broadcast::channel(100);
 
         // Channel for queueing responses to be sent
-        let (response_tx, mut response_rx) =
-            tokio::sync::mpsc::unbounded_channel::<JSONRPCMessage>();
+        let (response_tx, mut response_rx) = mpsc::unbounded_channel::<JSONRPCMessage>();
 
         // Wrap the sink in an Arc<Mutex> for sharing
         let sink_tx = Arc::new(Mutex::new(sink_tx));
@@ -209,7 +215,7 @@ impl ServerHandle {
             };
 
         // Create a single ServerCtx instance that will be used throughout the connection
-        let server_ctx = ServerCtx::new(notification_tx.clone(), Some(sink_tx.clone()));
+        let server_ctx = ServerCtx::new(notification_tx, Some(sink_tx.clone()));
 
         // Create shutdown token for coordinating shutdown
         let shutdown_token = CancellationToken::new();
@@ -277,7 +283,7 @@ impl ServerHandle {
                     result = notification_rx.recv() => {
                         match result {
                             Ok(notification) => {
-                                let jsonrpc_notification = create_jsonrpc_notification(notification);
+                                let jsonrpc_notification = create_jsonrpc_notification(&notification);
                                 {
                                     let mut sink = sink_tx.lock().await;
                                     if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
@@ -305,16 +311,16 @@ impl ServerHandle {
             }
 
             // Clean up connection
-            if let Some(conn) = connection {
-                if let Err(e) = conn.on_shutdown().await {
-                    error!("Error during server shutdown: {}", e);
-                }
+            if let Some(conn) = connection
+                && let Err(e) = conn.on_shutdown().await
+            {
+                error!("Error during server shutdown: {}", e);
             }
 
             info!("MCP server stopped");
         });
 
-        Ok(ServerHandle {
+        Ok(Self {
             handle,
             notification_tx: notification_tx_handle,
             shutdown_token,
@@ -328,8 +334,8 @@ impl ServerHandle {
     pub async fn from_stream<F, R, W>(server: Server<F>, reader: R, writer: W) -> Result<Self>
     where
         F: Fn() -> Box<dyn ServerConn> + Send + Sync + 'static,
-        R: tokio::io::AsyncRead + Send + Sync + Unpin + 'static,
-        W: tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
+        R: AsyncRead + Send + Sync + Unpin + 'static,
+        W: AsyncWrite + Send + Sync + Unpin + 'static,
     {
         let duplex = GenericDuplex::new(reader, writer);
         let transport = Box::new(StreamTransport::new(duplex));
@@ -345,6 +351,7 @@ impl ServerHandle {
         Self::new(server, transport).await
     }
 
+    /// Stop the server and wait for the background task to finish.
     pub async fn stop(self) -> Result<()> {
         // Signal shutdown
         self.shutdown_token.cancel();
@@ -356,9 +363,9 @@ impl ServerHandle {
         Ok(())
     }
 
-    /// Send a server notification
-    pub fn send_server_notification(&self, notification: ServerNotification) {
-        if !self.can_forward_notification(&notification) {
+    /// Send a server notification to connected clients.
+    pub fn send_server_notification(&self, notification: &ServerNotification) {
+        if !self.can_forward_notification(notification) {
             debug!(
                 "Skipping server notification {:?} due to missing capability",
                 notification
@@ -373,6 +380,7 @@ impl ServerHandle {
         }
     }
 
+    /// Check whether a notification is supported by the configured capabilities.
     fn can_forward_notification(&self, notification: &ServerNotification) -> bool {
         match notification {
             ServerNotification::LoggingMessage { .. } => self.capabilities.logging.is_some(),
@@ -409,45 +417,72 @@ impl ServerHandle {
 async fn handle_message_with_connection(
     connection: Arc<Box<dyn ServerConn>>,
     message: JSONRPCMessage,
-    response_tx: tokio::sync::mpsc::UnboundedSender<JSONRPCMessage>,
+    response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
     context: &ServerCtx,
 ) -> Result<()> {
-    match message {
-        JSONRPCMessage::Request(request) => {
-            // Process request concurrently
-            let conn = connection.clone();
-            let ctx = context.clone();
-            let tx = response_tx.clone();
-
-            tokio::spawn(async move {
-                let response_message = handle_request(&**conn, request.clone(), &ctx).await;
-                tracing::info!("Server sending response: {:?}", response_message);
-
-                // Queue the response to be sent
-                if let Err(e) = tx.send(response_message) {
-                    error!("Failed to queue response: {}", e);
-                }
-            });
-        }
-        JSONRPCMessage::Notification(notification) => {
-            handle_notification(&**connection, notification, context).await?;
-        }
-        JSONRPCMessage::Response(_) => {
-            // Response handling is done in the main message loop
-            debug!("Response handling delegated to main loop");
-        }
-        JSONRPCMessage::Error(_) => {
-            // Error handling is done in the main message loop
-            debug!("Error handling delegated to main loop");
-        }
-        JSONRPCMessage::BatchRequest(_) => {
-            error!("Batch requests not supported");
-        }
-        JSONRPCMessage::BatchResponse(_) => {
-            warn!("Server received unexpected batch response");
-        }
+    if let JSONRPCMessage::Notification(notification) = message {
+        handle_notification(&**connection, notification, context).await?;
+        return Ok(());
     }
+
+    handle_message_without_await(&connection, message, response_tx, context);
     Ok(())
+}
+
+/// Handle messages that do not require awaiting on the connection.
+#[allow(clippy::cognitive_complexity)]
+fn handle_message_without_await(
+    connection: &Arc<Box<dyn ServerConn>>,
+    message: JSONRPCMessage,
+    response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
+    context: &ServerCtx,
+) {
+    if let JSONRPCMessage::Request(request) = message {
+        spawn_request_handler(connection, request, response_tx, context);
+        return;
+    }
+
+    if let JSONRPCMessage::Response(_) = message {
+        // Response handling is done in the main message loop
+        debug!("Response handling delegated to main loop");
+        return;
+    }
+
+    if let JSONRPCMessage::Error(_) = message {
+        // Error handling is done in the main message loop
+        debug!("Error handling delegated to main loop");
+        return;
+    }
+
+    if let JSONRPCMessage::BatchRequest(_) = message {
+        error!("Batch requests not supported");
+        return;
+    }
+
+    if let JSONRPCMessage::BatchResponse(_) = message {
+        warn!("Server received unexpected batch response");
+    }
+}
+
+/// Spawn a task to handle a request and send its response.
+fn spawn_request_handler(
+    connection: &Arc<Box<dyn ServerConn>>,
+    request: JSONRPCRequest,
+    response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
+    context: &ServerCtx,
+) {
+    let conn = connection.clone();
+    let ctx = context.clone();
+    let tx = response_tx;
+
+    tokio::spawn(async move {
+        let response_message = handle_request(&**conn, request.clone(), &ctx).await;
+        tracing::info!("Server sending response: {:?}", response_message);
+
+        if let Err(e) = tx.send(response_message) {
+            error!("Failed to queue response: {}", e);
+        }
+    });
 }
 
 /// Handle a request using the Connection trait and convert result to JSONRPCMessage

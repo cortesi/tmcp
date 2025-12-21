@@ -1,6 +1,7 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 
 /// Capabilities a client may support. Known capabilities are defined here,
 /// in this schema, but this is not a closed set: any client can define its own,

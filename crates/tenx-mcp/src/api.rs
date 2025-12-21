@@ -1,11 +1,13 @@
 use async_trait::async_trait;
 
-use crate::error::Result;
-use crate::schema::{
-    ArgumentInfo, CallToolResult, ClientCapabilities, CompleteResult, CreateMessageParams,
-    CreateMessageResult, Cursor, ElicitParams, ElicitResult, GetPromptResult, Implementation,
-    InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-    ListRootsResult, ListToolsResult, LoggingLevel, ReadResourceResult, Reference,
+use crate::{
+    error::Result,
+    schema::{
+        ArgumentInfo, CallToolResult, ClientCapabilities, CompleteResult, CreateMessageParams,
+        CreateMessageResult, Cursor, ElicitParams, ElicitResult, GetPromptResult, Implementation,
+        InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+        ListRootsResult, ListToolsResult, LoggingLevel, ReadResourceResult, Reference,
+    },
 };
 
 /// ServerAPI holds all server methods defined by the MCP specification. These methods are exposed

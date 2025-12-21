@@ -1,7 +1,10 @@
-use super::*;
-use crate::macros::with_meta;
+#![allow(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use super::*;
+use crate::macros::with_meta;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMessageParams {
@@ -67,20 +70,26 @@ pub enum SamplingContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPreferences {
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional model preference hints.
     pub hints: Option<Vec<ModelHint>>,
     #[serde(rename = "costPriority", skip_serializing_if = "Option::is_none")]
+    /// Relative preference for lower cost.
     pub cost_priority: Option<f64>,
     #[serde(rename = "speedPriority", skip_serializing_if = "Option::is_none")]
+    /// Relative preference for faster responses.
     pub speed_priority: Option<f64>,
     #[serde(
         rename = "intelligencePriority",
         skip_serializing_if = "Option::is_none"
     )]
+    /// Relative preference for higher intelligence.
     pub intelligence_priority: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Hint describing a preferred model by name.
 pub struct ModelHint {
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional model name hint.
     pub name: Option<String>,
 }

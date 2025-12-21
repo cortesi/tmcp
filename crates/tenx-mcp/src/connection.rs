@@ -33,6 +33,7 @@ pub trait ClientConn: Send + Sync + Clone {
         Ok(())
     }
 
+    /// Request the server to create a model message.
     async fn create_message(
         &self,
         _context: &ClientCtx,
@@ -44,10 +45,12 @@ pub trait ClientConn: Send + Sync + Clone {
         ))
     }
 
+    /// Request the server to list roots.
     async fn list_roots(&self, _context: &ClientCtx) -> Result<schema::ListRootsResult> {
         Err(Error::InvalidRequest("list_roots not implemented".into()))
     }
 
+    /// Request the server to elicit user input.
     async fn elicit(&self, _context: &ClientCtx, _params: ElicitParams) -> Result<ElicitResult> {
         Err(Error::InvalidRequest("elicit not implemented".into()))
     }

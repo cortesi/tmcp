@@ -1,14 +1,18 @@
+//! OAuth-enabled client example for MCP over HTTP.
+
+use std::{error::Error, sync::Arc};
+
 use clap::Parser;
-use std::sync::Arc;
 use tenx_mcp::{
     Client, ServerAPI,
     auth::{OAuth2CallbackServer, OAuth2Client, OAuth2Config},
 };
-use tracing::{Level, info};
+use tracing::{Level, info, subscriber};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
+/// CLI arguments for the OAuth client example.
 struct Args {
     /// MCP server endpoint URL
     #[arg(short, long)]
@@ -48,12 +52,12 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     // Set up logging
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let args = Args::parse();
 

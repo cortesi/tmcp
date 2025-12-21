@@ -117,7 +117,7 @@ impl ServerConn for TestConnection {
                 })?;
 
                 Ok(CallToolResult::new()
-                    .with_text_content(message.to_string())
+                    .with_text_content(message)
                     .is_error(false))
             }
             "add" => {
@@ -145,8 +145,9 @@ impl ServerConn for TestConnection {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tokio::sync::broadcast;
+
+    use super::*;
 
     fn create_test_context() -> ServerCtx {
         let (notification_tx, _) = broadcast::channel(100);

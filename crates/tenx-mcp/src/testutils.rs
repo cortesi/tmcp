@@ -14,8 +14,10 @@
 //! divergences, and gives downstream users example code they can re-use in
 //! their own test suites.
 
-use tokio::io::{self, AsyncRead, AsyncWrite};
-use tokio::sync::broadcast;
+use tokio::{
+    io::{self, AsyncRead, AsyncWrite},
+    sync::broadcast,
+};
 
 use crate::{
     Client, ClientConn, ClientCtx, Server, ServerConn, ServerCtx, ServerHandle,
@@ -116,7 +118,7 @@ where
     // server shutdown.
     drop(client);
 
-    let _ = timeout(Duration::from_millis(10), server.stop()).await;
+    timeout(Duration::from_millis(10), server.stop()).await.ok();
 }
 
 /// Create a ServerCtx for testing purposes.
@@ -134,8 +136,11 @@ pub fn test_client_ctx(notification_tx: broadcast::Sender<ClientNotification>) -
 /// Test context for ServerConn implementations.
 /// Provides a ServerCtx and channels for testing.
 pub struct TestServerContext {
+    /// Server context for tests.
     pub ctx: ServerCtx,
+    /// Sender for server notifications.
     pub notification_tx: broadcast::Sender<ServerNotification>,
+    /// Receiver for server notifications.
     pub notification_rx: broadcast::Receiver<ServerNotification>,
 }
 
@@ -175,8 +180,11 @@ impl Default for TestServerContext {
 /// Test context for ClientConn implementations.
 /// Provides a ClientCtx and channels for testing.
 pub struct TestClientContext {
+    /// Client context for tests.
     pub ctx: ClientCtx,
+    /// Sender for client notifications.
     pub notification_tx: broadcast::Sender<ClientNotification>,
+    /// Receiver for client notifications.
     pub notification_rx: broadcast::Receiver<ClientNotification>,
 }
 

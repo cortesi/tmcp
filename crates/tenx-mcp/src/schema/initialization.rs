@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 use super::*;
 use crate::macros::with_meta;
-use serde::{Deserialize, Serialize};
 
 /// After receiving an initialize request from the client, the server sends this response.
 #[with_meta]

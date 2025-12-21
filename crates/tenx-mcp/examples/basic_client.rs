@@ -1,7 +1,10 @@
+//! Basic MCP client that connects to the echo server.
+
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tenx_mcp::{Arguments, Client, Result, ServerAPI, schema, schemars};
 use tracing::info;
+use tracing_subscriber::fmt;
 
 /// Echo tool input parameters - must match the server definition
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -13,12 +16,15 @@ struct EchoParams {
 #[derive(Parser)]
 #[command(name = "basic_client")]
 #[command(about = "Basic MCP client that connects to echo server", long_about = None)]
+/// CLI options.
 struct Cli {
+    /// Transport command selection.
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
+/// Transport modes for connecting to a server.
 enum Commands {
     /// Connect using TCP
     Tcp {
@@ -40,7 +46,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
-    tracing_subscriber::fmt::init();
+    fmt::init();
 
     let cli = Cli::parse();
 

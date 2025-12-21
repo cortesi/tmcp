@@ -1,3 +1,5 @@
+use std::str;
+
 use bytes::{BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, error};
@@ -9,9 +11,10 @@ use crate::{
 
 /// JSON-RPC codec for encoding/decoding messages over a stream
 /// Uses newline-delimited JSON format
-pub(crate) struct JsonRpcCodec;
+pub struct JsonRpcCodec;
 
 impl JsonRpcCodec {
+    /// Create a new JSON-RPC codec.
     pub fn new() -> Self {
         Self
     }
@@ -47,12 +50,12 @@ impl Decoder for JsonRpcCodec {
 
         debug!(
             "Decoding JSON-RPC message: {:?}",
-            std::str::from_utf8(json_bytes)
+            str::from_utf8(json_bytes)
         );
 
         let message: JSONRPCMessage = serde_json::from_slice(json_bytes).map_err(|e| {
             error!("Failed to parse JSON-RPC message: {}", e);
-            if let Ok(text) = std::str::from_utf8(json_bytes) {
+            if let Ok(text) = str::from_utf8(json_bytes) {
                 Error::InvalidMessageFormat {
                     message: format!("Invalid JSON: {e} (content: {text})"),
                 }
@@ -74,7 +77,7 @@ impl Encoder<JSONRPCMessage> for JsonRpcCodec {
         dst.reserve(json.len() + 1);
         dst.put_slice(&json);
         dst.put_u8(b'\n');
-        debug!("Encoded JSON-RPC message: {:?}", std::str::from_utf8(&json));
+        debug!("Encoded JSON-RPC message: {:?}", str::from_utf8(&json));
         Ok(())
     }
 }
@@ -123,7 +126,7 @@ mod tests {
         };
 
         // Encode
-        codec.encode(request.clone(), &mut buf).unwrap();
+        codec.encode(request, &mut buf).unwrap();
 
         // Decode
         let decoded = codec.decode(&mut buf).unwrap().unwrap();

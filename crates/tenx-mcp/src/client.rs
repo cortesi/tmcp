@@ -1,10 +1,17 @@
+use std::{process::Stdio, sync::Arc};
+
+use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use std::process::Stdio;
-use tokio::process::{Child, Command};
+use serde::de::DeserializeOwned;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    process::{Child, Command},
+    sync::{Mutex, broadcast},
+};
 use tracing::{debug, error, info, warn};
 
-use crate::api::ServerAPI;
 use crate::{
+    api::ServerAPI,
     auth::OAuth2Client,
     connection::ClientConn,
     context::ClientCtx,
@@ -18,8 +25,6 @@ use crate::{
         TransportStream,
     },
 };
-use async_trait::async_trait;
-use std::sync::Arc;
 
 /// Default no-op implementation of ClientConn for unit type
 #[async_trait]
@@ -32,10 +37,15 @@ pub struct Client<C = ()>
 where
     C: ClientConn + Send,
 {
+    /// Tracks requests and routes responses.
     request_handler: RequestHandler,
+    /// Connection callbacks for server-initiated requests.
     connection: C,
+    /// Client name reported during initialization.
     name: String,
+    /// Client version reported during initialization.
     version: String,
+    /// Capabilities advertised to the server.
     client_capabilities: ClientCapabilities,
 }
 
@@ -168,8 +178,8 @@ where
     /// or custom implementations.
     pub async fn connect_stream<R, W>(&mut self, reader: R, writer: W) -> Result<()>
     where
-        R: tokio::io::AsyncRead + Send + Sync + Unpin + 'static,
-        W: tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
+        R: AsyncRead + Send + Sync + Unpin + 'static,
+        W: AsyncWrite + Send + Sync + Unpin + 'static,
     {
         let duplex = GenericDuplex::new(reader, writer);
         let transport = Box::new(StreamTransport::new(duplex));
@@ -218,16 +228,16 @@ where
     }
 
     /// Send a request and wait for response
-    async fn request<T>(&mut self, request: ClientRequest) -> Result<T>
+    async fn request<T>(&self, request: ClientRequest) -> Result<T>
     where
-        T: serde::de::DeserializeOwned,
+        T: DeserializeOwned,
     {
         self.request_handler.request(request).await
     }
 
     /// Send a notification to the server
     async fn send_notification(
-        &mut self,
+        &self,
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<()> {
@@ -242,7 +252,7 @@ where
         let (tx, mut rx) = stream.split();
 
         // Wrap the sink in an Arc<Mutex> for sharing
-        let tx = std::sync::Arc::new(tokio::sync::Mutex::new(tx));
+        let tx = Arc::new(Mutex::new(tx));
 
         // Store the sender half for sending messages
         self.request_handler.set_transport(tx.clone());
@@ -251,8 +261,7 @@ where
         let connection = self.connection.clone();
 
         // Create broadcast channel for client notifications
-        let (client_notification_tx, mut client_notification_rx) =
-            tokio::sync::broadcast::channel(100);
+        let (client_notification_tx, mut client_notification_rx) = broadcast::channel(100);
 
         // Create the context for the connection
         let context = ClientCtx::new(client_notification_tx.clone(), Some(tx.clone()));
@@ -329,7 +338,7 @@ where
                     result = client_notification_rx.recv() => {
                         match result {
                             Ok(notification) => {
-                                let jsonrpc_notification = create_jsonrpc_notification(notification);
+                                let jsonrpc_notification = create_jsonrpc_notification(&notification);
                                 let mut sink = notification_sink.lock().await;
                                 if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
                                     error!("Error sending notification to server: {}", e);
@@ -602,9 +611,20 @@ async fn handle_server_notification<C: ClientConn>(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex as StdMutex},
+        time::Instant,
+    };
+
+    use tokio::{
+        io::duplex,
+        process::Command,
+        sync::{Mutex, oneshot},
+        time::{Duration, sleep, timeout},
+    };
+
     use super::*;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     #[test]
     fn test_pagination_api() {
@@ -612,7 +632,7 @@ mod tests {
         let mut client = Client::new("test-client", "1.0.0");
 
         // These should all compile cleanly
-        std::mem::drop(async {
+        drop(async {
             // Simple calls without cursors - passing None
             client.list_tools(None).await.unwrap();
             client.list_resources(None).await.unwrap();
@@ -652,7 +672,7 @@ mod tests {
         let mut client = Client::new("test-client", "1.0.0");
 
         // These should all compile cleanly
-        std::mem::drop(async {
+        drop(async {
             // Call without arguments - passing ()
             client.call_tool("my_tool", None).await.unwrap();
 
@@ -665,7 +685,7 @@ mod tests {
             client.call_tool(&tool_name, None).await.unwrap();
 
             // Call with HashMap arguments directly
-            let mut args = std::collections::HashMap::new();
+            let mut args = HashMap::new();
             args.insert("param".to_string(), serde_json::json!("value"));
             client
                 .call_tool("tool_with_args", Some(args.into()))
@@ -673,7 +693,7 @@ mod tests {
                 .unwrap();
 
             // Call with Some(HashMap)
-            let mut args = std::collections::HashMap::new();
+            let mut args = HashMap::new();
             args.insert("key".to_string(), serde_json::json!("value"));
             client
                 .call_tool("tool_with_map", Some(args.into()))
@@ -691,8 +711,6 @@ mod tests {
     };
 
     async fn setup_client_server() -> (Client, ServerHandle) {
-        let (client_transport, server_transport) = TestTransport::create_pair();
-
         // Create a minimal test connection
         #[derive(Debug, Default)]
         struct TestConnection;
@@ -709,6 +727,8 @@ mod tests {
                 Ok(InitializeResult::new("test-server").with_version("1.0.0"))
             }
         }
+
+        let (client_transport, server_transport) = TestTransport::create_pair();
 
         let server = Server::default().with_connection(TestConnection::default);
         let server_handle = ServerHandle::new(server, server_transport)
@@ -730,11 +750,6 @@ mod tests {
     // by the server.
     #[tokio::test]
     async fn test_client_receives_server_notification() {
-        use tokio::sync::oneshot;
-
-        // Channel to signal when notification is received
-        let (tx_notif, rx_notif) = oneshot::channel::<()>();
-
         // Custom client connection that records notifications
         struct NotifClientConnection {
             tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
@@ -758,7 +773,7 @@ mod tests {
                 if matches!(notification, ServerNotification::ToolListChanged) {
                     let mut tx_guard = self.tx.lock().await;
                     if let Some(tx) = tx_guard.take() {
-                        let _ = tx.send(());
+                        tx.send(()).ok();
                     }
                 }
                 Ok(())
@@ -781,6 +796,9 @@ mod tests {
                 Ok(InitializeResult::new("test-server").with_version("1.0.0"))
             }
         }
+
+        // Channel to signal when notification is received
+        let (tx_notif, rx_notif) = oneshot::channel::<()>();
 
         // Create transport pair
         let (client_transport, server_transport) = TestTransport::create_pair();
@@ -811,10 +829,10 @@ mod tests {
         client.init().await.expect("Failed to initialize");
 
         // Send server notification
-        server_handle.send_server_notification(ServerNotification::ToolListChanged);
+        server_handle.send_server_notification(&ServerNotification::ToolListChanged);
 
         // Wait for notification to be received
-        tokio::time::timeout(std::time::Duration::from_secs(1), rx_notif)
+        timeout(Duration::from_secs(1), rx_notif)
             .await
             .expect("Notification not received")
             .expect("Receiver dropped");
@@ -823,10 +841,6 @@ mod tests {
     /// Ensure notifications are not forwarded when the server lacks the corresponding capability.
     #[tokio::test]
     async fn test_server_notification_filtered_without_capability() {
-        use tokio::sync::oneshot;
-
-        let (tx_notif, rx_notif) = oneshot::channel::<()>();
-
         struct NotifClientConnection {
             tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
         }
@@ -848,7 +862,7 @@ mod tests {
             ) -> Result<()> {
                 let mut tx_guard = self.tx.lock().await;
                 if let Some(tx) = tx_guard.take() {
-                    let _ = tx.send(());
+                    tx.send(()).ok();
                 }
                 Ok(())
             }
@@ -869,6 +883,8 @@ mod tests {
                 Ok(InitializeResult::new("test-server"))
             }
         }
+
+        let (tx_notif, rx_notif) = oneshot::channel::<()>();
 
         let (client_transport, server_transport) = TestTransport::create_pair();
 
@@ -893,9 +909,9 @@ mod tests {
 
         client.init().await.expect("Failed to initialize");
 
-        server_handle.send_server_notification(ServerNotification::ToolListChanged);
+        server_handle.send_server_notification(&ServerNotification::ToolListChanged);
 
-        let res = tokio::time::timeout(std::time::Duration::from_millis(200), rx_notif).await;
+        let res = timeout(Duration::from_millis(200), rx_notif).await;
         assert!(res.is_err(), "Notification should be filtered");
     }
 
@@ -903,13 +919,6 @@ mod tests {
     // by the client.
     #[tokio::test]
     async fn test_server_receives_client_notification() {
-        use tokio::sync::oneshot;
-
-        // Channel to notify when server receives notification
-        let (tx_notif, rx_notif) = oneshot::channel();
-
-        use std::sync::{Arc, Mutex as StdMutex};
-
         // Server connection that records notification
         #[derive(Debug, Default)]
         struct NotifServerConnection {
@@ -936,7 +945,7 @@ mod tests {
                 if matches!(notification, ClientNotification::Initialized) {
                     let maybe_tx = self.tx.lock().unwrap().take();
                     if let Some(tx) = maybe_tx {
-                        let _ = tx.send(());
+                        tx.send(()).ok();
                     }
                 }
                 Ok(())
@@ -954,6 +963,9 @@ mod tests {
                 Ok(())
             }
         }
+
+        // Channel to notify when server receives notification
+        let (tx_notif, rx_notif) = oneshot::channel();
 
         // Create transport pair
         let (client_transport, server_transport) = TestTransport::create_pair();
@@ -985,11 +997,11 @@ mod tests {
         client.init().await.expect("Failed to initialize");
 
         // Wait for server to receive notification
-        tokio::time::timeout(std::time::Duration::from_secs(1), rx_notif)
+        timeout(Duration::from_secs(1), rx_notif)
             .await
             .expect("Server did not receive notification")
             .expect("Receiver dropped");
-        std::mem::drop(server_handle);
+        drop(server_handle);
     }
 
     #[test]
@@ -1020,7 +1032,7 @@ mod tests {
     async fn test_ping_performance() {
         let (mut client, _server) = setup_client_server().await;
 
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let num_pings = 50;
         for _ in 0..num_pings {
             client.ping().await.expect("Ping failed");
@@ -1039,10 +1051,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_stream() {
-        // Create a pair of duplex streams for testing
-        let (client_reader, server_writer) = tokio::io::duplex(8192);
-        let (server_reader, client_writer) = tokio::io::duplex(8192);
-
         // Create a minimal test connection
         #[derive(Debug, Default)]
         struct TestStreamConnection;
@@ -1059,6 +1067,10 @@ mod tests {
                 Ok(InitializeResult::new("test-server").with_version("1.0.0"))
             }
         }
+
+        // Create a pair of duplex streams for testing
+        let (client_reader, server_writer) = duplex(8192);
+        let (server_reader, client_writer) = duplex(8192);
 
         // Create and configure server
         let server = Server::default()
@@ -1102,7 +1114,7 @@ mod tests {
         let mut client = Client::new("test-client", "1.0.0");
 
         // Try to spawn a non-existent process
-        let cmd = tokio::process::Command::new("non-existent-mcp-server");
+        let cmd = Command::new("non-existent-mcp-server");
         let result = client.connect_process(cmd).await;
 
         // Should fail with a transport error
@@ -1143,7 +1155,7 @@ mod tests {
         drop(server1);
 
         // Wait a bit for the connection to close
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
 
         // Now create a new server and reconnect
         let (client_transport, server_transport) = TestTransport::create_pair();

@@ -83,35 +83,48 @@
 //! }
 //! ```
 
+use std::result::Result as StdResult;
+
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Expr, ExprLit, ImplItem, ItemImpl, Lit, Meta, spanned::Spanned};
+use syn::{Expr, ExprLit, ImplItem, ItemImpl, Lit, Meta, parse::Parse, spanned::Spanned};
 
-type Result<T> = std::result::Result<T, syn::Error>;
+/// Internal result type for macro parsing.
+type Result<T> = StdResult<T, syn::Error>;
 
 #[derive(Debug)]
+/// Description of an impl method tagged as a tool.
 struct ToolMethod {
+    /// Name of the tool method.
     name: String,
+    /// Collected doc comments for the tool.
     docs: String,
+    /// Parameter type of the tool method.
     params_type: syn::Type,
 }
 
 #[derive(Debug)]
+/// Summary of the server impl block and its tool methods.
 struct ServerInfo {
+    /// Name of the server struct.
     struct_name: String,
+    /// Doc comment used as the server description.
     description: String,
+    /// Tool methods discovered in the impl block.
     tools: Vec<ToolMethod>,
 }
 
 #[derive(Debug, Default)]
+/// Parsed macro arguments for #[mcp_server].
 struct ServerMacroArgs {
+    /// Optional custom initialize function name.
     initialize_fn: Option<syn::Ident>,
 }
 
-impl syn::parse::Parse for ServerMacroArgs {
+impl Parse for ServerMacroArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut args = ServerMacroArgs::default();
+        let mut args = Self::default();
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
@@ -136,27 +149,27 @@ impl syn::parse::Parse for ServerMacroArgs {
     }
 }
 
+/// Collect and normalize doc comment strings from attributes.
 fn extract_doc_comment(attrs: &[syn::Attribute]) -> String {
     let mut docs = Vec::new();
     for attr in attrs {
-        if attr.path().is_ident("doc") {
-            if let Meta::NameValue(meta) = &attr.meta {
-                if let Expr::Lit(ExprLit {
-                    lit: Lit::Str(s), ..
-                }) = &meta.value
-                {
-                    let doc = s.value();
-                    let doc = doc.trim();
-                    if !doc.is_empty() {
-                        docs.push(doc.to_string());
-                    }
-                }
+        if attr.path().is_ident("doc")
+            && let Meta::NameValue(meta) = &attr.meta
+            && let Expr::Lit(ExprLit {
+                lit: Lit::Str(s), ..
+            }) = &meta.value
+        {
+            let doc = s.value();
+            let doc = doc.trim();
+            if !doc.is_empty() {
+                docs.push(doc.to_string());
             }
         }
     }
     docs.join("\n")
 }
 
+/// Parse a tool method from an impl item if it has a #[tool] attribute.
 fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
     let has_tool_attr = method.attrs.iter().any(|attr| attr.path().is_ident("tool"));
 
@@ -228,6 +241,7 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
     }))
 }
 
+/// Parse a server impl block and gather tool metadata.
 fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
     let impl_block = syn::parse2::<ItemImpl>(input.clone())?;
 
@@ -254,10 +268,10 @@ fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
     // Extract tool methods
     let mut tools = Vec::new();
     for item in &impl_block.items {
-        if let ImplItem::Fn(method) = item {
-            if let Some(tool) = parse_tool_method(method)? {
-                tools.push(tool);
-            }
+        if let ImplItem::Fn(method) = item
+            && let Some(tool) = parse_tool_method(method)?
+        {
+            tools.push(tool);
         }
     }
 
@@ -271,6 +285,7 @@ fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
     ))
 }
 
+/// Generate the ServerConn::call_tool implementation.
 fn generate_call_tool(info: &ServerInfo) -> TokenStream {
     let tool_matches = info.tools.iter().map(|tool| {
         let name = &tool.name;
@@ -304,6 +319,7 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
     }
 }
 
+/// Generate the ServerConn::list_tools implementation.
 fn generate_list_tools(info: &ServerInfo) -> TokenStream {
     let tools = info.tools.iter().map(|tool| {
         let name = &tool.name;
@@ -332,6 +348,7 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
     }
 }
 
+/// Generate the ServerConn::initialize implementation.
 fn generate_initialize(info: &ServerInfo, custom_init_fn: Option<&syn::Ident>) -> TokenStream {
     if let Some(init_fn) = custom_init_fn {
         // Use the custom initialize function
@@ -352,6 +369,7 @@ fn generate_initialize(info: &ServerInfo, custom_init_fn: Option<&syn::Ident>) -
     }
 }
 
+/// Generate the default ServerConn::initialize implementation.
 fn generate_default_initialize(info: &ServerInfo) -> TokenStream {
     let snake_case_name = info.struct_name.to_snake_case();
     let description = &info.description;
@@ -384,6 +402,7 @@ fn generate_default_initialize(info: &ServerInfo) -> TokenStream {
     }
 }
 
+/// Validate the signature of a custom initialize function.
 fn validate_custom_initialize_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
     // Find the method in the impl block
     let method = impl_block.items.iter().find_map(|item| {
@@ -449,10 +468,11 @@ fn validate_custom_initialize_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) ->
     Ok(())
 }
 
-fn inner_mcp_server(attr: TokenStream, input: TokenStream) -> Result<TokenStream> {
+/// Parse the #[mcp_server] macro inputs and emit the expanded tokens.
+fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStream> {
     // Parse macro attributes
     let args = syn::parse2::<ServerMacroArgs>(attr).unwrap_or_default();
-    let (impl_block, info) = parse_impl_block(&input)?;
+    let (impl_block, info) = parse_impl_block(input)?;
 
     if info.tools.is_empty() {
         return Err(syn::Error::new(
@@ -490,9 +510,9 @@ pub fn mcp_server(
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     let attr_tokens = TokenStream::from(attr);
-    let input_tokens = TokenStream::from(input.clone());
+    let input_tokens = TokenStream::from(input);
 
-    match inner_mcp_server(attr_tokens, input_tokens) {
+    match inner_mcp_server(attr_tokens, &input_tokens) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -546,6 +566,7 @@ pub fn with_meta(
 
     // Create the _meta field
     let meta_field: syn::Field = syn::parse_quote! {
+        /// Optional metadata field for extensions.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub _meta: Option<std::collections::HashMap<String, serde_json::Value>>
     };
@@ -673,8 +694,9 @@ pub fn with_basename(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use pretty_assertions::assert_eq;
+
+    use super::*;
 
     #[test]
     fn test_doc_extraction() {
@@ -857,7 +879,7 @@ mod tests {
             }
         };
 
-        let result = inner_mcp_server(TokenStream::new(), input).unwrap();
+        let result = inner_mcp_server(TokenStream::new(), &input).unwrap();
         let result_str = result.to_string();
 
         // Check that original impl block is preserved
@@ -884,7 +906,7 @@ mod tests {
             }
         };
 
-        let result = inner_mcp_server(TokenStream::new(), input);
+        let result = inner_mcp_server(TokenStream::new(), &input);
         assert!(result.is_err());
         assert!(
             result
@@ -916,7 +938,7 @@ mod tests {
                 }
             };
 
-            let result = inner_mcp_server(TokenStream::new(), input).unwrap();
+            let result = inner_mcp_server(TokenStream::new(), &input).unwrap();
             let result_str = result.to_string();
 
             let expected_pattern = format!(r#"InitializeResult :: new ("{expected_snake_case}")"#);
@@ -938,7 +960,7 @@ mod tests {
             }
         };
 
-        let result = inner_mcp_server(TokenStream::new(), input).unwrap();
+        let result = inner_mcp_server(TokenStream::new(), &input).unwrap();
         let result_str = result.to_string();
 
         // Check that with_instructions is NOT called when description is empty

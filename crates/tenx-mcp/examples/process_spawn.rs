@@ -52,7 +52,9 @@ async fn main() -> Result<()> {
         Err(e) => {
             error!("Failed to initialize: {}", e);
             // Kill the process if initialization fails
-            let _ = child.kill().await;
+            if let Err(err) = child.kill().await {
+                error!("Failed to kill child process after init error: {}", err);
+            }
             return Err(e);
         }
     }

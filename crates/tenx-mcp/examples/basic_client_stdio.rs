@@ -8,9 +8,10 @@
 //!   cargo run --example basic_client_stdio
 
 use serde::{Deserialize, Serialize};
-use tenx_mcp::{Arguments, Client, Result, ServerAPI, schemars};
+use tenx_mcp::{Arguments, Client, Result, ServerAPI, schema::Content, schemars};
 use tokio::process::Command;
 use tracing::info;
+use tracing_subscriber::fmt;
 
 /// Echo tool input parameters (must match server definition)
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -22,7 +23,7 @@ struct EchoParams {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
-    tracing_subscriber::fmt::init();
+    fmt::init();
 
     // Create the client
     let mut client = Client::new("basic-client-stdio", "0.1.0");
@@ -67,7 +68,7 @@ async fn main() -> Result<()> {
     let args = Arguments::from_struct(params)?;
     let result = client.call_tool("echo", Some(args)).await?;
 
-    if let Some(tenx_mcp::schema::Content::Text(text_content)) = result.content.first() {
+    if let Some(Content::Text(text_content)) = result.content.first() {
         info!("Echo response: {}", text_content.text);
     }
 

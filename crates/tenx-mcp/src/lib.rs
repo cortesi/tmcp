@@ -63,20 +63,33 @@
 //! - **HTTP**: `server.listen_http("127.0.0.1:3000")` (uses SSE for server->client)
 //! - **Stdio**: `server.listen_stdio()` for subprocess integration
 
+/// Server-side request/response API traits and helpers.
 mod api;
+/// Argument envelope used by tool calls and prompt arguments.
 mod arguments;
+/// Client implementation and transport orchestration.
 mod client;
+/// JSON-RPC codec for stream framing.
 mod codec;
+/// Connection traits for clients and servers.
 mod connection;
+/// Client/server context types.
 mod context;
+/// Error types and Result alias.
 mod error;
+/// HTTP transport implementation.
 mod http;
+/// JSON-RPC message definitions.
 mod jsonrpc;
+/// Request/response routing and tracking.
 mod request_handler;
+/// Server implementation and handle types.
 mod server;
+/// Transport traits and adapters.
 mod transport;
 
 pub mod auth;
+/// Public schema types for MCP messages.
 pub mod schema;
 pub mod testutils;
 
@@ -86,12 +99,12 @@ pub use client::Client;
 pub use connection::{ClientConn, ServerConn};
 pub use context::{ClientCtx, ServerCtx};
 pub use error::{Error, Result};
-pub use server::{Server, ServerHandle};
-
 // Export user-facing macros directly from the crate root
 pub use macros::{mcp_server, tool};
+pub use server::{Server, ServerHandle};
 
 // Keep the full macros module available for internal use
+/// Re-exported macros module for internal use.
 mod macros {
     pub use ::macros::*;
 }

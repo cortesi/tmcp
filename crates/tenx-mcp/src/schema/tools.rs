@@ -1,18 +1,23 @@
-use super::*;
-use crate::macros::{with_basename, with_meta};
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+
+use super::*;
+use crate::macros::{with_basename, with_meta};
 
 /// The server's response to a tools/list request from the client.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ListToolsResult {
+    /// Tool entries returned by the server.
     pub tools: Vec<Tool>,
     #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    /// Cursor for the next page of results.
     pub next_cursor: Option<Cursor>,
 }
 
 impl ListToolsResult {
+    /// Create an empty tools list result.
     pub fn new() -> Self {
         Self {
             tools: Vec::new(),
@@ -20,16 +25,19 @@ impl ListToolsResult {
         }
     }
 
+    /// Add a single tool to the result.
     pub fn with_tool(mut self, tool: Tool) -> Self {
         self.tools.push(tool);
         self
     }
 
+    /// Add multiple tools to the result.
     pub fn with_tools(mut self, tools: impl IntoIterator<Item = Tool>) -> Self {
         self.tools.extend(tools);
         self
     }
 
+    /// Set the pagination cursor for the next page.
     pub fn with_cursor(mut self, cursor: impl Into<Cursor>) -> Self {
         self.next_cursor = Some(cursor.into());
         self
@@ -40,14 +48,18 @@ impl ListToolsResult {
 #[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallToolResult {
+    /// Content returned by the tool call.
     pub content: Vec<Content>,
     #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
+    /// Whether the tool call resulted in an error.
     pub is_error: Option<bool>,
     #[serde(rename = "structuredContent", skip_serializing_if = "Option::is_none")]
+    /// Structured payload returned by the tool, if any.
     pub structured_content: Option<Value>,
 }
 
 impl CallToolResult {
+    /// Create an empty tool result.
     pub fn new() -> Self {
         Self {
             content: Vec::new(),
@@ -57,11 +69,13 @@ impl CallToolResult {
         }
     }
 
+    /// Append a content item to the result.
     pub fn with_content(mut self, content: Content) -> Self {
         self.content.push(content);
         self
     }
 
+    /// Append a text content item to the result.
     pub fn with_text_content(mut self, text: impl Into<String>) -> Self {
         self.content.push(Content::Text(TextContent {
             text: text.into(),
@@ -71,11 +85,13 @@ impl CallToolResult {
         self
     }
 
+    /// Mark the result as an error or success.
     pub fn is_error(mut self, is_error: bool) -> Self {
         self.is_error = Some(is_error);
         self
     }
 
+    /// Attach structured content to the result.
     pub fn with_structured_content(mut self, content: Value) -> Self {
         self.structured_content = Some(content);
         self
@@ -99,14 +115,19 @@ impl Default for CallToolResult {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolAnnotations {
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional display title for the tool.
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Hint that the tool is read-only.
     pub read_only_hint: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Hint that the tool is destructive.
     pub destructive_hint: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Hint that the tool is idempotent.
     pub idempotent_hint: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Hint that the tool is open-world.
     pub open_world_hint: Option<bool>,
 }
 
@@ -116,16 +137,21 @@ pub struct ToolAnnotations {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
     #[serde(rename = "inputSchema")]
+    /// JSON Schema describing tool input.
     pub input_schema: ToolSchema,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional tool description.
     pub description: Option<String>,
     #[serde(rename = "outputSchema", skip_serializing_if = "Option::is_none")]
+    /// JSON Schema describing tool output.
     pub output_schema: Option<ToolSchema>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional annotations describing tool behavior.
     pub annotations: Option<ToolAnnotations>,
 }
 
 impl Tool {
+    /// Create a new tool with the provided name and input schema.
     pub fn new(name: impl Into<String>, input_schema: ToolSchema) -> Self {
         Self {
             input_schema,
@@ -138,21 +164,25 @@ impl Tool {
         }
     }
 
+    /// Set the tool description.
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
+    /// Set the output schema for the tool.
     pub fn with_output_schema(mut self, schema: ToolSchema) -> Self {
         self.output_schema = Some(schema);
         self
     }
 
+    /// Set the annotation title hint.
     pub fn with_annotation_title(mut self, title: impl Into<String>) -> Self {
         self.annotations.get_or_insert_with(Default::default).title = Some(title.into());
         self
     }
 
+    /// Set the read-only hint.
     pub fn with_read_only_hint(mut self, read_only: bool) -> Self {
         self.annotations
             .get_or_insert_with(Default::default)
@@ -160,6 +190,7 @@ impl Tool {
         self
     }
 
+    /// Set the destructive hint.
     pub fn with_destructive_hint(mut self, destructive: bool) -> Self {
         self.annotations
             .get_or_insert_with(Default::default)
@@ -167,6 +198,7 @@ impl Tool {
         self
     }
 
+    /// Set the idempotent hint.
     pub fn with_idempotent_hint(mut self, idempotent: bool) -> Self {
         self.annotations
             .get_or_insert_with(Default::default)
@@ -174,6 +206,7 @@ impl Tool {
         self
     }
 
+    /// Set the open-world hint.
     pub fn with_open_world_hint(mut self, open_world: bool) -> Self {
         self.annotations
             .get_or_insert_with(Default::default)
@@ -181,6 +214,7 @@ impl Tool {
         self
     }
 
+    /// Replace the annotations entirely.
     pub fn with_annotations(mut self, annotations: ToolAnnotations) -> Self {
         self.annotations = Some(annotations);
         self
@@ -191,10 +225,13 @@ impl Tool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
     #[serde(rename = "type")]
+    /// JSON Schema type (usually "object").
     pub schema_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// JSON Schema properties map.
     pub properties: Option<HashMap<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Required property names.
     pub required: Option<Vec<String>>,
 }
 
@@ -209,6 +246,7 @@ impl Default for ToolSchema {
 }
 
 impl ToolSchema {
+    /// Add a property schema.
     pub fn with_property(mut self, name: impl Into<String>, schema: Value) -> Self {
         self.properties
             .get_or_insert_with(HashMap::new)
@@ -216,16 +254,19 @@ impl ToolSchema {
         self
     }
 
+    /// Replace the properties map.
     pub fn with_properties(mut self, properties: HashMap<String, Value>) -> Self {
         self.properties = Some(properties);
         self
     }
 
+    /// Add a required property name.
     pub fn with_required(mut self, name: impl Into<String>) -> Self {
         self.required.get_or_insert_with(Vec::new).push(name.into());
         self
     }
 
+    /// Add multiple required property names.
     pub fn with_required_properties(
         mut self,
         names: impl IntoIterator<Item = impl Into<String>>,
@@ -235,6 +276,7 @@ impl ToolSchema {
         self
     }
 
+    /// Build a schema from a schemars JsonSchema type.
     pub fn from_json_schema<T: schemars::JsonSchema>() -> Self {
         let schema = schemars::schema_for!(T);
         let schema_value = schema.as_value();

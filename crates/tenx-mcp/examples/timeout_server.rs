@@ -5,25 +5,37 @@
 //! - Slow operations that cause timeouts
 //! - Non-retryable errors
 
+use std::{
+    env,
+    process::exit,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
+
 use async_trait::async_trait;
-use std::env;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 use tenx_mcp::{Error, Result, Server, ServerConn, ServerCtx, schema};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
 /// Connection that demonstrates various timeout and retry scenarios
 struct TimeoutTestConnection {
+    /// Server implementation metadata.
     server_info: schema::Implementation,
+    /// Server capabilities advertised during initialization.
     capabilities: schema::ServerCapabilities,
+    /// Counter for flaky failure attempts.
     flakey_fail_count: Arc<AtomicU32>,
+    /// Failures before the flaky operation succeeds.
     failures_before_success: u32,
+    /// Artificial delay in seconds for slow operations.
     slow_delay_seconds: u64,
 }
 
 impl TimeoutTestConnection {
+    /// Create a new timeout test connection with configured behavior.
     fn new(
         server_info: schema::Implementation,
         capabilities: schema::ServerCapabilities,
@@ -158,7 +170,7 @@ async fn main() -> Result<()> {
         eprintln!("Usage: {} [host] [port]", args[0]);
         eprintln!("Example: {} 127.0.0.1 3001", args[0]);
         eprintln!("If no arguments provided, defaults to 127.0.0.1:3001");
-        std::process::exit(1);
+        exit(1);
     };
 
     let addr = format!("{host}:{port}");

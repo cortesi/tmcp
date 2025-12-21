@@ -14,17 +14,21 @@
 //! 5. Run this example with:
 //!    cargo run --example ghusers -- -c YOUR_CLIENT_ID -s YOUR_CLIENT_SECRET
 
+use std::{error::Error, sync::Arc};
+
 use clap::Parser;
-use std::sync::Arc;
 use tenx_mcp::{
     Client, ServerAPI,
     auth::{OAuth2CallbackServer, OAuth2Client, OAuth2Config, OAuth2Token},
 };
-use tracing::{Level, debug};
+use tracing::{Level, debug, subscriber};
 use tracing_subscriber::FmtSubscriber;
 
+/// GitHub MCP endpoint for the Copilot service.
 const GITHUB_MCP_ENDPOINT: &str = "https://api.githubcopilot.com/mcp/";
+/// GitHub OAuth authorization endpoint.
 const GITHUB_AUTH_URL: &str = "https://github.com/login/oauth/authorize";
+/// GitHub OAuth token endpoint.
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 
 /// Wrap text to fit within the specified width, with an optional indent for continuation lines
@@ -54,6 +58,7 @@ fn wrap_text(text: &str, width: usize, indent: &str) -> String {
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Connect to GitHub MCP server with OAuth", long_about = None)]
+/// CLI arguments for the GitHub OAuth example.
 struct Args {
     /// GitHub OAuth App Client ID
     #[arg(short, long)]
@@ -77,7 +82,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     // Set up logging based on verbose flag
@@ -87,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Level::WARN
     };
     let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     // Create OAuth client
     let oauth_client = if let Some(access_token) = args.access_token {
@@ -191,37 +196,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Parse and display input parameters
-            if let Some(properties) = &tool.input_schema.properties {
-                if !properties.is_empty() {
-                    println!("  Parameters:");
+            if let Some(properties) = &tool.input_schema.properties
+                && !properties.is_empty()
+            {
+                println!("  Parameters:");
 
-                    let required = tool.input_schema.required.as_deref().unwrap_or(&[]);
+                let required = tool.input_schema.required.as_deref().unwrap_or(&[]);
 
-                    for (name, schema) in properties {
-                        let param_type = schema
-                            .get("type")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("unknown");
-                        let description = schema
-                            .get("description")
-                            .and_then(|d| d.as_str())
-                            .unwrap_or("");
-                        let is_required = required.contains(name);
+                for (name, schema) in properties {
+                    let param_type = schema
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown");
+                    let description = schema
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("");
+                    let is_required = required.contains(name);
 
-                        let param_header = format!(
-                            "    - {} ({}){}: ",
-                            name,
-                            param_type,
-                            if is_required { ", required" } else { "" }
-                        );
+                    let param_header = format!(
+                        "    - {} ({}){}: ",
+                        name,
+                        param_type,
+                        if is_required { ", required" } else { "" }
+                    );
 
-                        if description.is_empty() {
-                            println!("{}", param_header.trim_end_matches(": "));
-                        } else {
-                            let wrapped_desc =
-                                wrap_text(description, 72 - param_header.len(), "      ");
-                            println!("{param_header}{wrapped_desc}");
-                        }
+                    if description.is_empty() {
+                        println!("{}", param_header.trim_end_matches(": "));
+                    } else {
+                        let wrapped_desc =
+                            wrap_text(description, 72 - param_header.len(), "      ");
+                        println!("{param_header}{wrapped_desc}");
                     }
                 }
             }
@@ -229,11 +234,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Get the access token for future use
-    if let Ok(token) = oauth_client_arc.get_valid_token().await {
-        if args.verbose {
-            println!("\nAccess token (save for future use): {token}");
-            println!("You can skip the OAuth flow next time by using: --access-token {token}");
-        }
+    if let Ok(token) = oauth_client_arc.get_valid_token().await
+        && args.verbose
+    {
+        println!("\nAccess token (save for future use): {token}");
+        println!("You can skip the OAuth flow next time by using: --access-token {token}");
     }
 
     Ok(())

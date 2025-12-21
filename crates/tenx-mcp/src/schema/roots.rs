@@ -1,5 +1,8 @@
-use crate::macros::with_meta;
+#![allow(missing_docs)]
+
 use serde::{Deserialize, Serialize};
+
+use crate::macros::with_meta;
 
 #[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]

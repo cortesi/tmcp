@@ -1,11 +1,15 @@
-use std::collections::HashMap;
+#![allow(missing_docs)]
 
-use crate::macros::with_meta;
+use std::{collections::HashMap, fmt};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::macros::with_meta;
+
 pub const PREVIOUS_PROTOCOL_VERSION: &str = "2025-03-26";
 pub const LATEST_PROTOCOL_VERSION: &str = "2025-06-18";
+/// JSON-RPC protocol version string.
 pub(crate) const JSONRPC_VERSION: &str = "2.0";
 
 /// Refers to any valid JSON-RPC object that can be decoded off the wire, or
@@ -57,24 +61,24 @@ pub struct Cursor(pub String);
 
 impl From<&str> for Cursor {
     fn from(s: &str) -> Self {
-        Cursor(s.to_string())
+        Self(s.to_string())
     }
 }
 
 impl From<String> for Cursor {
     fn from(s: String) -> Self {
-        Cursor(s)
+        Self(s)
     }
 }
 
 impl From<&String> for Cursor {
     fn from(s: &String) -> Self {
-        Cursor(s.clone())
+        Self(s.clone())
     }
 }
 
-impl std::fmt::Display for Cursor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Cursor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
@@ -164,10 +168,15 @@ pub struct JSONRPCResponse {
 }
 
 // Standard JSON-RPC error codes
+/// JSON-RPC parse error code.
 pub(crate) const PARSE_ERROR: i32 = -32700;
+/// JSON-RPC invalid request error code.
 pub(crate) const INVALID_REQUEST: i32 = -32600;
+/// JSON-RPC method not found error code.
 pub(crate) const METHOD_NOT_FOUND: i32 = -32601;
+/// JSON-RPC invalid params error code.
 pub(crate) const INVALID_PARAMS: i32 = -32602;
+/// JSON-RPC internal error code.
 pub(crate) const INTERNAL_ERROR: i32 = -32603;
 
 /// A response to a request that indicates an error occurred.

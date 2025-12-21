@@ -1,65 +1,106 @@
+use std::{io, result::Result as StdResult};
+
+use thiserror::Error;
+
 use crate::schema::{
     ErrorObject, INVALID_PARAMS, INVALID_REQUEST, JSONRPC_VERSION, JSONRPCError, METHOD_NOT_FOUND,
     PARSE_ERROR, RequestId,
 };
-use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
+/// Error type for MCP operations.
 pub enum Error {
+    /// I/O error with a message.
     #[error("IO error: {message}")]
-    Io { message: String },
-
-    #[error("JSON serialization error: {message}")]
-    JsonParse { message: String },
-
-    #[error("Transport error: {0}")]
-    Transport(String),
-
-    #[error("Transport disconnected unexpectedly")]
-    TransportDisconnected,
-
-    #[error("Protocol error: {0}")]
-    Protocol(String),
-
-    #[error("Invalid request: {0}")]
-    InvalidRequest(String),
-
-    #[error("Method not found: {0}")]
-    MethodNotFound(String),
-
-    #[error("Invalid parameters: {0}")]
-    InvalidParams(String),
-
-    #[error("Internal error: {0}")]
-    InternalError(String),
-
-    #[error("Connection closed")]
-    ConnectionClosed,
-
-    #[error("Handler error for {handler_type}: {message}")]
-    HandlerError {
-        handler_type: String,
+    Io {
+        /// Error message details.
         message: String,
     },
 
+    /// JSON serialization or parsing error.
+    #[error("JSON serialization error: {message}")]
+    JsonParse {
+        /// Error message details.
+        message: String,
+    },
+
+    /// Transport-layer error.
+    #[error("Transport error: {0}")]
+    Transport(String),
+
+    /// Transport disconnected unexpectedly.
+    #[error("Transport disconnected unexpectedly")]
+    TransportDisconnected,
+
+    /// Protocol-level error.
+    #[error("Protocol error: {0}")]
+    Protocol(String),
+
+    /// Invalid request error.
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
+    /// Method not found error.
+    #[error("Method not found: {0}")]
+    MethodNotFound(String),
+
+    /// Invalid parameters error.
+    #[error("Invalid parameters: {0}")]
+    InvalidParams(String),
+
+    /// Internal error.
+    #[error("Internal error: {0}")]
+    InternalError(String),
+
+    /// Connection closed.
+    #[error("Connection closed")]
+    ConnectionClosed,
+
+    /// Handler error with type context.
+    #[error("Handler error for {handler_type}: {message}")]
+    HandlerError {
+        /// Handler type name.
+        handler_type: String,
+        /// Error message.
+        message: String,
+    },
+
+    /// Resource not found error.
     #[error("Resource not found: {uri}")]
-    ResourceNotFound { uri: String },
+    ResourceNotFound {
+        /// Missing resource URI.
+        uri: String,
+    },
 
+    /// Tool execution failed error.
     #[error("Tool execution failed for '{tool}': {message}")]
-    ToolExecutionFailed { tool: String, message: String },
+    ToolExecutionFailed {
+        /// Tool name that failed.
+        tool: String,
+        /// Error message details.
+        message: String,
+    },
 
+    /// Invalid message format error.
     #[error("Invalid message format: {message}")]
-    InvalidMessageFormat { message: String },
+    InvalidMessageFormat {
+        /// Error message details.
+        message: String,
+    },
 
+    /// Tool not found error.
     #[error("Tool not found: {0}")]
     ToolNotFound(String),
 
+    /// Invalid configuration error.
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
 
+    /// Authorization failed error.
     #[error("Authorization failed: {0}")]
     AuthorizationFailed(String),
 
+    /// Transport error.
     #[error("Transport error: {0}")]
     TransportError(String),
 }
@@ -116,8 +157,8 @@ impl Error {
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Self {
         Self::Io {
             message: err.to_string(),
         }
@@ -132,4 +173,5 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+/// Result alias using the crate error type.
+pub type Result<T> = StdResult<T, Error>;

@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 use super::*;
 use crate::macros::with_meta;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

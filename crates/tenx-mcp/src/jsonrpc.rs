@@ -5,13 +5,13 @@ use crate::{
     schema::{self, *},
 };
 
-/// Create a JSONRPC notification from a typed notification
-pub fn create_jsonrpc_notification<T>(notification: T) -> JSONRPCNotification
+/// Create a JSONRPC notification from a typed notification.
+pub fn create_jsonrpc_notification<T>(notification: &T) -> JSONRPCNotification
 where
     T: serde::Serialize + NotificationTrait,
 {
     let method = notification.method();
-    let params = serde_json::to_value(&notification)
+    let params = serde_json::to_value(notification)
         .ok()
         .and_then(|v| v.as_object().cloned())
         .map(|obj| NotificationParams {
@@ -27,6 +27,7 @@ where
 
 /// Trait to identify notification types and their methods
 pub trait NotificationTrait: serde::Serialize {
+    /// Return the JSON-RPC method name for this notification.
     fn method(&self) -> String;
 }
 
@@ -34,19 +35,13 @@ pub trait NotificationTrait: serde::Serialize {
 impl NotificationTrait for schema::ServerNotification {
     fn method(&self) -> String {
         match self {
-            ServerNotification::ToolListChanged => "notifications/tools/list_changed".to_string(),
-            ServerNotification::ResourceListChanged => {
-                "notifications/resources/list_changed".to_string()
-            }
-            ServerNotification::PromptListChanged => {
-                "notifications/prompts/list_changed".to_string()
-            }
-            ServerNotification::ResourceUpdated { .. } => {
-                "notifications/resources/updated".to_string()
-            }
-            ServerNotification::LoggingMessage { .. } => "notifications/message".to_string(),
-            ServerNotification::Progress { .. } => "notifications/progress".to_string(),
-            ServerNotification::Cancelled { .. } => "notifications/cancelled".to_string(),
+            Self::ToolListChanged => "notifications/tools/list_changed".to_string(),
+            Self::ResourceListChanged => "notifications/resources/list_changed".to_string(),
+            Self::PromptListChanged => "notifications/prompts/list_changed".to_string(),
+            Self::ResourceUpdated { .. } => "notifications/resources/updated".to_string(),
+            Self::LoggingMessage { .. } => "notifications/message".to_string(),
+            Self::Progress { .. } => "notifications/progress".to_string(),
+            Self::Cancelled { .. } => "notifications/cancelled".to_string(),
         }
     }
 }
@@ -55,10 +50,10 @@ impl NotificationTrait for schema::ServerNotification {
 impl NotificationTrait for schema::ClientNotification {
     fn method(&self) -> String {
         match self {
-            ClientNotification::Initialized => "notifications/initialized".to_string(),
-            ClientNotification::RootsListChanged => "notifications/roots/list_changed".to_string(),
-            ClientNotification::Cancelled { .. } => "notifications/cancelled".to_string(),
-            ClientNotification::Progress { .. } => "notifications/progress".to_string(),
+            Self::Initialized => "notifications/initialized".to_string(),
+            Self::RootsListChanged => "notifications/roots/list_changed".to_string(),
+            Self::Cancelled { .. } => "notifications/cancelled".to_string(),
+            Self::Progress { .. } => "notifications/progress".to_string(),
         }
     }
 }

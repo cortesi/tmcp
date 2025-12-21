@@ -21,6 +21,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Demonstrate connecting with in-memory duplex streams.
 async fn example_duplex_streams() -> Result<()> {
     info!("Example 1: Connecting with duplex streams");
 
@@ -42,6 +43,7 @@ async fn example_duplex_streams() -> Result<()> {
     Ok(())
 }
 
+/// Demonstrate connecting with custom stream implementations.
 async fn example_custom_streams() -> Result<()> {
     info!("Example 2: Connecting with custom stream types");
 
@@ -66,6 +68,7 @@ async fn example_custom_streams() -> Result<()> {
 }
 
 // Placeholder functions to demonstrate the concept
+/// Create a dummy AsyncRead implementation for the example.
 fn create_custom_reader() -> Box<dyn AsyncRead + Send + Sync + Unpin> {
     // In a real implementation, this might return:
     // - A TLS stream reader
@@ -76,6 +79,7 @@ fn create_custom_reader() -> Box<dyn AsyncRead + Send + Sync + Unpin> {
     Box::new(reader)
 }
 
+/// Create a dummy AsyncWrite implementation for the example.
 fn create_custom_writer() -> Box<dyn AsyncWrite + Send + Sync + Unpin> {
     // In a real implementation, this might return:
     // - A TLS stream writer

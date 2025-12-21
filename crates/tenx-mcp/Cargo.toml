@@ -3,6 +3,9 @@ name = "tenx-mcp"
 version = "0.0.1"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 macros = { path = "../macros" }
 serde = { version = "1.0", features = ["derive"] }

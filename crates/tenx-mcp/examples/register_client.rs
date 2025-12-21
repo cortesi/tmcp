@@ -1,6 +1,10 @@
+//! Example for registering an OAuth client dynamically.
+
+use std::error::Error;
+
 use clap::Parser;
 use tenx_mcp::auth::{ClientMetadata, DynamicRegistrationClient, OAuth2Config};
-use tracing::{Level, info};
+use tracing::{Level, info, subscriber};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Parser, Debug)]
@@ -10,6 +14,7 @@ use tracing_subscriber::FmtSubscriber;
     about = "Register an OAuth client dynamically",
     long_about = None
 )]
+/// Command-line arguments.
 struct Args {
     /// Registration endpoint URL
     #[arg(short, long)]
@@ -57,12 +62,12 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     // Set up logging
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let args = Args::parse();
 
@@ -87,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create client metadata
     let mut metadata = ClientMetadata::new(&args.client_name, &args.redirect_uri)
         .with_resource(&args.resource)
-        .with_scopes(scopes.clone())
+        .with_scopes(&scopes)
         .with_token_endpoint_auth_method(&args.token_endpoint_auth_method)
         .with_software_info("tenx-mcp", env!("CARGO_PKG_VERSION"));
 

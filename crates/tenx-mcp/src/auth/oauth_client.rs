@@ -1,3 +1,5 @@
+use std::{future::Future, sync::Arc, time::Instant};
+
 use axum::{Router, extract::Query, response::Html, routing::get};
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet,
@@ -9,31 +11,46 @@ use oauth2::{
     },
 };
 use serde::Deserialize;
-use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, oneshot};
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, RwLock, oneshot},
+};
 use url::Url;
 
 use super::dynamic_registration::{ClientMetadata, DynamicRegistrationClient};
 use crate::error::Error;
 
 #[derive(Debug, Clone)]
+/// OAuth2 client configuration values.
 pub struct OAuth2Config {
+    /// OAuth client identifier.
     pub client_id: String,
+    /// OAuth client secret, if applicable.
     pub client_secret: Option<String>,
+    /// Authorization endpoint URL.
     pub auth_url: String,
+    /// Token endpoint URL.
     pub token_url: String,
+    /// Redirect/callback URL.
     pub redirect_url: String,
+    /// Resource audience for MCP.
     pub resource: String,
+    /// Requested OAuth scopes.
     pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
+/// OAuth2 token information.
 pub struct OAuth2Token {
+    /// Access token value.
     pub access_token: String,
+    /// Optional refresh token value.
     pub refresh_token: Option<String>,
-    pub expires_at: Option<std::time::Instant>,
+    /// Optional expiration instant.
+    pub expires_at: Option<Instant>,
 }
 
+/// Internal OAuth2 client type alias with configured endpoint states.
 type ConfiguredClient = oauth2::Client<
     BasicErrorResponse,
     BasicTokenResponse,
@@ -47,12 +64,19 @@ type ConfiguredClient = oauth2::Client<
     EndpointSet,
 >;
 
+/// OAuth2 client with optional token caching and refresh support.
 pub struct OAuth2Client {
+    /// OAuth2 client used for token flows.
     client: ConfiguredClient,
+    /// Configuration used to build the OAuth2 client.
     config: OAuth2Config,
+    /// Cached token stored behind a lock.
     token: Arc<RwLock<Option<OAuth2Token>>>,
+    /// Mutex to serialize refreshes.
     refresh_lock: Arc<Mutex<()>>,
+    /// PKCE verifier captured during authorization.
     pkce_verifier: Option<PkceCodeVerifier>,
+    /// CSRF token captured during authorization.
     csrf_token: Option<CsrfToken>,
 }
 
@@ -99,7 +123,7 @@ impl OAuth2Client {
         // Create client metadata
         let metadata = ClientMetadata::new(&client_name, &redirect_url)
             .with_resource(&resource)
-            .with_scopes(scopes.clone())
+            .with_scopes(&scopes)
             .with_software_info("tenx-mcp", env!("CARGO_PKG_VERSION"));
 
         // Register the client
@@ -114,6 +138,7 @@ impl OAuth2Client {
         Self::new(config)
     }
 
+    /// Create a new OAuth2 client from configuration.
     pub fn new(config: OAuth2Config) -> Result<Self, Error> {
         let mut client = BasicClient::new(ClientId::new(config.client_id.clone()))
             .set_auth_uri(
@@ -147,6 +172,7 @@ impl OAuth2Client {
         })
     }
 
+    /// Build an authorization URL and return the CSRF token.
     pub fn get_authorization_url(&mut self) -> (Url, CsrfToken) {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         self.pkce_verifier = Some(pkce_verifier);
@@ -166,6 +192,7 @@ impl OAuth2Client {
         (url, csrf_token)
     }
 
+    /// Exchange an authorization code for a token.
     pub async fn exchange_code(
         &mut self,
         code: String,
@@ -222,21 +249,22 @@ impl OAuth2Client {
             refresh_token: token_result.refresh_token().map(|t| t.secret().clone()),
             expires_at: token_result
                 .expires_in()
-                .map(|duration| std::time::Instant::now() + duration),
+                .map(|duration| Instant::now() + duration),
         };
 
         *self.token.write().await = Some(oauth_token.clone());
         Ok(oauth_token)
     }
 
+    /// Retrieve a valid access token, refreshing if necessary.
     pub async fn get_valid_token(&self) -> Result<String, Error> {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         {
             let token_guard = self.token.read().await;
-            if let Some(token) = &*token_guard {
-                if token.expires_at.map(|exp| exp > now).unwrap_or(true) {
-                    return Ok(token.access_token.clone());
-                }
+            if let Some(token) = &*token_guard
+                && token.expires_at.map(|exp| exp > now).unwrap_or(true)
+            {
+                return Ok(token.access_token.clone());
             }
         }
 
@@ -263,6 +291,7 @@ impl OAuth2Client {
             ))
         }
     }
+    /// Refresh the access token using a refresh token.
     async fn refresh_token_inner(&self, refresh_token: &str) -> Result<String, Error> {
         let refresh_token_obj = RefreshToken::new(refresh_token.to_string());
         let mut refresh_request = self.client.exchange_refresh_token(&refresh_token_obj);
@@ -282,7 +311,7 @@ impl OAuth2Client {
             refresh_token: token_result.refresh_token().map(|t| t.secret().clone()),
             expires_at: token_result
                 .expires_in()
-                .map(|duration| std::time::Instant::now() + duration),
+                .map(|duration| Instant::now() + duration),
         };
 
         let access_token = oauth_token.access_token.clone();
@@ -290,7 +319,8 @@ impl OAuth2Client {
         Ok(access_token)
     }
 
-    pub fn set_token(&self, token: OAuth2Token) -> impl std::future::Future<Output = ()> + Send {
+    /// Set the current token in the cache.
+    pub fn set_token(&self, token: OAuth2Token) -> impl Future<Output = ()> + Send {
         let token_arc = self.token.clone();
         async move {
             *token_arc.write().await = Some(token);
@@ -299,20 +329,27 @@ impl OAuth2Client {
 }
 
 #[derive(Debug, Deserialize)]
+/// Query parameters provided to the OAuth callback endpoint.
 struct CallbackQuery {
+    /// Authorization code returned by the provider.
     code: String,
+    /// CSRF state value returned by the provider.
     state: String,
 }
 
+/// Minimal HTTP callback server for OAuth redirects.
 pub struct OAuth2CallbackServer {
+    /// Port to bind the callback server on.
     port: u16,
 }
 
 impl OAuth2CallbackServer {
+    /// Create a new callback server bound to the provided port.
     pub fn new(port: u16) -> Self {
         Self { port }
     }
 
+    /// Wait for the OAuth redirect callback and return (code, state).
     pub async fn wait_for_callback(&self) -> Result<(String, String), Error> {
         let (tx, rx) = oneshot::channel::<(String, String)>();
         let tx = Arc::new(Mutex::new(Some(tx)));
@@ -323,7 +360,7 @@ impl OAuth2CallbackServer {
                 let tx = tx.clone();
                 async move {
                     if let Some(sender) = tx.lock().await.take() {
-                        let _ = sender.send((params.code, params.state));
+                        sender.send((params.code, params.state)).ok();
                     }
                     Html(SUCCESS_HTML)
                 }
@@ -333,14 +370,14 @@ impl OAuth2CallbackServer {
         let app = Router::new().route("/callback", get(callback_handler));
 
         let addr = format!("127.0.0.1:{}", self.port);
-        let listener = tokio::net::TcpListener::bind(&addr)
+        let listener = TcpListener::bind(&addr)
             .await
             .map_err(|e| Error::TransportError(format!("Failed to bind to {addr}: {e}")))?;
 
         let server = axum::serve(listener, app);
 
         let server_handle = tokio::spawn(async move {
-            let _ = server.await;
+            server.await.ok();
         });
 
         let result = rx.await.map_err(|_| {
@@ -353,6 +390,7 @@ impl OAuth2CallbackServer {
     }
 }
 
+/// HTML returned to the browser after a successful OAuth callback.
 const SUCCESS_HTML: &str = r#"<!DOCTYPE html>
 <html>
 <head>

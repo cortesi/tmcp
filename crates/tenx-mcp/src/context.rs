@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use tokio::sync::broadcast;
 
 use crate::{
@@ -6,8 +8,6 @@ use crate::{
     request_handler::{RequestHandler, TransportSink},
     schema::{self},
 };
-
-use async_trait::async_trait;
 
 /// Context provided to ClientConnection implementations for interacting with the server
 ///
@@ -53,9 +53,9 @@ impl ClientCtx {
     }
 
     /// Send a request to the server and wait for response
-    async fn request<T>(&mut self, request: schema::ClientRequest) -> Result<T>
+    async fn request<T>(&self, request: schema::ClientRequest) -> Result<T>
     where
-        T: serde::de::DeserializeOwned,
+        T: DeserializeOwned,
     {
         self.request_handler.request(request).await
     }
@@ -248,9 +248,9 @@ impl ServerCtx {
     }
 
     /// Send a request to the client and wait for response
-    async fn request<T>(&mut self, request: schema::ServerRequest) -> Result<T>
+    async fn request<T>(&self, request: schema::ServerRequest) -> Result<T>
     where
-        T: serde::de::DeserializeOwned,
+        T: DeserializeOwned,
     {
         self.request_handler.request(request).await
     }

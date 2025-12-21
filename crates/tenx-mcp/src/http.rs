@@ -2,7 +2,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -14,15 +14,17 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::post,
+    routing::{get, post},
 };
 use dashmap::DashMap;
 use eventsource_stream::Eventsource;
 use futures::{Sink, Stream, StreamExt, channel::mpsc};
 use reqwest::Client as HttpClient;
 use tokio::{
-    sync::{Mutex, RwLock},
+    net::TcpListener,
+    sync::{Mutex, RwLock, oneshot},
     task::JoinHandle,
+    time::{sleep, timeout},
 };
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
@@ -36,52 +38,76 @@ use crate::{
     transport::{Transport, TransportStream},
 };
 
+/// MCP protocol version advertised for HTTP transport.
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// Default HTTP client timeout for transport requests.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Session information for HTTP transport
 #[derive(Debug, Clone)]
 pub struct HttpSession {
-    pub last_activity: Arc<RwLock<std::time::Instant>>,
+    /// Timestamp of the last observed activity for the session.
+    pub last_activity: Arc<RwLock<Instant>>,
+    /// Sender used to forward JSON-RPC messages to the session.
     pub sender: mpsc::UnboundedSender<JSONRPCMessage>,
+    /// Receiver used to read JSON-RPC messages for the session.
     pub receiver: Arc<Mutex<mpsc::UnboundedReceiver<JSONRPCMessage>>>,
 }
 
 /// HTTP server state
 #[derive(Clone)]
 struct HttpServerState {
+    /// Active HTTP sessions keyed by session id.
     sessions: Arc<DashMap<String, HttpSession>>,
+    /// Incoming JSON-RPC messages forwarded to the server.
     incoming_tx: mpsc::UnboundedSender<(JSONRPCMessage, String)>,
+    /// Cancellation token for server shutdown.
     shutdown: CancellationToken,
 }
 
 /// HTTP client transport
 #[doc(hidden)]
 pub struct HttpClientTransport {
+    /// Endpoint URL for HTTP transport.
     endpoint: String,
+    /// HTTP client used to send requests.
     client: HttpClient,
+    /// Session identifier returned by the server.
     session_id: Option<String>,
+    /// Sender half for outbound JSON-RPC messages.
     sender: Option<mpsc::UnboundedSender<JSONRPCMessage>>,
+    /// Receiver half for inbound JSON-RPC messages.
     receiver: Option<mpsc::UnboundedReceiver<JSONRPCMessage>>,
+    /// Task handle for the SSE receive loop.
     sse_handle: Option<JoinHandle<()>>,
+    /// OAuth client for attaching bearer tokens.
     oauth_client: Option<Arc<OAuth2Client>>,
 }
 
 /// HTTP server transport
 #[doc(hidden)]
 pub struct HttpServerTransport {
+    /// Address to bind the HTTP server on.
     pub bind_addr: String,
+    /// Router configured with transport endpoints.
     router: Option<Router>,
+    /// Shared server state across handlers.
     state: Option<HttpServerState>,
+    /// Running server task handle.
     server_handle: Option<JoinHandle<Result<()>>>,
+    /// Receiver for incoming JSON-RPC messages.
     incoming_rx: Option<mpsc::UnboundedReceiver<(JSONRPCMessage, String)>>,
+    /// Shutdown token used to signal server termination.
     shutdown_token: Option<CancellationToken>,
 }
 
 /// Stream wrapper for HTTP transport
 struct HttpTransportStream {
+    /// Sender for outgoing JSON-RPC messages.
     sender: mpsc::UnboundedSender<JSONRPCMessage>,
+    /// Receiver for incoming JSON-RPC messages.
     receiver: mpsc::UnboundedReceiver<JSONRPCMessage>,
+    /// Join handle for the background HTTP task.
     _http_task: JoinHandle<()>,
 }
 
@@ -92,7 +118,85 @@ impl Drop for HttpTransportStream {
     }
 }
 
+/// Capture a session id from response headers for initialize requests.
+fn update_session_id(is_initialize: bool, headers: &HeaderMap, session_id: &mut Option<String>) {
+    if !is_initialize {
+        return;
+    }
+
+    let Some(sid) = headers.get("Mcp-Session-Id") else {
+        return;
+    };
+
+    let Ok(sid_str) = sid.to_str() else {
+        return;
+    };
+
+    *session_id = Some(sid_str.to_string());
+    debug!("Got session ID: {}", sid_str);
+}
+
+/// Return true if the message expects a JSON-RPC response body.
+fn expects_response(msg: &JSONRPCMessage) -> bool {
+    matches!(msg, JSONRPCMessage::Request(_))
+}
+
+/// Log non-success HTTP responses and return whether processing should continue.
+fn validate_status(status: reqwest::StatusCode) -> bool {
+    if status.is_success() {
+        true
+    } else {
+        error!("HTTP request failed with status: {}", status);
+        false
+    }
+}
+
+/// Parse a JSON-RPC response and forward it over the channel.
+async fn forward_response(
+    response: reqwest::Response,
+    sender: &mpsc::UnboundedSender<JSONRPCMessage>,
+) {
+    match response.json::<JSONRPCMessage>().await {
+        Ok(response_msg) => {
+            debug!("HTTP client received response: {:?}", response_msg);
+            if let Err(e) = sender.unbounded_send(response_msg) {
+                error!("Failed to forward response: {}", e);
+            }
+        }
+        Err(e) => {
+            error!("Failed to parse response: {}", e);
+        }
+    }
+}
+
+/// Handle an HTTP response for a single outbound JSON-RPC message.
+async fn handle_http_response(
+    msg: &JSONRPCMessage,
+    response: reqwest::Response,
+    sender: &mpsc::UnboundedSender<JSONRPCMessage>,
+) {
+    if !validate_status(response.status()) {
+        return;
+    }
+
+    if !expects_response(msg) {
+        return;
+    }
+
+    forward_response(response, sender).await;
+}
+
+impl Drop for HttpClientTransport {
+    fn drop(&mut self) {
+        // Abort any running SSE handle
+        if let Some(handle) = self.sse_handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 impl HttpClientTransport {
+    /// Create a new HTTP client transport for the provided endpoint.
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
@@ -108,22 +212,12 @@ impl HttpClientTransport {
         }
     }
 
+    /// Attach an OAuth client used to fetch bearer tokens for requests.
     pub fn with_oauth(mut self, oauth_client: Arc<OAuth2Client>) -> Self {
         self.oauth_client = Some(oauth_client);
         self
     }
-}
 
-impl Drop for HttpClientTransport {
-    fn drop(&mut self) {
-        // Abort any running SSE handle
-        if let Some(handle) = self.sse_handle.take() {
-            handle.abort();
-        }
-    }
-}
-
-impl HttpClientTransport {
     /// Connect to SSE stream for receiving server messages
     async fn connect_sse(&mut self) -> Result<()> {
         let mut headers = HeaderMap::new();
@@ -183,10 +277,10 @@ impl HttpClientTransport {
             while let Some(event) = stream.next().await {
                 match event {
                     Ok(event) => {
-                        if let Ok(msg) = serde_json::from_str::<JSONRPCMessage>(&event.data) {
-                            if sender.unbounded_send(msg).is_err() {
-                                break;
-                            }
+                        if let Ok(msg) = serde_json::from_str::<JSONRPCMessage>(&event.data)
+                            && sender.unbounded_send(msg).is_err()
+                        {
+                            break;
                         }
                     }
                     Err(e) => {
@@ -231,7 +325,7 @@ impl Transport for HttpClientTransport {
         let oauth_client = self.oauth_client.clone();
 
         let (http_tx, mut http_rx) = mpsc::unbounded::<JSONRPCMessage>();
-        let sender_clone = sender.clone();
+        let sender_clone = sender;
 
         let http_task = tokio::spawn(async move {
             while let Some(msg) = http_rx.next().await {
@@ -280,56 +374,8 @@ impl Transport for HttpClientTransport {
                 {
                     Ok(response) => {
                         debug!("HTTP response status: {}", response.status());
-
-                        // Handle session ID from initialization
-                        if is_initialize {
-                            if let Some(sid) = response.headers().get("Mcp-Session-Id") {
-                                if let Ok(sid_str) = sid.to_str() {
-                                    session_id = Some(sid_str.to_string());
-                                    debug!("Got session ID: {}", sid_str);
-                                }
-                            }
-                        }
-
-                        // Handle response based on message type
-                        match &msg {
-                            JSONRPCMessage::Request(_) => {
-                                // For requests, we expect a response
-                                if response.status().is_success() {
-                                    match response.json::<JSONRPCMessage>().await {
-                                        Ok(response_msg) => {
-                                            debug!(
-                                                "HTTP client received response: {:?}",
-                                                response_msg
-                                            );
-                                            if let Err(e) =
-                                                sender_clone.unbounded_send(response_msg)
-                                            {
-                                                error!("Failed to forward response: {}", e);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!("Failed to parse response: {}", e);
-                                        }
-                                    }
-                                } else {
-                                    error!(
-                                        "HTTP request failed with status: {}",
-                                        response.status()
-                                    );
-                                }
-                            }
-                            JSONRPCMessage::Notification(_) | JSONRPCMessage::Response(_) => {
-                                // For notifications and responses, we don't expect a response
-                                if !response.status().is_success() {
-                                    error!(
-                                        "HTTP request failed with status: {}",
-                                        response.status()
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
+                        update_session_id(is_initialize, response.headers(), &mut session_id);
+                        handle_http_response(&msg, response, &sender_clone).await;
                     }
                     Err(e) => {
                         error!("Failed to send HTTP request to {}: {:?}", endpoint, e);
@@ -351,6 +397,7 @@ impl Transport for HttpClientTransport {
 }
 
 impl HttpServerTransport {
+    /// Create a new HTTP server transport bound to the provided address.
     pub fn new(bind_addr: impl Into<String>) -> Self {
         Self {
             bind_addr: bind_addr.into(),
@@ -383,17 +430,15 @@ impl HttpServerTransport {
 
         let router = Router::new()
             .route("/", post(handle_post))
-            .route("/", axum::routing::get(handle_get))
+            .route("/", get(handle_get))
             .layer(CorsLayer::permissive())
             .with_state(state.clone());
 
         self.router = Some(router.clone());
 
-        let listener = tokio::net::TcpListener::bind(&self.bind_addr)
-            .await
-            .map_err(|e| {
-                Error::Transport(format!("Failed to bind to {}: {}", self.bind_addr, e))
-            })?;
+        let listener = TcpListener::bind(&self.bind_addr).await.map_err(|e| {
+            Error::Transport(format!("Failed to bind to {}: {}", self.bind_addr, e))
+        })?;
 
         // Update bind_addr with the actual address (in case port 0 was used)
         self.bind_addr = listener
@@ -405,7 +450,7 @@ impl HttpServerTransport {
         let shutdown = state.shutdown.clone();
 
         // Create a channel to signal when the server is actually ready
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
 
         // Clone for the ready signal
         let bind_addr_clone = bind_addr.clone();
@@ -415,7 +460,7 @@ impl HttpServerTransport {
 
             // Signal readiness immediately - axum::serve will start accepting connections
             // as soon as it's called with the already-bound listener
-            let _ = ready_tx.send(());
+            ready_tx.send(()).ok();
 
             axum::serve(listener, router)
                 .with_graceful_shutdown(async move {
@@ -433,7 +478,7 @@ impl HttpServerTransport {
             .map_err(|_| Error::Transport("Server failed to start".into()))?;
 
         // Give a small delay to ensure axum is fully ready
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
 
         info!("HTTP server ready on {}", bind_addr_clone);
 
@@ -462,8 +507,8 @@ impl Transport for HttpServerTransport {
 
         if let Some(state) = &self.state {
             let session = HttpSession {
-                last_activity: Arc::new(RwLock::new(std::time::Instant::now())),
-                sender: tx.clone(),
+                last_activity: Arc::new(RwLock::new(Instant::now())),
+                sender: tx,
                 receiver: Arc::new(Mutex::new(rx)),
             };
 
@@ -487,9 +532,12 @@ impl Transport for HttpServerTransport {
 
 /// Server-side stream implementation
 struct HttpServerStream {
+    /// Receiver for incoming JSON-RPC messages and session ids.
     incoming_rx: mpsc::UnboundedReceiver<(JSONRPCMessage, String)>,
+    /// Shared server state for routing responses.
     state: Option<HttpServerState>,
     // Track which session sent each request ID
+    /// Map of request ids to originating session ids.
     request_sessions: Arc<DashMap<RequestId, String>>,
 }
 
@@ -523,22 +571,22 @@ impl Sink<JSONRPCMessage> for HttpServerStream {
             match &item {
                 JSONRPCMessage::Response(resp) => {
                     // Route response to the correct session
-                    if let Some((_, session_id)) = self.request_sessions.remove(&resp.id) {
-                        if let Some(session) = state.sessions.get(&session_id) {
-                            let _ = session.sender.unbounded_send(item);
-                        }
+                    if let Some((_, session_id)) = self.request_sessions.remove(&resp.id)
+                        && let Some(session) = state.sessions.get(&session_id)
+                    {
+                        session.sender.unbounded_send(item).ok();
                     }
                 }
                 JSONRPCMessage::Notification(_) => {
                     // Broadcast notifications to all sessions
                     for session in state.sessions.iter() {
-                        let _ = session.sender.unbounded_send(item.clone());
+                        session.sender.unbounded_send(item.clone()).ok();
                     }
                 }
                 _ => {
                     // For other message types, broadcast to all
                     for session in state.sessions.iter() {
-                        let _ = session.sender.unbounded_send(item.clone());
+                        session.sender.unbounded_send(item.clone()).ok();
                     }
                 }
             }
@@ -568,6 +616,7 @@ impl Drop for HttpServerTransport {
 
 // HTTP handlers
 
+/// Handle inbound HTTP POST JSON-RPC messages.
 async fn handle_post(
     State(state): State<HttpServerState>,
     headers: HeaderMap,
@@ -576,10 +625,10 @@ async fn handle_post(
     debug!("HTTP server received POST request: {:?}", message);
 
     // Validate protocol version
-    if let Some(version) = headers.get("MCP-Protocol-Version") {
-        if version != MCP_PROTOCOL_VERSION {
-            return (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response();
-        }
+    if let Some(version) = headers.get("MCP-Protocol-Version")
+        && version != MCP_PROTOCOL_VERSION
+    {
+        return (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response();
     }
 
     let session_id = headers
@@ -593,7 +642,7 @@ async fn handle_post(
         let (tx, rx) = mpsc::unbounded();
 
         let session = HttpSession {
-            last_activity: Arc::new(RwLock::new(std::time::Instant::now())),
+            last_activity: Arc::new(RwLock::new(Instant::now())),
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
         };
@@ -603,14 +652,15 @@ async fn handle_post(
             .insert(new_session_id.clone(), session.clone());
 
         // Forward to server logic
-        let _ = state
+        state
             .incoming_tx
-            .unbounded_send((message, new_session_id.clone()));
+            .unbounded_send((message, new_session_id.clone()))
+            .ok();
 
         // Wait for the actual response from the server with timeout
         let receiver = session.receiver.clone();
 
-        let response = tokio::time::timeout(Duration::from_secs(5), async move {
+        let response = timeout(Duration::from_secs(5), async move {
             let mut receiver = receiver.lock().await;
             receiver.next().await
         })
@@ -650,15 +700,16 @@ async fn handle_post(
 
     // Update last activity
     if let Some(session) = state.sessions.get(&session_id) {
-        *session.last_activity.write().await = std::time::Instant::now();
+        *session.last_activity.write().await = Instant::now();
     }
 
     match &message {
         JSONRPCMessage::Request(_) => {
             // Forward to server logic
-            let _ = state
+            state
                 .incoming_tx
-                .unbounded_send((message, session_id.clone()));
+                .unbounded_send((message, session_id.clone()))
+                .ok();
 
             // Check if client accepts SSE
             let accepts_sse = headers
@@ -697,7 +748,7 @@ async fn handle_post(
                 if let Some(session) = state.sessions.get(&session_id) {
                     let receiver = session.receiver.clone();
 
-                    let response = tokio::time::timeout(
+                    let response = timeout(
                         Duration::from_secs(30), // 30 second timeout for requests
                         async move {
                             let mut receiver = receiver.lock().await;
@@ -720,7 +771,7 @@ async fn handle_post(
         }
         JSONRPCMessage::Response(_) | JSONRPCMessage::Notification(_) => {
             // Forward to server logic
-            let _ = state.incoming_tx.unbounded_send((message, session_id));
+            state.incoming_tx.unbounded_send((message, session_id)).ok();
             StatusCode::ACCEPTED.into_response()
         }
         JSONRPCMessage::BatchRequest(_)
@@ -732,12 +783,13 @@ async fn handle_post(
     }
 }
 
+/// Handle inbound HTTP GET requests for SSE streams.
 async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) -> Response {
     // Validate protocol version
-    if let Some(version) = headers.get("MCP-Protocol-Version") {
-        if version != MCP_PROTOCOL_VERSION {
-            return (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response();
-        }
+    if let Some(version) = headers.get("MCP-Protocol-Version")
+        && version != MCP_PROTOCOL_VERSION
+    {
+        return (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response();
     }
 
     let session_id = headers
@@ -809,8 +861,10 @@ impl TransportStream for HttpTransportStream {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use futures::SinkExt;
+
+    use super::*;
+    use crate::schema::{JSONRPCNotification, Notification};
 
     #[tokio::test]
     async fn test_http_client_transport_creation() {
@@ -829,15 +883,15 @@ mod tests {
         let (tx, rx) = mpsc::unbounded();
 
         let session = HttpSession {
-            last_activity: Arc::new(RwLock::new(std::time::Instant::now())),
+            last_activity: Arc::new(RwLock::new(Instant::now())),
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
         };
 
         // Test that we can update last activity
         let before = *session.last_activity.read().await;
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        *session.last_activity.write().await = std::time::Instant::now();
+        sleep(Duration::from_millis(10)).await;
+        *session.last_activity.write().await = Instant::now();
         let after = *session.last_activity.read().await;
         assert!(after > before);
     }
@@ -860,9 +914,9 @@ mod tests {
         };
 
         // Test sending a message from stream1 to stream2
-        let msg = JSONRPCMessage::Notification(crate::schema::JSONRPCNotification {
+        let msg = JSONRPCMessage::Notification(JSONRPCNotification {
             jsonrpc: "2.0".to_string(),
-            notification: crate::schema::Notification {
+            notification: Notification {
                 method: "test".to_string(),
                 params: None,
             },

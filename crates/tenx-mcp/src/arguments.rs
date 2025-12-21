@@ -1,7 +1,10 @@
-use serde::de::Error as DeError;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Map, Value};
 use std::collections::HashMap;
+
+use serde::{
+    Deserialize, Serialize,
+    de::{DeserializeOwned, Error as DeError},
+};
+use serde_json::{Map, Value};
 
 /// Generic argument map used for passing parameters to tools and prompts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -71,13 +74,13 @@ impl Arguments {
 
 impl From<HashMap<String, Value>> for Arguments {
     fn from(map: HashMap<String, Value>) -> Self {
-        Arguments(map.into_iter().collect())
+        Self(map.into_iter().collect())
     }
 }
 
 impl From<HashMap<String, String>> for Arguments {
     fn from(map: HashMap<String, String>) -> Self {
-        Arguments(
+        Self(
             map.into_iter()
                 .map(|(k, v)| (k, Value::String(v)))
                 .collect(),

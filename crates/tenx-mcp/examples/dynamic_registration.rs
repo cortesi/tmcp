@@ -1,12 +1,15 @@
+//! MCP client example with dynamic OAuth registration.
+
+use std::{error::Error, sync::Arc};
+
 use clap::Parser;
-use std::sync::Arc;
 use tenx_mcp::{
     Client, ServerAPI,
     auth::{
         ClientMetadata, DynamicRegistrationClient, OAuth2CallbackServer, OAuth2Client, OAuth2Config,
     },
 };
-use tracing::{Level, info};
+use tracing::{Level, info, subscriber};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Parser, Debug)]
@@ -16,6 +19,7 @@ use tracing_subscriber::FmtSubscriber;
     about = "MCP client with dynamic OAuth registration",
     long_about = None
 )]
+/// Command-line arguments.
 struct Args {
     /// MCP server endpoint URL
     #[arg(short, long)]
@@ -55,12 +59,12 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     // Set up logging
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let args = Args::parse();
 
@@ -124,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Create metadata for manual registration
                 let metadata = ClientMetadata::new(&args.client_name, &redirect_url)
                     .with_resource(&args.endpoint)
-                    .with_scopes(scopes.clone())
+                    .with_scopes(&scopes)
                     .with_client_uri("https://github.com/your-org/your-client")
                     .with_contacts(vec!["admin@example.com".to_string()])
                     .with_software_info("tenx-mcp-dynamic", env!("CARGO_PKG_VERSION"));

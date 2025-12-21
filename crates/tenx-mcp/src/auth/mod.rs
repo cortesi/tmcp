@@ -93,7 +93,7 @@
 //!     let registration_client = DynamicRegistrationClient::new();
 //!     let metadata = ClientMetadata::new("My Client", "http://localhost:8080/callback")
 //!         .with_resource("https://mcp.example.com")
-//!         .with_scopes(vec!["read".to_string()])
+//!         .with_scopes(&["read".to_string()])
 //!         .with_contacts(vec!["admin@example.com".to_string()]);
 //!
 //!     let response = registration_client
@@ -152,7 +152,9 @@
 //! - OAuth 2.0 Authorization Server Metadata (RFC 8414)
 //! - Model Context Protocol Authorization Specification
 
+/// OAuth 2.0 Dynamic Client Registration support.
 mod dynamic_registration;
+/// OAuth 2.0 client implementation and callback server.
 mod oauth_client;
 
 pub use dynamic_registration::{

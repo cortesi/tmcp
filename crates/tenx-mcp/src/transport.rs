@@ -1,7 +1,13 @@
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use async_trait::async_trait;
 use futures::{Sink, Stream};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, BufReader},
+    io::{AsyncRead, AsyncWrite, BufReader, ReadBuf, Stdin, Stdout, stdin, stdout},
     net::TcpStream,
 };
 use tokio_util::codec::Framed;
@@ -37,18 +43,23 @@ pub trait TransportStream:
 
 /// A duplex wrapper around stdin/stdout for use with codec framing
 pub struct StdioDuplex {
-    reader: BufReader<tokio::io::Stdin>,
-    writer: tokio::io::Stdout,
+    /// Buffered stdin reader.
+    reader: BufReader<Stdin>,
+    /// Stdout writer.
+    writer: Stdout,
 }
 
 /// A generic duplex wrapper for combining separate AsyncRead and AsyncWrite streams
 pub struct GenericDuplex<R, W> {
+    /// Buffered reader half.
     reader: BufReader<R>,
+    /// Writer half.
     writer: W,
 }
 
 impl StdioDuplex {
-    pub fn new(stdin: tokio::io::Stdin, stdout: tokio::io::Stdout) -> Self {
+    /// Create a duplex wrapper for stdin/stdout.
+    pub fn new(stdin: Stdin, stdout: Stdout) -> Self {
         Self {
             reader: BufReader::new(stdin),
             writer: stdout,
@@ -58,35 +69,29 @@ impl StdioDuplex {
 
 impl AsyncRead for StdioDuplex {
     fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.reader).poll_read(cx, buf)
     }
 }
 
 impl AsyncWrite for StdioDuplex {
     fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> std::task::Poll<std::result::Result<usize, std::io::Error>> {
-        std::pin::Pin::new(&mut self.writer).poll_write(cx, buf)
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.writer).poll_write(cx, buf)
     }
 
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
-        std::pin::Pin::new(&mut self.writer).poll_flush(cx)
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.writer).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
-        std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.writer).poll_shutdown(cx)
     }
 }
 
@@ -94,6 +99,7 @@ impl<R, W> GenericDuplex<R, W>
 where
     R: AsyncRead,
 {
+    /// Create a new duplex wrapper from reader and writer halves.
     pub fn new(reader: R, writer: W) -> Self {
         Self {
             reader: BufReader::new(reader),
@@ -108,11 +114,11 @@ where
     W: Unpin,
 {
     fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.reader).poll_read(cx, buf)
     }
 }
 
@@ -122,25 +128,19 @@ where
     W: AsyncWrite + Unpin,
 {
     fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> std::task::Poll<std::result::Result<usize, std::io::Error>> {
-        std::pin::Pin::new(&mut self.writer).poll_write(cx, buf)
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.writer).poll_write(cx, buf)
     }
 
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
-        std::pin::Pin::new(&mut self.writer).poll_flush(cx)
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.writer).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
-        std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.writer).poll_shutdown(cx)
     }
 }
 
@@ -151,6 +151,7 @@ impl<T> TransportStream for Framed<T, JsonRpcCodec> where T: AsyncRead + AsyncWr
 pub struct StdioTransport;
 
 impl StdioTransport {
+    /// Create a new stdio transport instance.
     pub fn new() -> Self {
         Self
     }
@@ -170,8 +171,8 @@ impl Transport for StdioTransport {
     }
 
     fn framed(self: Box<Self>) -> Result<Box<dyn TransportStream>> {
-        let stdin = tokio::io::stdin();
-        let stdout = tokio::io::stdout();
+        let stdin = stdin();
+        let stdout = stdout();
         let duplex = StdioDuplex::new(stdin, stdout);
         let framed = Framed::new(duplex, JsonRpcCodec::new());
         Ok(Box::new(framed))
@@ -184,11 +185,14 @@ impl Transport for StdioTransport {
 
 /// TCP client transport for outgoing network connections
 pub struct TcpClientTransport {
+    /// Remote address to connect to.
     addr: String,
+    /// Connected TCP stream, once established.
     stream: Option<TcpStream>,
 }
 
 impl TcpClientTransport {
+    /// Create a new TCP client transport for the provided address.
     pub fn new(addr: impl Into<String>) -> Self {
         Self {
             addr: addr.into(),
@@ -199,10 +203,12 @@ impl TcpClientTransport {
 
 /// Wrapper to turn any AsyncRead + AsyncWrite stream into a Transport
 pub struct StreamTransport<S> {
+    /// Underlying stream used for framed JSON-RPC I/O.
     stream: Option<S>,
 }
 
 impl<S> StreamTransport<S> {
+    /// Create a transport over an existing stream.
     pub fn new(stream: S) -> Self {
         Self {
             stream: Some(stream),
@@ -272,9 +278,10 @@ impl Transport for TcpStream {
 pub use test_transport::TestTransport;
 
 #[cfg(test)]
-pub(crate) mod test_transport {
+pub mod test_transport {
     use std::{
         pin::Pin,
+        result::Result as StdResult,
         task::{Context, Poll},
     };
 
@@ -294,12 +301,12 @@ pub(crate) mod test_transport {
             let (tx1, rx1) = mpsc::unbounded_channel();
             let (tx2, rx2) = mpsc::unbounded_channel();
 
-            let transport1 = Box::new(TestTransport {
+            let transport1 = Box::new(Self {
                 sender: tx2,
                 receiver: rx1,
             });
 
-            let transport2 = Box::new(TestTransport {
+            let transport2 = Box::new(Self {
                 sender: tx1,
                 receiver: rx2,
             });
@@ -345,28 +352,25 @@ pub(crate) mod test_transport {
         fn poll_ready(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
+        ) -> Poll<StdResult<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
 
-        fn start_send(
-            self: Pin<&mut Self>,
-            item: JSONRPCMessage,
-        ) -> std::result::Result<(), Self::Error> {
+        fn start_send(self: Pin<&mut Self>, item: JSONRPCMessage) -> StdResult<(), Self::Error> {
             self.sender.send(item).map_err(|_| Error::ConnectionClosed)
         }
 
         fn poll_flush(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
+        ) -> Poll<StdResult<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
 
         fn poll_close(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
+        ) -> Poll<StdResult<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -376,6 +380,8 @@ pub(crate) mod test_transport {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::duplex;
+
     use super::*;
 
     #[tokio::test]
@@ -404,8 +410,8 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         // Create two pairs of duplex streams
-        let (reader1, writer1) = tokio::io::duplex(64);
-        let (reader2, writer2) = tokio::io::duplex(64);
+        let (reader1, writer1) = duplex(64);
+        let (reader2, writer2) = duplex(64);
 
         // Create GenericDuplex instances that cross-connect
         let mut duplex1 = GenericDuplex::new(reader1, writer2);
@@ -433,7 +439,7 @@ mod tests {
     #[tokio::test]
     async fn test_stream_transport_with_generic_duplex() {
         // Create duplex streams for testing
-        let (reader, writer) = tokio::io::duplex(1024);
+        let (reader, writer) = duplex(1024);
         let duplex = GenericDuplex::new(reader, writer);
 
         // Create StreamTransport

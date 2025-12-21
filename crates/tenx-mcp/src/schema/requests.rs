@@ -1,30 +1,39 @@
-use super::*;
-use crate::Arguments;
-use crate::macros::with_meta;
-use crate::request_handler::RequestMethod;
+#![allow(missing_docs)]
+
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+
+use super::*;
+use crate::{Arguments, macros::with_meta, request_handler::RequestMethod};
 
 // Messages sent from the client to the server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method")]
+/// Requests issued by the client.
 pub(crate) enum ClientRequest {
     #[serde(rename = "ping")]
+    /// Ping the server.
     Ping,
     #[serde(rename = "initialize")]
+    /// Initialize a new session with the server.
     Initialize {
         /// The latest version of the Model Context Protocol that the client
         /// supports. The client MAY decide to support older versions as well.
         #[serde(rename = "protocolVersion")]
         protocol_version: String,
+        /// Client capabilities advertised to the server.
         capabilities: ClientCapabilities,
         #[serde(rename = "clientInfo")]
+        /// Client implementation information.
         client_info: Implementation,
     },
     #[serde(rename = "completion/complete")]
+    /// Request a completion result.
     Complete {
         #[serde(rename = "ref")]
+        /// Reference for the completion request.
         reference: Reference,
         /// The argument's information
         argument: ArgumentInfo,
@@ -33,12 +42,14 @@ pub(crate) enum ClientRequest {
         context: Option<CompleteContext>,
     },
     #[serde(rename = "logging/setLevel")]
+    /// Set the server logging level.
     SetLevel {
         /// The level of logging that the client wants to receive from the
         /// server.
         level: LoggingLevel,
     },
     #[serde(rename = "prompts/get")]
+    /// Get a prompt or prompt template by name.
     GetPrompt {
         /// The name of the prompt or prompt template.
         name: String,
@@ -47,6 +58,7 @@ pub(crate) enum ClientRequest {
         arguments: Option<Arguments>,
     },
     #[serde(rename = "prompts/list")]
+    /// List available prompts.
     ListPrompts {
         /// An opaque token representing the current pagination position.
         /// If provided, the server should return results starting after this cursor.
@@ -54,6 +66,7 @@ pub(crate) enum ClientRequest {
         cursor: Option<Cursor>,
     },
     #[serde(rename = "resources/list")]
+    /// List available resources.
     ListResources {
         /// An opaque token representing the current pagination position.
         /// If provided, the server should return results starting after this cursor.
@@ -61,6 +74,7 @@ pub(crate) enum ClientRequest {
         cursor: Option<Cursor>,
     },
     #[serde(rename = "resources/templates/list")]
+    /// List available resource templates.
     ListResourceTemplates {
         /// An opaque token representing the current pagination position.
         /// If provided, the server should return results starting after this cursor.
@@ -68,27 +82,34 @@ pub(crate) enum ClientRequest {
         cursor: Option<Cursor>,
     },
     #[serde(rename = "resources/read")]
+    /// Read a resource by URI.
     ReadResource {
         /// The URI of the resource to read.
         uri: String,
     },
     #[serde(rename = "resources/subscribe")]
+    /// Subscribe to resource updates.
     Subscribe {
         /// The URI of the resource to subscribe to.
         uri: String,
     },
     #[serde(rename = "resources/unsubscribe")]
+    /// Unsubscribe from resource updates.
     Unsubscribe {
         /// The URI of the resource to unsubscribe from.
         uri: String,
     },
     #[serde(rename = "tools/call")]
+    /// Call a tool by name.
     CallTool {
+        /// Tool name to invoke.
         name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        /// Arguments for the tool call.
         arguments: Option<Arguments>,
     },
     #[serde(rename = "tools/list")]
+    /// List available tools.
     ListTools {
         /// An opaque token representing the current pagination position.
         /// If provided, the server should return results starting after this cursor.
@@ -101,19 +122,19 @@ impl ClientRequest {
     /// Get the method name for this request
     pub fn method(&self) -> &'static str {
         match self {
-            ClientRequest::Ping => "ping",
-            ClientRequest::Initialize { .. } => "initialize",
-            ClientRequest::Complete { .. } => "completion/complete",
-            ClientRequest::SetLevel { .. } => "logging/setLevel",
-            ClientRequest::GetPrompt { .. } => "prompts/get",
-            ClientRequest::ListPrompts { .. } => "prompts/list",
-            ClientRequest::ListResources { .. } => "resources/list",
-            ClientRequest::ListResourceTemplates { .. } => "resources/templates/list",
-            ClientRequest::ReadResource { .. } => "resources/read",
-            ClientRequest::Subscribe { .. } => "resources/subscribe",
-            ClientRequest::Unsubscribe { .. } => "resources/unsubscribe",
-            ClientRequest::CallTool { .. } => "tools/call",
-            ClientRequest::ListTools { .. } => "tools/list",
+            Self::Ping => "ping",
+            Self::Initialize { .. } => "initialize",
+            Self::Complete { .. } => "completion/complete",
+            Self::SetLevel { .. } => "logging/setLevel",
+            Self::GetPrompt { .. } => "prompts/get",
+            Self::ListPrompts { .. } => "prompts/list",
+            Self::ListResources { .. } => "resources/list",
+            Self::ListResourceTemplates { .. } => "resources/templates/list",
+            Self::ReadResource { .. } => "resources/read",
+            Self::Subscribe { .. } => "resources/subscribe",
+            Self::Unsubscribe { .. } => "resources/unsubscribe",
+            Self::CallTool { .. } => "tools/call",
+            Self::ListTools { .. } => "tools/list",
         }
     }
 }
@@ -204,10 +225,10 @@ impl ServerRequest {
     /// Get the method name for this request
     pub fn method(&self) -> &'static str {
         match self {
-            ServerRequest::Ping => "ping",
-            ServerRequest::CreateMessage { .. } => "sampling/createMessage",
-            ServerRequest::ListRoots => "roots/list",
-            ServerRequest::Elicit { .. } => "elicitation/create",
+            Self::Ping => "ping",
+            Self::CreateMessage { .. } => "sampling/createMessage",
+            Self::ListRoots => "roots/list",
+            Self::Elicit { .. } => "elicitation/create",
         }
     }
 }
@@ -300,8 +321,9 @@ pub enum ServerNotification {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use schemars::JsonSchema;
+
+    use super::*;
 
     #[derive(JsonSchema, Serialize)]
     struct TestInput {

@@ -1,10 +1,16 @@
-use super::*;
-use crate::Result;
-use crate::macros::{with_basename, with_meta};
-use base64::Engine;
+#![allow(missing_docs)]
+
+use std::{fs, path::Path};
+
+use base64::{Engine, engine::general_purpose::STANDARD as Base64Standard};
+use mime_guess::mime::{APPLICATION, TEXT};
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
+
+use super::*;
+use crate::{
+    Result,
+    macros::{with_basename, with_meta},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ListResourcesResult {
@@ -282,7 +288,7 @@ impl ResourceContents {
         // Determine if the content should be treated as text or binary
         // Based on the MIME type's primary type
         match mime_type.type_() {
-            mime_guess::mime::TEXT | mime_guess::mime::APPLICATION => {
+            TEXT | APPLICATION => {
                 // Try to read as UTF-8 text
                 match String::from_utf8(contents.clone()) {
                     Ok(text) => {
@@ -293,7 +299,7 @@ impl ResourceContents {
                             || mime_type.subtype() == "x-yaml"
                             || mime_type.subtype() == "yaml";
 
-                        if mime_type.type_() == mime_guess::mime::TEXT || is_text_app {
+                        if mime_type.type_() == TEXT || is_text_app {
                             Ok(Self::Text(TextResourceContents {
                                 uri: uri_string,
                                 mime_type: Some(mime_type.to_string()),
@@ -305,8 +311,7 @@ impl ResourceContents {
                             Ok(Self::Blob(BlobResourceContents {
                                 uri: uri_string,
                                 mime_type: Some(mime_type.to_string()),
-                                blob: base64::engine::general_purpose::STANDARD
-                                    .encode(text.as_bytes()),
+                                blob: Base64Standard.encode(text.as_bytes()),
                                 _meta: None,
                             }))
                         }
@@ -316,7 +321,7 @@ impl ResourceContents {
                         Ok(Self::Blob(BlobResourceContents {
                             uri: uri_string,
                             mime_type: Some(mime_type.to_string()),
-                            blob: base64::engine::general_purpose::STANDARD.encode(&contents),
+                            blob: Base64Standard.encode(&contents),
                             _meta: None,
                         }))
                     }
@@ -327,7 +332,7 @@ impl ResourceContents {
                 Ok(Self::Blob(BlobResourceContents {
                     uri: uri_string,
                     mime_type: Some(mime_type.to_string()),
-                    blob: base64::engine::general_purpose::STANDARD.encode(&contents),
+                    blob: Base64Standard.encode(&contents),
                     _meta: None,
                 }))
             }

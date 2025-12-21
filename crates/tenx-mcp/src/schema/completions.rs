@@ -1,5 +1,6 @@
-use crate::macros::with_meta;
 use serde::{Deserialize, Serialize};
+
+use crate::macros::with_meta;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArgumentInfo {

@@ -16,7 +16,9 @@
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tenx_mcp::{Result, Server, ServerCtx, mcp_server, schema::*, schemars, tool};
+use tokio::signal::ctrl_c;
 use tracing::info;
+use tracing_subscriber::fmt;
 
 /// Echo tool input parameters
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -44,12 +46,15 @@ impl BasicServer {
 #[derive(Parser)]
 #[command(name = "basic_server")]
 #[command(about = "Basic MCP server with echo tool", long_about = None)]
+/// CLI options for the basic server example.
 struct Cli {
     #[command(subcommand)]
+    /// Optional subcommand selecting server mode.
     command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
+/// Supported runtime modes for the server.
 enum Commands {
     /// Run server in TCP mode
     Tcp {
@@ -90,7 +95,7 @@ async fn main() -> Result<()> {
         }
         Commands::Tcp { host, port } => {
             // Initialize logging for network modes
-            tracing_subscriber::fmt::init();
+            fmt::init();
 
             let addr = format!("{host}:{port}");
             info!("Starting TCP MCP server on {}", addr);
@@ -102,7 +107,7 @@ async fn main() -> Result<()> {
         }
         Commands::Http { host, port } => {
             // Initialize logging for network modes
-            tracing_subscriber::fmt::init();
+            fmt::init();
 
             let addr = format!("{host}:{port}");
             info!("Starting HTTP MCP server on {}", addr);
@@ -113,7 +118,7 @@ async fn main() -> Result<()> {
                 .await?;
 
             // Wait for Ctrl+C signal
-            tokio::signal::ctrl_c().await?;
+            ctrl_c().await?;
             info!("Shutting down HTTP server");
 
             // Gracefully stop the server

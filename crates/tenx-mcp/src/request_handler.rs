@@ -1,9 +1,15 @@
+use std::{
+    collections::HashMap,
+    result::Result as StdResult,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
 use dashmap::DashMap;
-use futures::SinkExt;
-use futures::stream::SplitSink;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use futures::{SinkExt, stream::SplitSink};
+use serde::de::DeserializeOwned;
 use tokio::sync::{Mutex, oneshot};
 
 use crate::{
@@ -18,16 +24,19 @@ use crate::{
 
 /// Type for handling either a response or error from JSON-RPC
 #[derive(Debug)]
-pub(crate) enum ResponseOrError {
+pub enum ResponseOrError {
+    /// Successful JSON-RPC response payload.
     Response(JSONRPCResponse),
+    /// JSON-RPC error payload.
     Error(JSONRPCError),
 }
 
-pub(crate) type TransportSink = Arc<Mutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
+/// Transport sink type used by the request handler.
+pub type TransportSink = Arc<Mutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
 
 /// Common request/response handling functionality shared between Client and ServerCtx
 #[derive(Clone)]
-pub(crate) struct RequestHandler {
+pub struct RequestHandler {
     /// Transport sink for sending messages
     transport_tx: Option<TransportSink>,
     /// Pending requests waiting for responses
@@ -55,10 +64,10 @@ impl RequestHandler {
     }
 
     /// Send a request and wait for response
-    pub async fn request<Req, Res>(&mut self, request: Req) -> Result<Res>
+    pub async fn request<Req, Res>(&self, request: Req) -> Result<Res>
     where
         Req: serde::Serialize + RequestMethod,
-        Res: serde::de::DeserializeOwned,
+        Res: DeserializeOwned,
     {
         let id = self.next_request_id().await;
         let (tx, rx) = oneshot::channel();
@@ -72,22 +81,7 @@ impl RequestHandler {
         );
 
         // Create the JSON-RPC request
-        let jsonrpc_request = JSONRPCRequest {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: RequestId::String(id.clone()),
-            request: Request {
-                method: request.method().to_string(),
-                params: Some(RequestParams {
-                    _meta: None,
-                    other: serde_json::to_value(&request)?
-                        .as_object()
-                        .unwrap_or(&serde_json::Map::new())
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                }),
-            },
-        };
+        let jsonrpc_request = Self::build_request(&id, &request)?;
 
         tracing::info!(
             "Sending request with ID: {} method: {}",
@@ -98,56 +92,11 @@ impl RequestHandler {
             .await?;
 
         // Wait for response
-        match rx.await {
-            Ok(response_or_error) => {
-                match response_or_error {
-                    ResponseOrError::Response(response) => {
-                        // Create a combined Value from the result's fields
-                        let mut result_value = serde_json::Map::new();
-
-                        // Add metadata if present
-                        if let Some(meta) = response.result._meta {
-                            result_value.insert("_meta".to_string(), serde_json::to_value(meta)?);
-                        }
-
-                        // Add all other fields
-                        for (key, value) in response.result.other {
-                            result_value.insert(key, value);
-                        }
-
-                        // Deserialize directly from the combined map
-                        serde_json::from_value(serde_json::Value::Object(result_value)).map_err(
-                            |e| Error::Protocol(format!("Failed to deserialize response: {e}")),
-                        )
-                    }
-                    ResponseOrError::Error(error) => {
-                        // Map JSON-RPC errors to appropriate Error variants
-                        match error.error.code {
-                            METHOD_NOT_FOUND => Err(Error::MethodNotFound(error.error.message)),
-                            INVALID_PARAMS => Err(Error::InvalidParams(format!(
-                                "{}: {}",
-                                request.method(),
-                                error.error.message
-                            ))),
-                            _ => Err(Error::Protocol(format!(
-                                "JSON-RPC error {}: {}",
-                                error.error.code, error.error.message
-                            ))),
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!("Response channel closed for request {}: {}", id, e);
-                // Remove the pending request
-                self.pending_requests.remove(&id);
-                Err(Error::Protocol("Response channel closed".to_string()))
-            }
-        }
+        Self::process_response(rx.await, &id, request.method(), &self.pending_requests)
     }
 
     /// Send a message through the transport
-    pub async fn send_message(&mut self, message: JSONRPCMessage) -> Result<()> {
+    pub async fn send_message(&self, message: JSONRPCMessage) -> Result<()> {
         if let Some(transport_tx) = &self.transport_tx {
             let mut tx = transport_tx.lock().await;
             tx.send(message).await?;
@@ -159,7 +108,7 @@ impl RequestHandler {
 
     /// Send a notification
     pub async fn send_notification(
-        &mut self,
+        &self,
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<()> {
@@ -190,35 +139,124 @@ impl RequestHandler {
         format!("{}-{}", self.id_prefix, id)
     }
 
+    /// Build a JSON-RPC request message from a typed request.
+    fn build_request<Req>(id: &str, request: &Req) -> Result<JSONRPCRequest>
+    where
+        Req: serde::Serialize + RequestMethod,
+    {
+        Ok(JSONRPCRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: RequestId::String(id.to_string()),
+            request: Request {
+                method: request.method().to_string(),
+                params: Some(RequestParams {
+                    _meta: None,
+                    other: serde_json::to_value(request)?
+                        .as_object()
+                        .unwrap_or(&serde_json::Map::new())
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                }),
+            },
+        })
+    }
+
+    /// Decode a response payload into the expected result type.
+    fn decode_response<Res>(method: &str, response: ResponseOrError) -> Result<Res>
+    where
+        Res: DeserializeOwned,
+    {
+        match response {
+            ResponseOrError::Response(response) => {
+                let mut result_value = serde_json::Map::new();
+
+                if let Some(meta) = response.result._meta {
+                    result_value.insert("_meta".to_string(), serde_json::to_value(meta)?);
+                }
+
+                for (key, value) in response.result.other {
+                    result_value.insert(key, value);
+                }
+
+                serde_json::from_value(serde_json::Value::Object(result_value))
+                    .map_err(|e| Error::Protocol(format!("Failed to deserialize response: {e}")))
+            }
+            ResponseOrError::Error(error) => match error.error.code {
+                METHOD_NOT_FOUND => Err(Error::MethodNotFound(error.error.message)),
+                INVALID_PARAMS => Err(Error::InvalidParams(format!(
+                    "{}: {}",
+                    method, error.error.message
+                ))),
+                _ => Err(Error::Protocol(format!(
+                    "JSON-RPC error {}: {}",
+                    error.error.code, error.error.message
+                ))),
+            },
+        }
+    }
+
+    /// Wait for a response channel and convert it into the expected result.
+    fn process_response<Res>(
+        response: StdResult<ResponseOrError, oneshot::error::RecvError>,
+        id: &str,
+        method: &str,
+        pending_requests: &DashMap<String, oneshot::Sender<ResponseOrError>>,
+    ) -> Result<Res>
+    where
+        Res: DeserializeOwned,
+    {
+        match response {
+            Ok(response_or_error) => Self::decode_response(method, response_or_error),
+            Err(e) => {
+                tracing::error!("Response channel closed for request {}: {}", id, e);
+                pending_requests.remove(id);
+                Err(Error::Protocol("Response channel closed".to_string()))
+            }
+        }
+    }
+
     /// Handle a response from the remote side
     pub async fn handle_response(&self, response: JSONRPCResponse) {
-        if let RequestId::String(id) = &response.id {
-            tracing::debug!(
-                "Handling response for ID: {}, pending requests: {:?}",
-                id,
-                self.pending_requests.len()
-            );
-            if let Some((_, tx)) = self.pending_requests.remove(id) {
-                let _ = tx.send(ResponseOrError::Response(response));
-            } else {
-                tracing::warn!("Received response for unknown request ID: {}", id);
+        let RequestId::String(id) = &response.id else {
+            return;
+        };
+
+        let id = id.clone();
+        tracing::debug!(
+            "Handling response for ID: {}, pending requests: {:?}",
+            id,
+            self.pending_requests.len()
+        );
+
+        if let Some((_, tx)) = self.pending_requests.remove(&id) {
+            if tx.send(ResponseOrError::Response(response)).is_err() {
+                tracing::debug!("Response receiver dropped for request {}", id);
             }
+        } else {
+            tracing::warn!("Received response for unknown request ID: {}", id);
         }
     }
 
     /// Handle an error response from the remote side
     pub async fn handle_error(&self, error: JSONRPCError) {
-        if let RequestId::String(id) = &error.id {
-            if let Some((_, tx)) = self.pending_requests.remove(id) {
-                let _ = tx.send(ResponseOrError::Error(error));
-            } else {
-                tracing::warn!("Received error for unknown request ID: {}", id);
+        let RequestId::String(id) = &error.id else {
+            return;
+        };
+
+        let id = id.clone();
+        if let Some((_, tx)) = self.pending_requests.remove(&id) {
+            if tx.send(ResponseOrError::Error(error)).is_err() {
+                tracing::debug!("Error receiver dropped for request {}", id);
             }
+        } else {
+            tracing::warn!("Received error for unknown request ID: {}", id);
         }
     }
 }
 
 /// Trait for types that can provide a method name for requests
-pub(crate) trait RequestMethod {
+pub trait RequestMethod {
+    /// Return the JSON-RPC method name for this request type.
     fn method(&self) -> &'static str;
 }

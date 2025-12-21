@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 
@@ -96,7 +97,7 @@ impl ClientMetadata {
     }
 
     /// Set the scopes
-    pub fn with_scopes(mut self, scopes: Vec<String>) -> Self {
+    pub fn with_scopes(mut self, scopes: &[String]) -> Self {
         self.scope = Some(scopes.join(" "));
         self
     }
@@ -167,6 +168,7 @@ pub struct RegistrationError {
 
 /// Dynamic client registration client
 pub struct DynamicRegistrationClient {
+    /// HTTP client used for registration requests.
     http_client: reqwest::Client,
 }
 
@@ -309,7 +311,7 @@ mod tests {
     fn test_client_metadata_creation() {
         let metadata = ClientMetadata::new("Test Client", "http://localhost:8080/callback")
             .with_resource("https://example.com/api")
-            .with_scopes(vec!["read".to_string(), "write".to_string()])
+            .with_scopes(&["read".to_string(), "write".to_string()])
             .with_contacts(vec!["admin@example.com".to_string()]);
 
         assert_eq!(metadata.client_name, Some("Test Client".to_string()));

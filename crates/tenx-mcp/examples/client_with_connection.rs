@@ -1,9 +1,14 @@
+//! Example MCP client using a custom connection type.
+
 use async_trait::async_trait;
 use tenx_mcp::{Client, ClientConn, ClientCtx, Result, ServerAPI, schema};
+use tokio::signal::ctrl_c;
+use tracing_subscriber::fmt;
 
-/// Example client connection that handles server requests
+/// Example client connection that handles server requests.
 #[derive(Clone)]
 struct MyClientConnection {
+    /// Client name for logging.
     name: String,
 }
 
@@ -51,7 +56,7 @@ impl ClientConn for MyClientConnection {
             .unwrap_or("(no message)");
 
         Ok(schema::CreateMessageResult {
-            role: tenx_mcp::schema::Role::Assistant,
+            role: schema::Role::Assistant,
             content: schema::SamplingContent::Text(schema::TextContent {
                 text: format!("Response to: {last_message_text}"),
                 annotations: None,
@@ -67,7 +72,7 @@ impl ClientConn for MyClientConnection {
         println!("Server requested roots list");
 
         Ok(schema::ListRootsResult {
-            roots: vec![tenx_mcp::schema::Root {
+            roots: vec![schema::Root {
                 uri: "file:///home/user/project".to_string(),
                 name: Some("My Project".to_string()),
                 _meta: None,
@@ -80,7 +85,7 @@ impl ClientConn for MyClientConnection {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
-    tracing_subscriber::fmt::init();
+    fmt::init();
 
     // Create a client with a custom connection handler
     let mut client = Client::new_with_connection(
@@ -115,7 +120,7 @@ async fn main() -> Result<()> {
 
     // Keep the client running to handle server requests
     println!("Client running. Press Ctrl+C to exit.");
-    tokio::signal::ctrl_c().await?;
+    ctrl_c().await?;
 
     Ok(())
 }

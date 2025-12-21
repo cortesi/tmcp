@@ -1,12 +1,17 @@
+//! Minimal weather server example.
+
 use serde::{Deserialize, Serialize};
 use tenx_mcp::{Result, Server, ServerCtx, mcp_server, schema::*, schemars, tool};
 
 #[derive(Default)]
+/// Example server implementation for weather.
 struct WeatherServer;
 
 // Tool input schema is automatically derived from the struct using serde and schemars.
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+/// Parameters for the weather tool.
 struct WeatherParams {
+    /// City name to query.
     city: String,
 }
 
