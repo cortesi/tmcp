@@ -1,9 +1,9 @@
 ![Discord](https://img.shields.io/discord/1381424110831145070?style=flat-square&logo=rust&link=https%3A%2F%2Fdiscord.gg%2FfHmRmuBDxF)
-[![Crates.io](https://img.shields.io/crates/v/tenx-mcp)](https://crates.io/crates/tenx-mcp)
-[![docs.rs](https://img.shields.io/docsrs/tenx-mcp)](https://docs.rs/tenx-mcp)
+[![Crates.io](https://img.shields.io/crates/v/tmcp)](https://crates.io/crates/tmcp)
+[![docs.rs](https://img.shields.io/docsrs/tmcp)](https://docs.rs/tmcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-# tenx-mcp
+# tmcp
 
 A Rust implementation of the Model Context Protocol for building AI-integrated applications.
 
@@ -43,11 +43,11 @@ both client and server roles with async/await APIs.
 
 ## Example 
 
-From `./crates/tenx-mcp/examples/weather_server.rs` 
+From `./crates/tmcp/examples/weather_server.rs` 
 
 ```rust
 use serde::{Deserialize, Serialize};
-use tenx_mcp::{mcp_server, schema::*, schemars, tool, Result, Server, ServerCtx};
+use tmcp::{mcp_server, schema::*, schemars, tool, Result, Server, ServerCtx};
 
 #[derive(Default)]
 struct WeatherServer;

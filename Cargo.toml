@@ -4,7 +4,7 @@ edition = "2024"
 authors = ["Aldo Cortesi <aldo@corte.si>"]
 description = "Complete, ergonomic implementation of the Model Context Protocol (MCP)"
 license = "MIT"
-repository = "https://github.com/tenxhq/tenx-mcp"
+repository = "https://github.com/cortesi/tmcp"
 keywords = ["mcp", "ai", "anthropic","openai"]
 
 [workspace]

@@ -21,7 +21,7 @@
 //! Example usage:
 //!
 //! ```ignore
-//! use tenx_mcp::{ServerCtx, schema};
+//! use tmcp::{ServerCtx, schema};
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -295,10 +295,10 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
         quote! {
             #name => {
                 let args = arguments.ok_or_else(||
-                    tenx_mcp::Error::InvalidParams("Missing arguments".to_string())
+                    tmcp::Error::InvalidParams("Missing arguments".to_string())
                 )?;
                 let params: #params_type = args.deserialize()
-                    .map_err(|e| tenx_mcp::Error::InvalidParams(e.to_string()))?;
+                    .map_err(|e| tmcp::Error::InvalidParams(e.to_string()))?;
                 self.#method(context, params).await
             }
         }
@@ -307,13 +307,13 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
     quote! {
         async fn call_tool(
             &self,
-            context: &tenx_mcp::ServerCtx,
+            context: &tmcp::ServerCtx,
             name: String,
-            arguments: Option<tenx_mcp::Arguments>,
-        ) -> tenx_mcp::Result<tenx_mcp::schema::CallToolResult> {
+            arguments: Option<tmcp::Arguments>,
+        ) -> tmcp::Result<tmcp::schema::CallToolResult> {
             match name.as_str() {
                 #(#tool_matches)*
-                _ => Err(tenx_mcp::Error::MethodNotFound(format!("Unknown tool: {}", name)))
+                _ => Err(tmcp::Error::MethodNotFound(format!("Unknown tool: {}", name)))
             }
         }
     }
@@ -328,7 +328,7 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
 
         quote! {
             {
-                tenx_mcp::schema::Tool::new(#name, tenx_mcp::schema::ToolSchema::from_json_schema::<#params_type>())
+                tmcp::schema::Tool::new(#name, tmcp::schema::ToolSchema::from_json_schema::<#params_type>())
                     .with_description(#description)
             }
         }
@@ -337,10 +337,10 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
     quote! {
         async fn list_tools(
             &self,
-            _context: &tenx_mcp::ServerCtx,
-            _cursor: Option<tenx_mcp::schema::Cursor>,
-        ) -> tenx_mcp::Result<tenx_mcp::schema::ListToolsResult> {
-            Ok(tenx_mcp::schema::ListToolsResult {
+            _context: &tmcp::ServerCtx,
+            _cursor: Option<tmcp::schema::Cursor>,
+        ) -> tmcp::Result<tmcp::schema::ListToolsResult> {
+            Ok(tmcp::schema::ListToolsResult {
                 tools: vec![#(#tools),*],
                 next_cursor: None,
             })
@@ -355,11 +355,11 @@ fn generate_initialize(info: &ServerInfo, custom_init_fn: Option<&syn::Ident>) -
         quote! {
             async fn initialize(
                 &self,
-                context: &tenx_mcp::ServerCtx,
+                context: &tmcp::ServerCtx,
                 protocol_version: String,
-                capabilities: tenx_mcp::schema::ClientCapabilities,
-                client_info: tenx_mcp::schema::Implementation,
-            ) -> tenx_mcp::Result<tenx_mcp::schema::InitializeResult> {
+                capabilities: tmcp::schema::ClientCapabilities,
+                client_info: tmcp::schema::Implementation,
+            ) -> tmcp::Result<tmcp::schema::InitializeResult> {
                 self.#init_fn(context, protocol_version, capabilities, client_info).await
             }
         }
@@ -376,13 +376,13 @@ fn generate_default_initialize(info: &ServerInfo) -> TokenStream {
 
     let initialize_result = if description.is_empty() {
         quote! {
-            tenx_mcp::schema::InitializeResult::new(#snake_case_name)
+            tmcp::schema::InitializeResult::new(#snake_case_name)
                 .with_version("0.1.0")
                 .with_tools(false)
         }
     } else {
         quote! {
-            tenx_mcp::schema::InitializeResult::new(#snake_case_name)
+            tmcp::schema::InitializeResult::new(#snake_case_name)
                 .with_version("0.1.0")
                 .with_tools(false)
                 .with_instructions(#description)
@@ -392,11 +392,11 @@ fn generate_default_initialize(info: &ServerInfo) -> TokenStream {
     quote! {
         async fn initialize(
             &self,
-            _context: &tenx_mcp::ServerCtx,
+            _context: &tmcp::ServerCtx,
             _protocol_version: String,
-            _capabilities: tenx_mcp::schema::ClientCapabilities,
-            _client_info: tenx_mcp::schema::Implementation,
-        ) -> tenx_mcp::Result<tenx_mcp::schema::InitializeResult> {
+            _capabilities: tmcp::schema::ClientCapabilities,
+            _client_info: tmcp::schema::Implementation,
+        ) -> tmcp::Result<tmcp::schema::InitializeResult> {
             Ok(#initialize_result)
         }
     }
@@ -495,7 +495,7 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
         #impl_block
 
         #[async_trait::async_trait]
-        impl tenx_mcp::ServerConn for #struct_name {
+        impl tmcp::ServerConn for #struct_name {
             #initialize
             #list_tools
             #call_tool
@@ -887,7 +887,7 @@ mod tests {
         assert!(result_str.contains("async fn echo"));
 
         // Check that ServerConn impl is generated
-        assert!(result_str.contains("impl tenx_mcp :: ServerConn for TestServer"));
+        assert!(result_str.contains("impl tmcp :: ServerConn for TestServer"));
         assert!(result_str.contains("async fn initialize"));
         assert!(result_str.contains("async fn list_tools"));
         assert!(result_str.contains("async fn call_tool"));
