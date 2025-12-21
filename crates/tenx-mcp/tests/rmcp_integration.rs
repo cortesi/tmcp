@@ -256,10 +256,7 @@ mod tests {
                         .and_then(|args| args.get("text"))
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| {
-                            rmcp::ErrorData::invalid_params(
-                                "reverse: Missing text parameter",
-                                None,
-                            )
+                            rmcp::ErrorData::invalid_params("reverse: Missing text parameter", None)
                         })?;
 
                     let reversed = text.chars().rev().collect::<String>();
