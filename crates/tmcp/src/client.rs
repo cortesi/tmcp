@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     api::ServerAPI,
     auth::OAuth2Client,
-    connection::ClientConn,
+    connection::ClientHandler,
     context::ClientCtx,
     error::{Error, Result},
     http::HttpClientTransport,
@@ -26,16 +26,16 @@ use crate::{
     },
 };
 
-/// Default no-op implementation of ClientConn for unit type
+/// Default no-op implementation of ClientHandler for unit type
 #[async_trait]
-impl ClientConn for () {
+impl ClientHandler for () {
     // All methods use default implementations
 }
 
 /// MCP Client implementation
 pub struct Client<C = ()>
 where
-    C: ClientConn + Send,
+    C: ClientHandler + Send,
 {
     /// Tracks requests and routes responses.
     request_handler: RequestHandler,
@@ -50,7 +50,7 @@ where
 }
 
 impl Client<()> {
-    /// Create a new MCP client with default configuration
+    /// Create a new MCP client with default configuration.
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             request_handler: RequestHandler::new(None, "req".to_string()),
@@ -61,22 +61,21 @@ impl Client<()> {
         }
     }
 
-    /// Set the client connection handler
-    pub fn new_with_connection<C: ClientConn>(
-        name: impl Into<String>,
-        version: impl Into<String>,
-        connection: C,
-    ) -> Client<C> {
+    /// Set a custom handler for server-initiated requests.
+    ///
+    /// The handler receives callbacks for server requests like `ping`,
+    /// `create_message`, and `list_roots`.
+    pub fn with_handler<C: ClientHandler>(self, handler: C) -> Client<C> {
         Client {
-            request_handler: RequestHandler::new(None, "req".to_string()),
-            connection,
-            name: name.into(),
-            version: version.into(),
-            client_capabilities: ClientCapabilities::default(),
+            request_handler: self.request_handler,
+            connection: handler,
+            name: self.name,
+            version: self.version,
+            client_capabilities: self.client_capabilities,
         }
     }
 
-    /// Set the client capabilities
+    /// Set the client capabilities.
     pub fn with_capabilities(mut self, capabilities: ClientCapabilities) -> Self {
         self.client_capabilities = capabilities;
         self
@@ -85,7 +84,7 @@ impl Client<()> {
 
 impl<C> Client<C>
 where
-    C: ClientConn + Send + 'static,
+    C: ClientHandler + Send + 'static,
 {
     /// Connect using the provided transport
     pub(crate) async fn connect(&mut self, mut transport: Box<dyn Transport>) -> Result<()> {
@@ -370,7 +369,7 @@ where
 #[async_trait]
 impl<C> ServerAPI for Client<C>
 where
-    C: ClientConn + Send + Sync + 'static,
+    C: ClientHandler + Send + Sync + 'static,
 {
     /// Initialize the connection with protocol version and capabilities
     async fn initialize(
@@ -509,8 +508,8 @@ where
     }
 }
 
-/// Handle a request from the server using the ClientConnection trait
-async fn handle_server_request<C: ClientConn>(
+/// Handle a request from the server using the ClientHandler trait
+async fn handle_server_request<C: ClientHandler>(
     connection: &C,
     context: &ClientCtx,
     request: JSONRPCRequest,
@@ -522,7 +521,7 @@ async fn handle_server_request<C: ClientConn>(
 }
 
 /// Inner handler that returns Result<serde_json::Value>
-async fn handle_server_request_inner<C: ClientConn>(
+async fn handle_server_request_inner<C: ClientHandler>(
     connection: &C,
     ctx: &ClientCtx,
     request: JSONRPCRequest,
@@ -578,7 +577,7 @@ async fn handle_server_request_inner<C: ClientConn>(
 
 /// Convert a JSON-RPC notification into a typed ServerNotification and pass it
 /// to the connection implementation for further handling.
-async fn handle_server_notification<C: ClientConn>(
+async fn handle_server_notification<C: ClientHandler>(
     connection: &C,
     context: &ClientCtx,
     notification: JSONRPCNotification,
@@ -703,7 +702,7 @@ mod tests {
     }
 
     use crate::{
-        connection::{ClientConn as ClientConnTrait, ServerConn as ServerConnTrait},
+        connection::{ClientHandler as ClientHandlerTrait, ServerHandler as ServerHandlerTrait},
         context::{ClientCtx as ClientCtxType, ServerCtx},
         schema::{ClientNotification, ServerNotification},
         server::{Server, ServerHandle},
@@ -716,7 +715,7 @@ mod tests {
         struct TestConnection;
 
         #[async_trait::async_trait]
-        impl ServerConnTrait for TestConnection {
+        impl ServerHandlerTrait for TestConnection {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
@@ -730,7 +729,7 @@ mod tests {
 
         let (client_transport, server_transport) = TestTransport::create_pair();
 
-        let server = Server::default().with_connection(TestConnection::default);
+        let server = Server::default().with_handler(TestConnection::default);
         let server_handle = ServerHandle::new(server, server_transport)
             .await
             .expect("Failed to start server");
@@ -746,16 +745,16 @@ mod tests {
         (client, server_handle)
     }
 
-    // Test that a ClientConnection implementation receives notifications sent
+    // Test that a ClientHandler implementation receives notifications sent
     // by the server.
     #[tokio::test]
     async fn test_client_receives_server_notification() {
         // Custom client connection that records notifications
-        struct NotifClientConnection {
+        struct NotifClientHandler {
             tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
         }
 
-        impl Clone for NotifClientConnection {
+        impl Clone for NotifClientHandler {
             fn clone(&self) -> Self {
                 Self {
                     tx: self.tx.clone(),
@@ -764,7 +763,7 @@ mod tests {
         }
 
         #[async_trait::async_trait]
-        impl ClientConnTrait for NotifClientConnection {
+        impl ClientHandlerTrait for NotifClientHandler {
             async fn notification(
                 &self,
                 _context: &ClientCtxType,
@@ -782,10 +781,10 @@ mod tests {
 
         // Minimal server connection
         #[derive(Debug, Default)]
-        struct DummyServerConnection;
+        struct DummyServerHandler;
 
         #[async_trait::async_trait]
-        impl ServerConnTrait for DummyServerConnection {
+        impl ServerHandlerTrait for DummyServerHandler {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
@@ -805,20 +804,16 @@ mod tests {
 
         // Start server with tools/listChanged capability so notification is forwarded
         let server = Server::default()
-            .with_connection(DummyServerConnection::default)
+            .with_handler(DummyServerHandler::default)
             .with_capabilities(ServerCapabilities::default().with_tools(Some(true)));
         let server_handle = ServerHandle::new(server, server_transport)
             .await
             .expect("Failed to start server");
 
-        // Create client with notif connection
-        let mut client = Client::new_with_connection(
-            "test-client",
-            "1.0.0",
-            NotifClientConnection {
-                tx: Arc::new(Mutex::new(Some(tx_notif))),
-            },
-        );
+        // Create client with notif handler
+        let mut client = Client::new("test-client", "1.0.0").with_handler(NotifClientHandler {
+            tx: Arc::new(Mutex::new(Some(tx_notif))),
+        });
 
         // Connect and initialize
         client
@@ -841,11 +836,11 @@ mod tests {
     /// Ensure notifications are not forwarded when the server lacks the corresponding capability.
     #[tokio::test]
     async fn test_server_notification_filtered_without_capability() {
-        struct NotifClientConnection {
+        struct NotifClientHandler {
             tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
         }
 
-        impl Clone for NotifClientConnection {
+        impl Clone for NotifClientHandler {
             fn clone(&self) -> Self {
                 Self {
                     tx: self.tx.clone(),
@@ -854,7 +849,7 @@ mod tests {
         }
 
         #[async_trait::async_trait]
-        impl ClientConnTrait for NotifClientConnection {
+        impl ClientHandlerTrait for NotifClientHandler {
             async fn notification(
                 &self,
                 _context: &ClientCtxType,
@@ -869,10 +864,10 @@ mod tests {
         }
 
         #[derive(Debug, Default)]
-        struct DummyServerConnection;
+        struct DummyServerHandler;
 
         #[async_trait::async_trait]
-        impl ServerConnTrait for DummyServerConnection {
+        impl ServerHandlerTrait for DummyServerHandler {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
@@ -889,18 +884,14 @@ mod tests {
         let (client_transport, server_transport) = TestTransport::create_pair();
 
         // Start server without tools capability
-        let server = Server::default().with_connection(DummyServerConnection::default);
+        let server = Server::default().with_handler(DummyServerHandler::default);
         let server_handle = ServerHandle::new(server, server_transport)
             .await
             .expect("Failed to start server");
 
-        let mut client = Client::new_with_connection(
-            "test-client",
-            "1.0.0",
-            NotifClientConnection {
-                tx: Arc::new(Mutex::new(Some(tx_notif))),
-            },
-        );
+        let mut client = Client::new("test-client", "1.0.0").with_handler(NotifClientHandler {
+            tx: Arc::new(Mutex::new(Some(tx_notif))),
+        });
 
         client
             .connect(client_transport)
@@ -915,18 +906,18 @@ mod tests {
         assert!(res.is_err(), "Notification should be filtered");
     }
 
-    // Test that a ServerConnection implementation receives notifications sent
+    // Test that a ServerHandler implementation receives notifications sent
     // by the client.
     #[tokio::test]
     async fn test_server_receives_client_notification() {
         // Server connection that records notification
         #[derive(Debug, Default)]
-        struct NotifServerConnection {
+        struct NotifyServerHandler {
             tx: Arc<StdMutex<Option<oneshot::Sender<()>>>>,
         }
 
         #[async_trait::async_trait]
-        impl ServerConnTrait for NotifServerConnection {
+        impl ServerHandlerTrait for NotifyServerHandler {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
@@ -954,10 +945,10 @@ mod tests {
 
         // Client connection that sends a notification on connect
         #[derive(Clone)]
-        struct NotifierClientConnection;
+        struct NotifyClientHandler;
 
         #[async_trait::async_trait]
-        impl ClientConnTrait for NotifierClientConnection {
+        impl ClientHandlerTrait for NotifyClientHandler {
             async fn on_connect(&self, context: &ClientCtxType) -> Result<()> {
                 context.send_notification(ClientNotification::Initialized)?;
                 Ok(())
@@ -976,7 +967,7 @@ mod tests {
         // Start server with notif connection
         let server = {
             let tx_clone = shared_tx.clone();
-            Server::default().with_connection(move || NotifServerConnection {
+            Server::default().with_handler(move || NotifyServerHandler {
                 tx: tx_clone.clone(),
             })
         };
@@ -985,8 +976,7 @@ mod tests {
             .expect("Failed to start server");
 
         // Create client with notifier connection
-        let mut client =
-            Client::new_with_connection("test-client", "1.0.0", NotifierClientConnection);
+        let mut client = Client::new("test-client", "1.0.0").with_handler(NotifyClientHandler);
 
         // Connect and initialize
         client
@@ -1053,10 +1043,10 @@ mod tests {
     async fn test_connect_stream() {
         // Create a minimal test connection
         #[derive(Debug, Default)]
-        struct TestStreamConnection;
+        struct TestStreamHandler;
 
         #[async_trait::async_trait]
-        impl ServerConnTrait for TestStreamConnection {
+        impl ServerHandlerTrait for TestStreamHandler {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
@@ -1074,7 +1064,7 @@ mod tests {
 
         // Create and configure server
         let server = Server::default()
-            .with_connection(TestStreamConnection::default)
+            .with_handler(TestStreamHandler::default)
             .with_capabilities(ServerCapabilities {
                 tools: Some(ToolsCapability {
                     list_changed: Some(true),
@@ -1133,7 +1123,7 @@ mod tests {
         struct TestConnection;
 
         #[async_trait::async_trait]
-        impl ServerConnTrait for TestConnection {
+        impl ServerHandlerTrait for TestConnection {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
@@ -1161,7 +1151,7 @@ mod tests {
         let (client_transport, server_transport) = TestTransport::create_pair();
 
         // Create a new test server
-        let server = Server::default().with_connection(TestConnection::default);
+        let server = Server::default().with_handler(TestConnection::default);
         let _server2 = ServerHandle::new(server, server_transport)
             .await
             .expect("Failed to start second server");

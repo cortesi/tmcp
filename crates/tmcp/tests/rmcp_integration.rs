@@ -12,7 +12,7 @@ mod tests {
     use rmcp_model::{CallToolRequestParam, PaginatedRequestParam};
     use serde_json::json;
     use tmcp::{
-        Arguments, Client, Error, Result, Server, ServerAPI, ServerConn, ServerCtx, schema::*,
+        Arguments, Client, Error, Result, Server, ServerAPI, ServerCtx, ServerHandler, schema::*,
         testutils::make_duplex_pair,
     };
     use tokio::{
@@ -24,7 +24,7 @@ mod tests {
     struct EchoConnection;
 
     #[async_trait]
-    impl ServerConn for EchoConnection {
+    impl ServerHandler for EchoConnection {
         async fn initialize(
             &self,
             _context: &ServerCtx,
@@ -107,7 +107,7 @@ mod tests {
 
         // Create and configure tmcp server
         let server = Server::default()
-            .with_connection(|| EchoConnection)
+            .with_handler(|| EchoConnection)
             .with_capabilities(ServerCapabilities {
                 tools: Some(ToolsCapability {
                     list_changed: Some(true),

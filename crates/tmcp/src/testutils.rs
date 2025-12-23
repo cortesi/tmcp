@@ -20,7 +20,7 @@ use tokio::{
 };
 
 use crate::{
-    Client, ClientConn, ClientCtx, Server, ServerConn, ServerCtx, ServerHandle,
+    Client, ClientCtx, ClientHandler, Server, ServerCtx, ServerHandle, ServerHandler,
     error::Result,
     schema::{ClientNotification, ServerNotification},
 };
@@ -46,21 +46,20 @@ pub fn make_duplex_pair() -> (
     (server_reader, server_writer, client_reader, client_writer)
 }
 
-/// Spin up an in-memory server using the supplied [`ServerConnection`]
-/// factory, establish a connected [`Client`] (optionally with a custom
-/// [`ClientConnection`]) and return both handles.
+/// Spin up an in-memory server using the supplied handler factory
+/// and establish a connected [`Client`].
 ///
 /// The helper takes care of wiring up the in-memory transport and saves the
 /// caller from having to remember the exact incantations required to start the
 /// server in the background.
 pub async fn connected_client_and_server<F>(
-    connection_factory: F,
+    handler_factory: F,
 ) -> Result<(Client<()>, ServerHandle)>
 where
-    F: Fn() -> Box<dyn ServerConn> + Send + Sync + 'static,
+    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
 {
     // Build server.
-    let server = Server::default().with_connection_factory(connection_factory);
+    let server = Server::default().with_handler_factory(handler_factory);
 
     // Two in-memory pipes to serve as the transport.
     let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
@@ -77,17 +76,17 @@ where
     Ok((client, server_handle))
 }
 
-/// Helper function to create a connected client and server with a custom client connection
+/// Helper function to create a connected client and server with a custom client handler.
 pub async fn connected_client_and_server_with_conn<F, C>(
-    connection_factory: F,
-    client_connection: C,
+    handler_factory: F,
+    client_handler: C,
 ) -> Result<(Client<C>, ServerHandle)>
 where
-    F: Fn() -> Box<dyn ServerConn> + Send + Sync + 'static,
-    C: ClientConn + 'static,
+    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
+    C: ClientHandler + 'static,
 {
     // Build server.
-    let server = Server::default().with_connection_factory(connection_factory);
+    let server = Server::default().with_handler_factory(handler_factory);
 
     // Two in-memory pipes to serve as the transport.
     let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
@@ -96,7 +95,7 @@ where
     let server_handle = ServerHandle::from_stream(server, server_reader, server_writer).await?;
 
     // Build client instance.
-    let mut client = Client::new_with_connection("test-client", "1.0.0", client_connection);
+    let mut client = Client::new("test-client", "1.0.0").with_handler(client_handler);
 
     // Connect the client to its side of the in-memory transport.
     client.connect_stream(client_reader, client_writer).await?;
@@ -110,7 +109,7 @@ where
 /// the server task to notice the closed connection and terminate.
 pub async fn shutdown_client_and_server<C>(client: Client<C>, server: ServerHandle)
 where
-    C: ClientConn + 'static,
+    C: ClientHandler + 'static,
 {
     use tokio::time::{Duration, timeout};
 
@@ -133,8 +132,9 @@ pub fn test_client_ctx(notification_tx: broadcast::Sender<ClientNotification>) -
     ClientCtx::new(notification_tx, None)
 }
 
-/// Test context for ServerConn implementations.
-/// Provides a ServerCtx and channels for testing.
+/// Test context for [`ServerHandler`] implementations.
+///
+/// Provides a [`ServerCtx`] and channels for testing.
 pub struct TestServerContext {
     /// Server context for tests.
     pub ctx: ServerCtx,
@@ -177,8 +177,9 @@ impl Default for TestServerContext {
     }
 }
 
-/// Test context for ClientConn implementations.
-/// Provides a ClientCtx and channels for testing.
+/// Test context for [`ClientHandler`] implementations.
+///
+/// Provides a [`ClientCtx`] and channels for testing.
 pub struct TestClientContext {
     /// Client context for tests.
     pub ctx: ClientCtx,

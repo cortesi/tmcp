@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    connection::ServerConn,
+    connection::ServerHandler,
     context::ServerCtx,
     error::{Error, Result},
     http::HttpServerTransport,
@@ -21,14 +21,14 @@ use crate::{
 };
 
 /// MCP Server implementation
-pub struct Server<F = fn() -> Box<dyn ServerConn>> {
+pub struct Server<F = fn() -> Box<dyn ServerHandler>> {
     /// Server capability configuration.
     capabilities: ServerCapabilities,
     /// Factory for creating per-connection handlers.
     connection_factory: Option<F>,
 }
 
-impl Default for Server<fn() -> Box<dyn ServerConn>> {
+impl Default for Server<fn() -> Box<dyn ServerHandler>> {
     fn default() -> Self {
         Self {
             capabilities: ServerCapabilities::default(),
@@ -39,12 +39,12 @@ impl Default for Server<fn() -> Box<dyn ServerConn>> {
 
 impl<F> Server<F>
 where
-    F: Fn() -> Box<dyn ServerConn> + Send + Sync + 'static,
+    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
 {
-    /// Set the connection factory for creating Connection instances
-    pub(crate) fn with_connection_factory<G>(self, factory: G) -> Server<G>
+    /// Set the handler factory for creating handler instances (internal use).
+    pub(crate) fn with_handler_factory<G>(self, factory: G) -> Server<G>
     where
-        G: Fn() -> Box<dyn ServerConn> + Send + Sync + 'static,
+        G: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
     {
         Server {
             capabilities: self.capabilities,
@@ -52,19 +52,22 @@ where
         }
     }
 
-    /// Set a connection factory that creates concrete connection types
-    /// This method automatically boxes the connection type for you.
-    pub fn with_connection<C, G>(
+    /// Set a handler factory that creates handler instances per connection.
+    ///
+    /// The factory function is called once for each incoming connection,
+    /// allowing each connection to have its own handler instance with
+    /// independent state.
+    pub fn with_handler<C, G>(
         self,
         factory: G,
-    ) -> Server<impl Fn() -> Box<dyn ServerConn> + Clone + Send + Sync + 'static>
+    ) -> Server<impl Fn() -> Box<dyn ServerHandler> + Clone + Send + Sync + 'static>
     where
-        C: ServerConn + 'static,
+        C: ServerHandler + 'static,
         G: Fn() -> C + Clone + Send + Sync + 'static,
     {
         Server {
             capabilities: self.capabilities,
-            connection_factory: Some(move || Box::new(factory()) as Box<dyn ServerConn>),
+            connection_factory: Some(move || Box::new(factory()) as Box<dyn ServerHandler>),
         }
     }
 
@@ -186,7 +189,7 @@ impl ServerHandle {
     /// Start serving connections using the provided transport, returning a handle for runtime operations
     pub(crate) async fn new<F>(server: Server<F>, mut transport: Box<dyn Transport>) -> Result<Self>
     where
-        F: Fn() -> Box<dyn ServerConn> + Send + Sync + 'static,
+        F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
     {
         transport.connect().await?;
         let capabilities = server.capabilities.clone();
@@ -207,7 +210,7 @@ impl ServerHandle {
         let notification_tx_handle = notification_tx.clone();
 
         // Create connection instance wrapped in Arc for shared access
-        let connection: Option<Arc<Box<dyn ServerConn>>> =
+        let connection: Option<Arc<Box<dyn ServerHandler>>> =
             if let Some(factory) = &server.connection_factory {
                 Some(Arc::new(factory()))
             } else {
@@ -333,7 +336,7 @@ impl ServerHandle {
     /// This is a convenience method that creates a StreamTransport from the provided streams
     pub async fn from_stream<F, R, W>(server: Server<F>, reader: R, writer: W) -> Result<Self>
     where
-        F: Fn() -> Box<dyn ServerConn> + Send + Sync + 'static,
+        F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
         R: AsyncRead + Send + Sync + Unpin + 'static,
         W: AsyncWrite + Send + Sync + Unpin + 'static,
     {
@@ -346,7 +349,7 @@ impl ServerHandle {
     /// This allows using any transport implementation
     pub async fn from_transport<F>(server: Server<F>, transport: Box<dyn Transport>) -> Result<Self>
     where
-        F: Fn() -> Box<dyn ServerConn> + Send + Sync + 'static,
+        F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
     {
         Self::new(server, transport).await
     }
@@ -415,7 +418,7 @@ impl ServerHandle {
 
 /// Handle a message using the Connection trait
 async fn handle_message_with_connection(
-    connection: Arc<Box<dyn ServerConn>>,
+    connection: Arc<Box<dyn ServerHandler>>,
     message: JSONRPCMessage,
     response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
     context: &ServerCtx,
@@ -432,7 +435,7 @@ async fn handle_message_with_connection(
 /// Handle messages that do not require awaiting on the connection.
 #[allow(clippy::cognitive_complexity)]
 fn handle_message_without_await(
-    connection: &Arc<Box<dyn ServerConn>>,
+    connection: &Arc<Box<dyn ServerHandler>>,
     message: JSONRPCMessage,
     response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
     context: &ServerCtx,
@@ -466,7 +469,7 @@ fn handle_message_without_await(
 
 /// Spawn a task to handle a request and send its response.
 fn spawn_request_handler(
-    connection: &Arc<Box<dyn ServerConn>>,
+    connection: &Arc<Box<dyn ServerHandler>>,
     request: JSONRPCRequest,
     response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
     context: &ServerCtx,
@@ -487,7 +490,7 @@ fn spawn_request_handler(
 
 /// Handle a request using the Connection trait and convert result to JSONRPCMessage
 async fn handle_request(
-    connection: &dyn ServerConn,
+    connection: &dyn ServerHandler,
     request: JSONRPCRequest,
     context: &ServerCtx,
 ) -> JSONRPCMessage {
@@ -540,7 +543,7 @@ async fn handle_request(
 
 /// Inner handler that returns Result<serde_json::Value>
 async fn handle_request_inner(
-    conn: &dyn ServerConn,
+    conn: &dyn ServerHandler,
     request: JSONRPCRequest,
     ctx: &ServerCtx,
 ) -> Result<serde_json::Value> {
@@ -639,7 +642,7 @@ async fn handle_request_inner(
 
 /// Handle a notification using the Connection trait
 async fn handle_notification(
-    connection: &dyn ServerConn,
+    connection: &dyn ServerHandler,
     notification: JSONRPCNotification,
     context: &ServerCtx,
 ) -> Result<()> {

@@ -103,6 +103,22 @@ pub enum Error {
     /// Transport error.
     #[error("Transport error: {0}")]
     TransportError(String),
+
+    /// Request timed out.
+    #[error("Request timed out after {timeout_ms}ms: {request_id}")]
+    Timeout {
+        /// The request ID that timed out.
+        request_id: String,
+        /// Timeout duration in milliseconds.
+        timeout_ms: u64,
+    },
+
+    /// Request was cancelled.
+    #[error("Request cancelled: {request_id}")]
+    Cancelled {
+        /// The request ID that was cancelled.
+        request_id: String,
+    },
 }
 
 impl Error {

@@ -7,7 +7,7 @@
 mod tests {
     use std::collections::HashMap;
 
-    use tmcp::{Arguments, Error, Result, ServerConn, ServerCtx, schema, testutils};
+    use tmcp::{Arguments, Error, Result, ServerCtx, ServerHandler, schema, testutils};
     use tokio::sync::broadcast;
 
     fn create_test_context() -> ServerCtx {
@@ -22,7 +22,7 @@ mod tests {
         struct MinimalConnection;
 
         #[async_trait::async_trait]
-        impl ServerConn for MinimalConnection {
+        impl ServerHandler for MinimalConnection {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
@@ -60,7 +60,7 @@ mod tests {
         struct ConnectionWithValidation;
 
         #[async_trait::async_trait]
-        impl ServerConn for ConnectionWithValidation {
+        impl ServerHandler for ConnectionWithValidation {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
@@ -120,7 +120,7 @@ mod tests {
 
                 Ok(schema::CallToolResult::new()
                     .with_text_content("Success")
-                    .is_error(false))
+                    .as_error(false))
             }
         }
 
@@ -166,7 +166,7 @@ mod tests {
         struct ConnectionWithTools;
 
         #[async_trait::async_trait]
-        impl ServerConn for ConnectionWithTools {
+        impl ServerHandler for ConnectionWithTools {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
@@ -255,7 +255,7 @@ mod tests {
         struct FaultyConnection;
 
         #[async_trait::async_trait]
-        impl ServerConn for FaultyConnection {
+        impl ServerHandler for FaultyConnection {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,

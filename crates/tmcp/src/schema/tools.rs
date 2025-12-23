@@ -85,8 +85,8 @@ impl CallToolResult {
         self
     }
 
-    /// Mark the result as an error or success.
-    pub fn is_error(mut self, is_error: bool) -> Self {
+    /// Mark this result as indicating an error (`true`) or success (`false`).
+    pub fn as_error(mut self, is_error: bool) -> Self {
         self.is_error = Some(is_error);
         self
     }

@@ -10,7 +10,8 @@ mod tests {
 
     use async_trait::async_trait;
     use tmcp::{
-        Arguments, ClientAPI, ClientConn, ClientCtx, Result, ServerAPI, ServerConn, ServerCtx,
+        Arguments, ClientAPI, ClientCtx, ClientHandler, Result, ServerAPI, ServerCtx,
+        ServerHandler,
         schema::*,
         testutils::{connected_client_and_server_with_conn, shutdown_client_and_server},
     };
@@ -42,7 +43,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ClientConn for TestClient {
+    impl ClientHandler for TestClient {
         async fn pong(&self, _context: &ClientCtx) -> Result<()> {
             self.track_call("client_pong");
             Ok(())
@@ -113,7 +114,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ServerConn for TestServer {
+    impl ServerHandler for TestServer {
         async fn pong(&self, _context: &ServerCtx) -> Result<()> {
             self.track_call("server_pong");
             Ok(())

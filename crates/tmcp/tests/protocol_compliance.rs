@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use serde_json::json;
-use tmcp::{Arguments, Error, Result, ServerConn, ServerCtx, schema::*, testutils};
+use tmcp::{Arguments, Error, Result, ServerCtx, ServerHandler, schema::*, testutils};
 
 /// Test connection implementation with echo and add tools
 struct TestConnection {
@@ -77,7 +77,7 @@ impl TestConnection {
 }
 
 #[async_trait]
-impl ServerConn for TestConnection {
+impl ServerHandler for TestConnection {
     async fn initialize(
         &self,
         _context: &ServerCtx,
@@ -118,7 +118,7 @@ impl ServerConn for TestConnection {
 
                 Ok(CallToolResult::new()
                     .with_text_content(message)
-                    .is_error(false))
+                    .as_error(false))
             }
             "add" => {
                 let args = arguments
@@ -133,7 +133,7 @@ impl ServerConn for TestConnection {
 
                 Ok(CallToolResult::new()
                     .with_text_content(format!("{}", a + b))
-                    .is_error(false))
+                    .as_error(false))
             }
             _ => Err(Error::ToolExecutionFailed {
                 tool: name,

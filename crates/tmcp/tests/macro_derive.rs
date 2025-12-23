@@ -6,7 +6,7 @@ mod tests {
 
     use serde::{Deserialize, Serialize};
     use tmcp::{
-        Error, Result, ServerConn, ServerCtx, mcp_server, schema::*, schemars,
+        Error, Result, ServerCtx, ServerHandler, mcp_server, schema::*, schemars,
         testutils::TestServerContext, tool,
     };
 

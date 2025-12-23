@@ -1,6 +1,9 @@
 #![allow(missing_docs)]
 
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::HashMap,
+    fmt::{self, Display, Formatter},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -138,8 +141,32 @@ pub struct JSONRpcResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(untagged)]
 pub enum RequestId {
+    /// String request ID.
     String(String),
+    /// Numeric request ID.
     Number(i64),
+}
+
+impl RequestId {
+    /// Convert the request ID to a string key for internal tracking.
+    ///
+    /// This normalizes both string and numeric IDs into a consistent string format
+    /// that can be used as a hash map key.
+    pub fn to_key(&self) -> String {
+        match self {
+            Self::String(s) => s.clone(),
+            Self::Number(n) => format!("__num__{n}"),
+        }
+    }
+}
+
+impl Display for RequestId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::String(s) => write!(f, "{s}"),
+            Self::Number(n) => write!(f, "{n}"),
+        }
+    }
 }
 
 /// A request that expects a response.

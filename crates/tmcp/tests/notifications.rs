@@ -6,7 +6,7 @@ mod tests {
 
     use async_trait::async_trait;
     use tmcp::{
-        ClientConn, ClientCtx, Result, ServerConn, ServerCtx, schema,
+        ClientCtx, ClientHandler, Result, ServerCtx, ServerHandler, schema,
         testutils::{connected_client_and_server_with_conn, shutdown_client_and_server},
     };
     use tokio::{
@@ -21,7 +21,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ClientConn for NotificationRecorder {
+    impl ClientHandler for NotificationRecorder {
         async fn notification(
             &self,
             _context: &ClientCtx,
@@ -43,7 +43,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ServerConn for NotifyingServer {
+    impl ServerHandler for NotifyingServer {
         async fn on_connect(&self, context: &ServerCtx, _remote_addr: &str) -> Result<()> {
             // Send a notification after connection.
             let sent_notification = self.sent_notification.clone();

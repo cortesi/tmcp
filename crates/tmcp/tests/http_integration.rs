@@ -7,7 +7,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use tmcp::{
-        Arguments, Client, Result, Server, ServerAPI, ServerConn, ServerCtx,
+        Arguments, Client, Result, Server, ServerAPI, ServerCtx, ServerHandler,
         schema::{self, *},
     };
     use tokio::time::{Duration, sleep};
@@ -17,7 +17,7 @@ mod tests {
     struct EchoConnection;
 
     #[async_trait]
-    impl ServerConn for EchoConnection {
+    impl ServerHandler for EchoConnection {
         async fn initialize(
             &self,
             _context: &ServerCtx,
@@ -64,7 +64,7 @@ mod tests {
                 .ok_or_else(|| Error::InvalidParams("Missing message".into()))?;
             Ok(CallToolResult::new()
                 .with_text_content(message)
-                .is_error(false))
+                .as_error(false))
         }
     }
 
@@ -73,7 +73,7 @@ mod tests {
         fmt::try_init().ok();
 
         // Use port 0 to let the OS assign an available port
-        let server = Server::default().with_connection(EchoConnection::default);
+        let server = Server::default().with_handler(EchoConnection::default);
         let server_handle = server.serve_http("127.0.0.1:0").await.unwrap();
 
         // Get the actual bound address

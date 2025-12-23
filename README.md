@@ -78,7 +78,7 @@ impl WeatherServer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let server = Server::default().with_connection(WeatherServer::default);
+    let server = Server::default().with_handler(WeatherServer::default);
     server.serve_stdio().await?;
     Ok(())
 }

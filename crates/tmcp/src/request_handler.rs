@@ -1,3 +1,8 @@
+//! Request/response routing and tracking.
+//!
+//! This module provides the [`RequestHandler`] which correlates outgoing requests
+//! with incoming responses, handles timeouts, and supports cancellation.
+
 use std::{
     collections::HashMap,
     result::Result as StdResult,
@@ -5,12 +10,20 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use dashmap::DashMap;
 use futures::{SinkExt, stream::SplitSink};
 use serde::de::DeserializeOwned;
-use tokio::sync::{Mutex, oneshot};
+use tokio::{
+    sync::{Mutex, oneshot},
+    time::{error::Elapsed, timeout},
+};
+use tokio_util::sync::CancellationToken;
+
+/// Type alias for the nested Result type from timeout + channel receive.
+type TimeoutResult<T> = StdResult<StdResult<T, oneshot::error::RecvError>, Elapsed>;
 
 use crate::{
     error::{Error, Result},
@@ -21,6 +34,9 @@ use crate::{
     },
     transport::TransportStream,
 };
+
+/// Default request timeout in milliseconds (30 seconds).
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 /// Type for handling either a response or error from JSON-RPC
 #[derive(Debug)]
@@ -34,68 +50,212 @@ pub enum ResponseOrError {
 /// Transport sink type used by the request handler.
 pub type TransportSink = Arc<Mutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
 
-/// Common request/response handling functionality shared between Client and ServerCtx
+/// Metadata for a pending request, including its response channel and cancellation token.
+struct PendingRequest {
+    /// Channel to send the response back to the caller.
+    response_tx: oneshot::Sender<ResponseOrError>,
+    /// Cancellation token for this specific request.
+    cancel_token: CancellationToken,
+}
+
+/// Common request/response handling functionality shared between Client and ServerCtx.
+///
+/// The `RequestHandler` is responsible for:
+/// - Correlating outgoing requests with incoming responses via request IDs
+/// - Enforcing request timeouts to prevent resource leaks
+/// - Supporting request cancellation
+/// - Cleaning up stale pending requests
 #[derive(Clone)]
 pub struct RequestHandler {
-    /// Transport sink for sending messages
+    /// Transport sink for sending messages.
     transport_tx: Option<TransportSink>,
-    /// Pending requests waiting for responses
-    pending_requests: Arc<DashMap<String, oneshot::Sender<ResponseOrError>>>,
-    /// Next request ID counter
+    /// Pending requests waiting for responses, keyed by normalized request ID.
+    pending_requests: Arc<DashMap<String, PendingRequest>>,
+    /// Next request ID counter.
     next_request_id: Arc<AtomicU64>,
-    /// Prefix for request IDs (e.g., "req" for client, "srv-req" for server)
+    /// Prefix for request IDs (e.g., "req" for client, "srv-req" for server).
     id_prefix: String,
+    /// Request timeout in milliseconds.
+    timeout_ms: u64,
+    /// Global cancellation token for all requests (used during shutdown).
+    global_cancel: CancellationToken,
 }
 
 impl RequestHandler {
-    /// Create a new RequestHandler
+    /// Create a new RequestHandler with default timeout.
     pub fn new(transport_tx: Option<TransportSink>, id_prefix: String) -> Self {
         Self {
             transport_tx,
             pending_requests: Arc::new(DashMap::new()),
             next_request_id: Arc::new(AtomicU64::new(1)),
             id_prefix,
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            global_cancel: CancellationToken::new(),
         }
     }
 
-    /// Set the transport sink (used when connecting)
+    /// Create a new RequestHandler with a custom timeout.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout_ms = timeout.as_millis() as u64;
+        self
+    }
+
+    /// Set the transport sink (used when connecting).
     pub fn set_transport(&mut self, transport_tx: TransportSink) {
         self.transport_tx = Some(transport_tx);
     }
 
-    /// Send a request and wait for response
+    /// Get the global cancellation token.
+    ///
+    /// This token is cancelled when the handler is shut down, which cancels all pending requests.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.global_cancel.clone()
+    }
+
+    /// Cancel all pending requests.
+    ///
+    /// This is typically called during shutdown to unblock any waiters.
+    pub fn cancel_all(&self) {
+        self.global_cancel.cancel();
+    }
+
+    /// Cancel a specific pending request by ID.
+    ///
+    /// Returns `true` if the request was found and cancelled, `false` otherwise.
+    pub fn cancel_request(&self, id: &str) -> bool {
+        if let Some((_, pending)) = self.pending_requests.remove(id) {
+            pending.cancel_token.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the number of pending requests.
+    pub fn pending_count(&self) -> usize {
+        self.pending_requests.len()
+    }
+
+    /// Send a request and wait for response with timeout and cancellation support.
     pub async fn request<Req, Res>(&self, request: Req) -> Result<Res>
     where
         Req: serde::Serialize + RequestMethod,
         Res: DeserializeOwned,
     {
-        let id = self.next_request_id().await;
-        let (tx, rx) = oneshot::channel();
+        let id = self.next_request_id();
+        let cancel_token = self.global_cancel.child_token();
 
-        // Store the response channel
-        self.pending_requests.insert(id.clone(), tx);
+        // Store and send the request
+        let response_rx = self
+            .store_and_send_request(&id, &request, cancel_token.clone())
+            .await?;
+
+        // Wait for response with timeout and cancellation
+        self.await_response(id, request.method(), response_rx, cancel_token)
+            .await
+    }
+
+    /// Store a pending request and send it over the transport.
+    async fn store_and_send_request<Req>(
+        &self,
+        id: &str,
+        request: &Req,
+        cancel_token: CancellationToken,
+    ) -> Result<oneshot::Receiver<ResponseOrError>>
+    where
+        Req: serde::Serialize + RequestMethod,
+    {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.pending_requests.insert(
+            id.to_string(),
+            PendingRequest {
+                response_tx,
+                cancel_token,
+            },
+        );
+
         tracing::debug!(
             "Stored pending request with ID: {}, total pending: {}",
             id,
             self.pending_requests.len()
         );
 
-        // Create the JSON-RPC request
-        let jsonrpc_request = Self::build_request(&id, &request)?;
-
+        let jsonrpc_request = Self::build_request(id, request)?;
         tracing::info!(
             "Sending request with ID: {} method: {}",
             id,
             request.method()
         );
-        self.send_message(JSONRPCMessage::Request(jsonrpc_request))
-            .await?;
 
-        // Wait for response
-        Self::process_response(rx.await, &id, request.method(), &self.pending_requests)
+        if let Err(e) = self
+            .send_message(JSONRPCMessage::Request(jsonrpc_request))
+            .await
+        {
+            self.pending_requests.remove(id);
+            return Err(e);
+        }
+
+        Ok(response_rx)
     }
 
-    /// Send a message through the transport
+    /// Wait for a response with timeout and cancellation support.
+    async fn await_response<Res>(
+        &self,
+        id: String,
+        method: &str,
+        response_rx: oneshot::Receiver<ResponseOrError>,
+        cancel_token: CancellationToken,
+    ) -> Result<Res>
+    where
+        Res: DeserializeOwned,
+    {
+        let timeout_duration = Duration::from_millis(self.timeout_ms);
+
+        tokio::select! {
+            biased;
+
+            () = cancel_token.cancelled() => {
+                self.pending_requests.remove(&id);
+                Err(Error::Cancelled { request_id: id })
+            }
+
+            result = timeout(timeout_duration, response_rx) => {
+                self.process_response_result(id, method, result)
+            }
+        }
+    }
+
+    /// Process the result of waiting for a response.
+    fn process_response_result<Res>(
+        &self,
+        id: String,
+        method: &str,
+        result: TimeoutResult<ResponseOrError>,
+    ) -> Result<Res>
+    where
+        Res: DeserializeOwned,
+    {
+        match result {
+            Ok(Ok(response_or_error)) => Self::decode_response(method, response_or_error),
+            Ok(Err(_recv_error)) => {
+                self.pending_requests.remove(&id);
+                Err(Error::Protocol(
+                    "Response channel closed unexpectedly".to_string(),
+                ))
+            }
+            Err(_timeout) => {
+                self.pending_requests.remove(&id);
+                tracing::warn!("Request {} timed out after {}ms", id, self.timeout_ms);
+                Err(Error::Timeout {
+                    request_id: id,
+                    timeout_ms: self.timeout_ms,
+                })
+            }
+        }
+    }
+
+    /// Send a message through the transport.
     pub async fn send_message(&self, message: JSONRPCMessage) -> Result<()> {
         if let Some(transport_tx) = &self.transport_tx {
             let mut tx = transport_tx.lock().await;
@@ -106,7 +266,7 @@ impl RequestHandler {
         }
     }
 
-    /// Send a notification
+    /// Send a notification.
     pub async fn send_notification(
         &self,
         method: &str,
@@ -133,8 +293,8 @@ impl RequestHandler {
             .await
     }
 
-    /// Generate the next request ID
-    async fn next_request_id(&self) -> String {
+    /// Generate the next request ID.
+    fn next_request_id(&self) -> String {
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         format!("{}-{}", self.id_prefix, id)
     }
@@ -196,41 +356,25 @@ impl RequestHandler {
         }
     }
 
-    /// Wait for a response channel and convert it into the expected result.
-    fn process_response<Res>(
-        response: StdResult<ResponseOrError, oneshot::error::RecvError>,
-        id: &str,
-        method: &str,
-        pending_requests: &DashMap<String, oneshot::Sender<ResponseOrError>>,
-    ) -> Result<Res>
-    where
-        Res: DeserializeOwned,
-    {
-        match response {
-            Ok(response_or_error) => Self::decode_response(method, response_or_error),
-            Err(e) => {
-                tracing::error!("Response channel closed for request {}: {}", id, e);
-                pending_requests.remove(id);
-                Err(Error::Protocol("Response channel closed".to_string()))
-            }
-        }
-    }
-
-    /// Handle a response from the remote side
+    /// Handle a response from the remote side.
+    ///
+    /// This method handles both string and numeric request IDs by normalizing them
+    /// to a consistent key format.
     pub async fn handle_response(&self, response: JSONRPCResponse) {
-        let RequestId::String(id) = &response.id else {
-            return;
-        };
+        let id = response.id.to_key();
 
-        let id = id.clone();
         tracing::debug!(
-            "Handling response for ID: {}, pending requests: {:?}",
+            "Handling response for ID: {}, pending requests: {}",
             id,
             self.pending_requests.len()
         );
 
-        if let Some((_, tx)) = self.pending_requests.remove(&id) {
-            if tx.send(ResponseOrError::Response(response)).is_err() {
+        if let Some((_, pending)) = self.pending_requests.remove(&id) {
+            if pending
+                .response_tx
+                .send(ResponseOrError::Response(response))
+                .is_err()
+            {
                 tracing::debug!("Response receiver dropped for request {}", id);
             }
         } else {
@@ -238,15 +382,19 @@ impl RequestHandler {
         }
     }
 
-    /// Handle an error response from the remote side
+    /// Handle an error response from the remote side.
+    ///
+    /// This method handles both string and numeric request IDs by normalizing them
+    /// to a consistent key format.
     pub async fn handle_error(&self, error: JSONRPCError) {
-        let RequestId::String(id) = &error.id else {
-            return;
-        };
+        let id = error.id.to_key();
 
-        let id = id.clone();
-        if let Some((_, tx)) = self.pending_requests.remove(&id) {
-            if tx.send(ResponseOrError::Error(error)).is_err() {
+        if let Some((_, pending)) = self.pending_requests.remove(&id) {
+            if pending
+                .response_tx
+                .send(ResponseOrError::Error(error))
+                .is_err()
+            {
                 tracing::debug!("Error receiver dropped for request {}", id);
             }
         } else {
@@ -255,8 +403,75 @@ impl RequestHandler {
     }
 }
 
-/// Trait for types that can provide a method name for requests
+/// Trait for types that can provide a method name for requests.
 pub trait RequestMethod {
     /// Return the JSON-RPC method name for this request type.
     fn method(&self) -> &'static str;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_request_id_to_key_string() {
+        let id = RequestId::String("test-123".to_string());
+        assert_eq!(id.to_key(), "test-123");
+    }
+
+    #[test]
+    fn test_request_id_to_key_number() {
+        let id = RequestId::Number(42);
+        assert_eq!(id.to_key(), "__num__42");
+    }
+
+    #[test]
+    fn test_request_id_display() {
+        let string_id = RequestId::String("abc".to_string());
+        assert_eq!(format!("{string_id}"), "abc");
+
+        let num_id = RequestId::Number(123);
+        assert_eq!(format!("{num_id}"), "123");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_all_requests() {
+        let handler = RequestHandler::new(None, "test".to_string());
+        let token = handler.cancellation_token();
+
+        // Verify token is not cancelled initially
+        assert!(!token.is_cancelled());
+
+        // Cancel all
+        handler.cancel_all();
+
+        // Verify token is now cancelled
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_specific_request() {
+        let handler = RequestHandler::new(None, "test".to_string());
+        let (tx, _rx) = oneshot::channel();
+        let cancel_token = CancellationToken::new();
+
+        handler.pending_requests.insert(
+            "test-1".to_string(),
+            PendingRequest {
+                response_tx: tx,
+                cancel_token: cancel_token.clone(),
+            },
+        );
+
+        assert_eq!(handler.pending_count(), 1);
+        assert!(handler.cancel_request("test-1"));
+        assert_eq!(handler.pending_count(), 0);
+        assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_nonexistent_request() {
+        let handler = RequestHandler::new(None, "test".to_string());
+        assert!(!handler.cancel_request("nonexistent"));
+    }
 }

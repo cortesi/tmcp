@@ -9,7 +9,7 @@ use crate::{
     schema::{self},
 };
 
-/// Context provided to ClientConnection implementations for interacting with the server
+/// Context provided to `ClientHandler` implementations for interacting with the server
 ///
 /// This context is only valid for the duration of a single method call and should not
 /// be stored or used outside of that scope. The Clone implementation is for internal
@@ -25,7 +25,7 @@ pub struct ClientCtx {
 }
 
 impl ClientCtx {
-    /// Create a new ClientConnectionContext with the given notification sender
+    /// Create a new `ClientCtx` with the given notification sender
     pub(crate) fn new(
         notification_tx: broadcast::Sender<schema::ClientNotification>,
         transport_tx: Option<TransportSink>,
@@ -204,7 +204,7 @@ impl ServerAPI for ClientCtx {
     }
 }
 
-/// Context provided to ServerConn implementations for interacting with clients
+/// Context provided to `ServerHandler` implementations for interacting with clients
 ///
 /// This context is only valid for the duration of a single method call and should not
 /// be stored or used outside of that scope. The Clone implementation is for internal

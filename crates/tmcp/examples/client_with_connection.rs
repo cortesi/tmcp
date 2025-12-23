@@ -1,19 +1,19 @@
 //! Example MCP client using a custom connection type.
 
 use async_trait::async_trait;
-use tmcp::{Client, ClientConn, ClientCtx, Result, ServerAPI, schema};
+use tmcp::{Client, ClientCtx, ClientHandler, Result, ServerAPI, schema};
 use tokio::signal::ctrl_c;
 use tracing_subscriber::fmt;
 
 /// Example client connection that handles server requests.
 #[derive(Clone)]
-struct MyClientConnection {
+struct MyClientHandler {
     /// Client name for logging.
     name: String,
 }
 
 #[async_trait]
-impl ClientConn for MyClientConnection {
+impl ClientHandler for MyClientHandler {
     async fn on_connect(&self, context: &ClientCtx) -> Result<()> {
         println!("Client connection established for: {}", self.name);
 
@@ -88,13 +88,9 @@ async fn main() -> Result<()> {
     fmt::init();
 
     // Create a client with a custom connection handler
-    let mut client = Client::new_with_connection(
-        "example-client",
-        "1.0.0",
-        MyClientConnection {
-            name: "ExampleClient".to_string(),
-        },
-    );
+    let mut client = Client::new("example-client", "1.0.0").with_handler(MyClientHandler {
+        name: "ExampleClient".to_string(),
+    });
 
     // Connect to a server via TCP
     let server_info = client.connect_tcp("127.0.0.1:3000").await?;
@@ -106,7 +102,7 @@ async fn main() -> Result<()> {
 
     // The client is now ready to handle both:
     // 1. Client-initiated requests (tools, resources, etc.)
-    // 2. Server-initiated requests (via ClientConnection trait)
+    // 2. Server-initiated requests (via ClientHandler trait)
 
     // Example: Call a tool
     match client.list_tools(None).await {

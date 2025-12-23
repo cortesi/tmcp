@@ -16,7 +16,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use tmcp::{Error, Result, Server, ServerConn, ServerCtx, schema};
+use tmcp::{Error, Result, Server, ServerCtx, ServerHandler, schema};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -53,7 +53,7 @@ impl TimeoutTestConnection {
 }
 
 #[async_trait]
-impl ServerConn for TimeoutTestConnection {
+impl ServerHandler for TimeoutTestConnection {
     async fn initialize(
         &self,
         _context: &ServerCtx,
@@ -118,7 +118,7 @@ impl ServerConn for TimeoutTestConnection {
                     }
                     Ok(schema::CallToolResult::new()
                         .with_text_content(format!("Success after {} attempts", count + 1))
-                        .is_error(false))
+                        .as_error(false))
                 }
             }
             "slow_operation" => {
@@ -131,7 +131,7 @@ impl ServerConn for TimeoutTestConnection {
 
                 Ok(schema::CallToolResult::new()
                     .with_text_content("Operation completed successfully")
-                    .is_error(false))
+                    .as_error(false))
             }
             "broken_operation" => {
                 // Return an error that is not retryable
@@ -141,7 +141,7 @@ impl ServerConn for TimeoutTestConnection {
             }
             "reliable_operation" => Ok(schema::CallToolResult::new()
                 .with_text_content("Reliable operation completed")
-                .is_error(false)),
+                .as_error(false)),
             _ => Err(Error::ToolExecutionFailed {
                 tool: name,
                 message: "Tool not found".to_string(),
@@ -196,7 +196,7 @@ async fn main() -> Result<()> {
 
     // Use the new simplified API to serve TCP connections
     Server::default()
-        .with_connection(move || {
+        .with_handler(move || {
             TimeoutTestConnection::new(
                 server_info.clone(),
                 capabilities.clone(),

@@ -39,7 +39,7 @@ impl BasicServer {
     async fn echo(&self, _context: &ServerCtx, params: EchoParams) -> Result<CallToolResult> {
         Ok(CallToolResult::new()
             .with_text_content(params.message)
-            .is_error(false))
+            .as_error(false))
     }
 }
 
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
         Commands::Stdio => {
             // Run in stdio mode - no logging to avoid interfering with JSON-RPC
             Server::default()
-                .with_connection(BasicServer::default)
+                .with_handler(BasicServer::default)
                 .serve_stdio()
                 .await?;
         }
@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
             info!("Starting TCP MCP server on {}", addr);
 
             Server::default()
-                .with_connection(BasicServer::default)
+                .with_handler(BasicServer::default)
                 .serve_tcp(addr)
                 .await?;
         }
@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
             info!("Starting HTTP MCP server on {}", addr);
 
             let handle = Server::default()
-                .with_connection(BasicServer::default)
+                .with_handler(BasicServer::default)
                 .serve_http(addr)
                 .await?;
 

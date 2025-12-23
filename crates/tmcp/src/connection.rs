@@ -10,14 +10,14 @@ use crate::{
     },
 };
 
-/// Connection trait that client implementers must implement.
-/// Each client connection will have its own instance of the implementation
+/// Handler trait that client implementers must implement.
 ///
-/// All methods take &self to allow concurrent request handling.
-/// Implementations should use interior mutability (Arc<Mutex<_>>, RwLock, etc.)
+/// Each client connection will have its own instance of the implementation.
+/// All methods take `&self` to allow concurrent request handling.
+/// Implementations should use interior mutability (`Arc<Mutex<_>>`, `RwLock`, etc.)
 /// for any mutable state.
 #[async_trait]
-pub trait ClientConn: Send + Sync + Clone {
+pub trait ClientHandler: Send + Sync + Clone {
     /// Called when a new connection is established
     async fn on_connect(&self, _context: &ClientCtx) -> Result<()> {
         Ok(())
@@ -68,14 +68,14 @@ pub trait ClientConn: Send + Sync + Clone {
     }
 }
 
-/// Connection trait that server implementers must implement
-/// Each client connection will have its own instance of the implementation
+/// Handler trait that server implementers must implement.
 ///
-/// All methods take &self to allow concurrent request handling.
-/// Implementations should use interior mutability (Arc<Mutex<_>>, RwLock, etc.)
+/// Each client connection will have its own instance of the implementation.
+/// All methods take `&self` to allow concurrent request handling.
+/// Implementations should use interior mutability (`Arc<Mutex<_>>`, `RwLock`, etc.)
 /// for any mutable state.
 #[async_trait]
-pub trait ServerConn: Send + Sync {
+pub trait ServerHandler: Send + Sync {
     /// Called when a new connection is established
     ///
     /// # Arguments

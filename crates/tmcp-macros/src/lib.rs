@@ -1,8 +1,8 @@
 //! Macros to make defining MCP servers easier
 //!
 //! Using the #[mcp_server] macro on an impl block, this crate will pick up all methods
-//! marked with #[tool] and derive the necessary ServerConn::call_tool, ServerConn::list_tools and
-//! ServerConn::initialize methods. The name of the server is derived from the name of the struct
+//! marked with #[tool] and derive the necessary ServerHandler::call_tool, ServerHandler::list_tools and
+//! ServerHandler::initialize methods. The name of the server is derived from the name of the struct
 //! converted to snake_case (e.g., MyServer becomes my_server), and the description is derived
 //! from the doc comment on the impl block. The version is set to "0.1.0" by default.
 //!
@@ -285,7 +285,7 @@ fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
     ))
 }
 
-/// Generate the ServerConn::call_tool implementation.
+/// Generate the ServerHandler::call_tool implementation.
 fn generate_call_tool(info: &ServerInfo) -> TokenStream {
     let tool_matches = info.tools.iter().map(|tool| {
         let name = &tool.name;
@@ -319,7 +319,7 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
     }
 }
 
-/// Generate the ServerConn::list_tools implementation.
+/// Generate the ServerHandler::list_tools implementation.
 fn generate_list_tools(info: &ServerInfo) -> TokenStream {
     let tools = info.tools.iter().map(|tool| {
         let name = &tool.name;
@@ -348,7 +348,7 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
     }
 }
 
-/// Generate the ServerConn::initialize implementation.
+/// Generate the ServerHandler::initialize implementation.
 fn generate_initialize(info: &ServerInfo, custom_init_fn: Option<&syn::Ident>) -> TokenStream {
     if let Some(init_fn) = custom_init_fn {
         // Use the custom initialize function
@@ -369,7 +369,7 @@ fn generate_initialize(info: &ServerInfo, custom_init_fn: Option<&syn::Ident>) -
     }
 }
 
-/// Generate the default ServerConn::initialize implementation.
+/// Generate the default ServerHandler::initialize implementation.
 fn generate_default_initialize(info: &ServerInfo) -> TokenStream {
     let snake_case_name = info.struct_name.to_snake_case();
     let description = &info.description;
@@ -495,7 +495,7 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
         #impl_block
 
         #[async_trait::async_trait]
-        impl tmcp::ServerConn for #struct_name {
+        impl tmcp::ServerHandler for #struct_name {
             #initialize
             #list_tools
             #call_tool
@@ -503,7 +503,7 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
     })
 }
 
-/// Derive the ServerConn methods from an impl block.
+/// Derive the ServerHandler methods from an impl block.
 #[proc_macro_attribute]
 pub fn mcp_server(
     attr: proc_macro::TokenStream,
@@ -886,8 +886,8 @@ mod tests {
         assert!(result_str.contains("impl TestServer"));
         assert!(result_str.contains("async fn echo"));
 
-        // Check that ServerConn impl is generated
-        assert!(result_str.contains("impl tmcp :: ServerConn for TestServer"));
+        // Check that ServerHandler impl is generated
+        assert!(result_str.contains("impl tmcp :: ServerHandler for TestServer"));
         assert!(result_str.contains("async fn initialize"));
         assert!(result_str.contains("async fn list_tools"));
         assert!(result_str.contains("async fn call_tool"));

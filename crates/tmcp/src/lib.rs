@@ -51,7 +51,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     let server = Server::default().with_connection(WeatherServer::default);
+//!     let server = Server::default().with_handler(WeatherServer::default);
 //!     server.serve_stdio().await?;
 //!     Ok(())
 //! }
@@ -96,7 +96,7 @@ pub mod testutils;
 pub use api::*;
 pub use arguments::Arguments;
 pub use client::Client;
-pub use connection::{ClientConn, ServerConn};
+pub use connection::{ClientHandler, ServerHandler};
 pub use context::{ClientCtx, ServerCtx};
 pub use error::{Error, Result};
 pub use server::{Server, ServerHandle};

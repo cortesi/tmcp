@@ -29,6 +29,8 @@ impl Arguments {
     /// Insert a single key/value pair, returning the updated `Arguments`.
     ///
     /// This enables fluent construction without an intermediate `HashMap`.
+    /// For infallible chaining with common types (strings, numbers, bools),
+    /// use [`insert`](Self::insert) instead.
     pub fn set(
         mut self,
         key: impl Into<String>,
@@ -37,6 +39,27 @@ impl Arguments {
         let v = serde_json::to_value(value)?;
         self.0.insert(key.into(), v);
         Ok(self)
+    }
+
+    /// Insert a JSON value directly, enabling infallible fluent chaining.
+    ///
+    /// Use this for common types that can be converted to `Value`:
+    /// - Strings: `"hello"`, `String::from("hello")`
+    /// - Numbers: `42`, `3.14`
+    /// - Booleans: `true`, `false`
+    /// - Null: `()`
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let args = Arguments::new()
+    ///     .insert("name", "Alice")
+    ///     .insert("count", 42)
+    ///     .insert("enabled", true);
+    /// ```
+    pub fn insert(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.0.insert(key.into(), value.into());
+        self
     }
 
     /// Deserialize the arguments into the desired type.

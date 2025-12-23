@@ -8,7 +8,9 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use tmcp::{Client, Result, Server, ServerAPI, ServerConn, ServerCtx, schema::*, testutils::*};
+    use tmcp::{
+        Client, Result, Server, ServerAPI, ServerCtx, ServerHandler, schema::*, testutils::*,
+    };
     use tokio::{
         net::TcpListener,
         sync::Mutex,
@@ -34,7 +36,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ServerConn for LifecycleTestServer {
+    impl ServerHandler for LifecycleTestServer {
         async fn on_connect(&self, _ctx: &ServerCtx, remote_addr: &str) -> Result<()> {
             self.connect_count.fetch_add(1, Ordering::SeqCst);
             let mut addrs = self.connect_addrs.lock().await;
@@ -63,7 +65,7 @@ mod tests {
         // Test using stream transport (simulates stdio in tests)
         let server_impl = LifecycleTestServer::default();
         let server_clone = server_impl.clone();
-        let server = Server::default().with_connection(move || server_clone.clone());
+        let server = Server::default().with_handler(move || server_clone.clone());
 
         // Create stream pair
         let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
@@ -109,8 +111,7 @@ mod tests {
         let server_task = tokio::spawn(async move {
             while let Ok((stream, _peer_addr)) = listener.accept().await {
                 let server_impl_clone = server_impl_for_factory.clone();
-                let server =
-                    Server::default().with_connection(move || (*server_impl_clone).clone());
+                let server = Server::default().with_handler(move || (*server_impl_clone).clone());
 
                 tokio::spawn(async move {
                     let (read, write) = stream.into_split();
@@ -142,7 +143,7 @@ mod tests {
         // Test HTTP transport
         let server_impl = LifecycleTestServer::default();
         let server_clone = server_impl.clone();
-        let server = Server::default().with_connection(move || server_clone.clone());
+        let server = Server::default().with_handler(move || server_clone.clone());
 
         // Start HTTP server
         let http_server = server.serve_http("127.0.0.1:0").await.unwrap();
@@ -197,7 +198,7 @@ mod tests {
         // First connection
         let server_clone = server_impl.clone();
         let (mut client1, handle1) = connected_client_and_server(move || {
-            Box::new(server_clone.clone()) as Box<dyn ServerConn>
+            Box::new(server_clone.clone()) as Box<dyn ServerHandler>
         })
         .await
         .unwrap();
@@ -208,7 +209,7 @@ mod tests {
         // Second connection
         let server_clone2 = server_impl.clone();
         let (mut client2, handle2) = connected_client_and_server(move || {
-            Box::new(server_clone2.clone()) as Box<dyn ServerConn>
+            Box::new(server_clone2.clone()) as Box<dyn ServerHandler>
         })
         .await
         .unwrap();
@@ -234,7 +235,7 @@ mod tests {
     #[tokio::test]
     async fn test_client_server_interaction() {
         // Test basic client-server interaction
-        let server = Server::default().with_connection(LifecycleTestServer::default);
+        let server = Server::default().with_handler(LifecycleTestServer::default);
         let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
         let _server_handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
             .await
@@ -264,7 +265,7 @@ mod tests {
         // Test 1: Stream transport reports "unknown"
         {
             let server_clone = server_impl.clone();
-            let server = Server::default().with_connection(move || server_clone.clone());
+            let server = Server::default().with_handler(move || server_clone.clone());
             let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
             let server_handle =
                 tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
@@ -289,7 +290,7 @@ mod tests {
         // Test 2: HTTP reports server address
         {
             let server_clone = server_impl.clone();
-            let server = Server::default().with_connection(move || server_clone.clone());
+            let server = Server::default().with_handler(move || server_clone.clone());
             let http_server = server.serve_http("127.0.0.1:0").await.unwrap();
             let addr = http_server.bound_addr.clone().unwrap();
 

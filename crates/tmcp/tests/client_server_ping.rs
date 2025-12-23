@@ -6,7 +6,7 @@ mod tests {
 
     use async_trait::async_trait;
     use tmcp::{
-        ClientConn, ClientCtx, Result, ServerAPI, ServerConn, ServerCtx,
+        ClientCtx, ClientHandler, Result, ServerAPI, ServerCtx, ServerHandler,
         schema::*,
         testutils::{
             connected_client_and_server_with_conn, shutdown_client_and_server, test_client_ctx,
@@ -19,12 +19,12 @@ mod tests {
     use tracing_subscriber::fmt;
 
     #[derive(Default, Clone)]
-    struct TestClientConnection {
+    struct TestClientHandler {
         calls: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
-    impl ClientConn for TestClientConnection {
+    impl ClientHandler for TestClientHandler {
         async fn on_connect(&self, _ctx: &ClientCtx) -> Result<()> {
             self.calls.lock().unwrap().push("on_connect".into());
             Ok(())
@@ -73,10 +73,10 @@ mod tests {
         }
     }
 
-    struct TestServerConnection;
+    struct TestServerHandler;
 
     #[async_trait]
-    impl ServerConn for TestServerConnection {
+    impl ServerHandler for TestServerHandler {
         async fn initialize(
             &self,
             _ctx: &ServerCtx,
@@ -94,7 +94,7 @@ mod tests {
 
     #[tokio::test]
     async fn client_connection_trait_methods() {
-        let connection = TestClientConnection::default();
+        let connection = TestClientHandler::default();
 
         let (tx, _) = broadcast::channel(10);
         let ctx = test_client_ctx(tx);
@@ -141,8 +141,8 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
 
         let (mut client, handle) = connected_client_and_server_with_conn(
-            || Box::new(TestServerConnection),
-            TestClientConnection {
+            || Box::new(TestServerHandler),
+            TestClientHandler {
                 calls: calls.clone(),
             },
         )
