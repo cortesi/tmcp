@@ -44,9 +44,11 @@ These changes significantly improve developer experience and prevent common mist
    - Client now uses builder pattern: `Client::new(...).with_handler(...)` instead of `new_with_connection`
    - Updated all examples and tests to use new names
 
-5. [x] **Rename `is_error(bool)` method on CallToolResult** (`schema/tools.rs:89-92`)
-   - Renamed to `as_error(bool)` - reads naturally as a builder: `.as_error(true)`
-   - Updated all usages in examples and tests
+5. [x] **Improve `is_error(bool)` method ergonomics on CallToolResult** (`schema/tools.rs:89-92`)
+   - Replaced `as_error(bool)` with `mark_as_error()` (no parameter)
+   - Success is now the default — no need to call anything for success cases
+   - Only call `mark_as_error()` when the tool result represents an error
+   - Removed all redundant `.as_error(false)` calls from examples and tests
 
 6. [x] **Rename ServerConn/ClientConn traits** (`connection.rs`)
    - Renamed `ServerConn` to `ServerHandler`

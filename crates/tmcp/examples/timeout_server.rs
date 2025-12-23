@@ -117,8 +117,7 @@ impl ServerHandler for TimeoutTestConnection {
                         self.flakey_fail_count.store(0, Ordering::SeqCst);
                     }
                     Ok(schema::CallToolResult::new()
-                        .with_text_content(format!("Success after {} attempts", count + 1))
-                        .as_error(false))
+                        .with_text_content(format!("Success after {} attempts", count + 1)))
                 }
             }
             "slow_operation" => {
@@ -130,8 +129,7 @@ impl ServerHandler for TimeoutTestConnection {
                 info!("SlowTool completed");
 
                 Ok(schema::CallToolResult::new()
-                    .with_text_content("Operation completed successfully")
-                    .as_error(false))
+                    .with_text_content("Operation completed successfully"))
             }
             "broken_operation" => {
                 // Return an error that is not retryable
@@ -139,9 +137,9 @@ impl ServerHandler for TimeoutTestConnection {
                     "broken_operation: This operation is permanently broken".to_string(),
                 ))
             }
-            "reliable_operation" => Ok(schema::CallToolResult::new()
-                .with_text_content("Reliable operation completed")
-                .as_error(false)),
+            "reliable_operation" => {
+                Ok(schema::CallToolResult::new().with_text_content("Reliable operation completed"))
+            }
             _ => Err(Error::ToolExecutionFailed {
                 tool: name,
                 message: "Tool not found".to_string(),

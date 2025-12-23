@@ -62,9 +62,7 @@ mod tests {
             let message = args
                 .get_string("message")
                 .ok_or_else(|| Error::InvalidParams("Missing message".into()))?;
-            Ok(CallToolResult::new()
-                .with_text_content(message)
-                .as_error(false))
+            Ok(CallToolResult::new().with_text_content(message))
         }
     }
 

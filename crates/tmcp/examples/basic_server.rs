@@ -37,9 +37,7 @@ impl BasicServer {
     #[tool]
     /// Echoes back the provided message
     async fn echo(&self, _context: &ServerCtx, params: EchoParams) -> Result<CallToolResult> {
-        Ok(CallToolResult::new()
-            .with_text_content(params.message)
-            .as_error(false))
+        Ok(CallToolResult::new().with_text_content(params.message))
     }
 }
 

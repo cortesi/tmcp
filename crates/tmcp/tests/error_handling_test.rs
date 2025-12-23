@@ -118,9 +118,7 @@ mod tests {
                     return Err(Error::InvalidParams("Missing required_param".to_string()));
                 }
 
-                Ok(schema::CallToolResult::new()
-                    .with_text_content("Success")
-                    .as_error(false))
+                Ok(schema::CallToolResult::new().with_text_content("Success"))
             }
         }
 

@@ -116,9 +116,7 @@ impl ServerHandler for TestConnection {
                     Error::InvalidParams("echo: Missing message parameter".to_string())
                 })?;
 
-                Ok(CallToolResult::new()
-                    .with_text_content(message)
-                    .as_error(false))
+                Ok(CallToolResult::new().with_text_content(message))
             }
             "add" => {
                 let args = arguments
@@ -131,9 +129,7 @@ impl ServerHandler for TestConnection {
                     Error::InvalidParams("add: Missing or invalid 'b' parameter".to_string())
                 })?;
 
-                Ok(CallToolResult::new()
-                    .with_text_content(format!("{}", a + b))
-                    .as_error(false))
+                Ok(CallToolResult::new().with_text_content(format!("{}", a + b)))
             }
             _ => Err(Error::ToolExecutionFailed {
                 tool: name,

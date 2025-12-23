@@ -85,9 +85,13 @@ impl CallToolResult {
         self
     }
 
-    /// Mark this result as indicating an error (`true`) or success (`false`).
-    pub fn as_error(mut self, is_error: bool) -> Self {
-        self.is_error = Some(is_error);
+    /// Mark this result as indicating an error.
+    ///
+    /// Tool results are successful by default (when `is_error` is `None`),
+    /// so this method only needs to be called when the tool execution failed
+    /// but you still want to return content describing the failure.
+    pub fn mark_as_error(mut self) -> Self {
+        self.is_error = Some(true);
         self
     }
 
