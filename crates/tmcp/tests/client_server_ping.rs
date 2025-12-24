@@ -12,10 +12,7 @@ mod tests {
             connected_client_and_server_with_conn, shutdown_client_and_server, test_client_ctx,
         },
     };
-    use tokio::{
-        sync::broadcast,
-        time::{Duration, sleep},
-    };
+    use tokio::sync::broadcast;
     use tracing_subscriber::fmt;
 
     #[derive(Default, Clone)]
@@ -149,16 +146,13 @@ mod tests {
         .await
         .expect("setup");
 
-        sleep(Duration::from_millis(10)).await;
+        client.init().await.expect("client init");
+        client.ping().await.expect("client ping");
 
         {
             let list = calls.lock().unwrap();
             assert!(list.contains(&"on_connect".to_string()));
         }
-
-        calls.lock().unwrap().clear();
-
-        client.ping().await.expect("client ping");
 
         shutdown_client_and_server(client, handle).await;
     }

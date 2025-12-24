@@ -1,6 +1,6 @@
 //! Example demonstrating how to connect using generic AsyncRead/AsyncWrite streams
 //!
-//! This example shows how to use the connect_stream() method with various
+//! This example shows how to use the connect_stream_raw() method with various
 //! types of streams, not just process stdio.
 
 use tmcp::{Client, Result};
@@ -32,13 +32,16 @@ async fn example_duplex_streams() -> Result<()> {
 
     let mut client = Client::new("stream-example", "0.1.0");
 
-    // Connect using the streams
-    client.connect_stream(client_reader, client_writer).await?;
+    // Connect using the streams without running the MCP initialize handshake
+    client
+        .connect_stream_raw(client_reader, client_writer)
+        .await?;
 
     info!("Connected via duplex streams");
 
     // Note: This example won't actually work without a server on the other end
-    // It's just demonstrating the API
+    // It's just demonstrating the API. Use connect_stream() when you want
+    // to perform the MCP initialize handshake.
 
     Ok(())
 }
@@ -60,7 +63,7 @@ async fn example_custom_streams() -> Result<()> {
     let writer = create_custom_writer();
 
     let mut client = Client::new("stream-example", "0.1.0");
-    client.connect_stream(reader, writer).await?;
+    client.connect_stream_raw(reader, writer).await?;
 
     info!("Connected via custom streams");
 

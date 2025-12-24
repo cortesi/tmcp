@@ -41,12 +41,24 @@ where
     request_handler: RequestHandler,
     /// Connection callbacks for server-initiated requests.
     connection: C,
+    /// Context used for connection callbacks.
+    context: Option<ClientCtx>,
     /// Client name reported during initialization.
     name: String,
     /// Client version reported during initialization.
     version: String,
     /// Capabilities advertised to the server.
     client_capabilities: ClientCapabilities,
+    /// Tracks whether on_connect has been invoked for this connection.
+    on_connect_called: bool,
+}
+
+/// Result of connecting to an MCP server via a spawned process.
+pub struct ProcessConnection {
+    /// Spawned child process handle.
+    pub child: Child,
+    /// Initialization handshake result.
+    pub init: InitializeResult,
 }
 
 impl Client<()> {
@@ -55,9 +67,11 @@ impl Client<()> {
         Self {
             request_handler: RequestHandler::new(None, "req".to_string()),
             connection: (),
+            context: None,
             name: name.into(),
             version: version.into(),
             client_capabilities: ClientCapabilities::default(),
+            on_connect_called: false,
         }
     }
 
@@ -69,9 +83,11 @@ impl Client<()> {
         Client {
             request_handler: self.request_handler,
             connection: handler,
+            context: self.context,
             name: self.name,
             version: self.version,
             client_capabilities: self.client_capabilities,
+            on_connect_called: self.on_connect_called,
         }
     }
 
@@ -88,6 +104,8 @@ where
 {
     /// Connect using the provided transport
     pub(crate) async fn connect(&mut self, mut transport: Box<dyn Transport>) -> Result<()> {
+        self.context = None;
+        self.on_connect_called = false;
         transport.connect().await?;
         let stream = transport.framed()?;
 
@@ -102,6 +120,9 @@ where
     ///
     /// This is a convenience method that uses the client's configured name, version,
     /// and capabilities with the latest protocol version.
+    ///
+    /// Calling `init` triggers the `ClientHandler::on_connect` callback after the
+    /// initialization handshake completes.
     pub async fn init(&mut self) -> Result<InitializeResult> {
         let client_info = Implementation::new(self.name.clone(), self.version.clone());
 
@@ -170,12 +191,28 @@ where
         self.init().await
     }
 
-    /// Connect using generic AsyncRead and AsyncWrite streams
+    /// Connect using generic AsyncRead and AsyncWrite streams and initialize the connection.
     ///
     /// This method allows you to connect to a server using any pair of
     /// AsyncRead and AsyncWrite streams, such as process stdio, pipes,
     /// or custom implementations.
-    pub async fn connect_stream<R, W>(&mut self, reader: R, writer: W) -> Result<()>
+    ///
+    /// Use [`connect_stream_raw`](Self::connect_stream_raw) if you need to
+    /// control initialization manually.
+    pub async fn connect_stream<R, W>(&mut self, reader: R, writer: W) -> Result<InitializeResult>
+    where
+        R: AsyncRead + Send + Sync + Unpin + 'static,
+        W: AsyncWrite + Send + Sync + Unpin + 'static,
+    {
+        self.connect_stream_raw(reader, writer).await?;
+        self.init().await
+    }
+
+    /// Connect using generic AsyncRead and AsyncWrite streams without initialization.
+    ///
+    /// This method establishes a transport connection but does not perform the MCP
+    /// initialization handshake.
+    pub async fn connect_stream_raw<R, W>(&mut self, reader: R, writer: W) -> Result<()>
     where
         R: AsyncRead + Send + Sync + Unpin + 'static,
         W: AsyncWrite + Send + Sync + Unpin + 'static,
@@ -185,7 +222,31 @@ where
         self.connect(transport).await
     }
 
-    /// Spawn a process and connect to it via its stdin/stdout
+    /// Spawn a process, connect to it, and initialize the MCP handshake.
+    ///
+    /// This method spawns a new process, establishes an MCP connection
+    /// through its standard input and output streams, and runs the initialize
+    /// handshake.
+    ///
+    /// # Arguments
+    /// * `command` - A configured tokio::process::Command ready to be spawned
+    ///
+    /// # Returns
+    /// Returns the spawned Child process handle and the initialization result.
+    pub async fn connect_process(&mut self, command: Command) -> Result<ProcessConnection> {
+        let mut child = self.connect_process_raw(command).await?;
+        match self.init().await {
+            Ok(init) => Ok(ProcessConnection { child, init }),
+            Err(err) => {
+                if let Err(kill_err) = child.kill().await {
+                    warn!("Failed to kill process after init error: {}", kill_err);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Spawn a process and connect to it via its stdin/stdout without initialization.
     ///
     /// This method spawns a new process and establishes an MCP connection
     /// through its standard input and output streams.
@@ -196,7 +257,7 @@ where
     /// # Returns
     /// Returns the spawned Child process handle, allowing you to manage the
     /// process lifecycle (e.g., wait for completion, kill it, etc.)
-    pub async fn connect_process(&mut self, mut command: Command) -> Result<Child> {
+    pub async fn connect_process_raw(&mut self, mut command: Command) -> Result<Child> {
         // Configure the command to use piped stdio
         command
             .stdin(Stdio::piped())
@@ -221,7 +282,7 @@ where
         // Connect using the process streams
         // Note: We swap the order here - the child's stdout is our reader,
         // and the child's stdin is our writer
-        self.connect_stream(stdout, stdin).await?;
+        self.connect_stream_raw(stdout, stdin).await?;
 
         Ok(child)
     }
@@ -241,6 +302,20 @@ where
         params: Option<serde_json::Value>,
     ) -> Result<()> {
         self.request_handler.send_notification(method, params).await
+    }
+
+    /// Invoke the connection callback if it has not run yet.
+    async fn call_on_connect(&mut self) -> Result<()> {
+        if self.on_connect_called {
+            return Ok(());
+        }
+
+        let context = self.context.as_ref().ok_or_else(|| {
+            Error::InternalError("Client context not available for on_connect".into())
+        })?;
+        self.connection.on_connect(context).await?;
+        self.on_connect_called = true;
+        Ok(())
     }
 
     /// Start the background task that handles incoming messages
@@ -263,10 +338,8 @@ where
         let (client_notification_tx, mut client_notification_rx) = broadcast::channel(100);
 
         // Create the context for the connection
-        let context = ClientCtx::new(client_notification_tx.clone(), Some(tx.clone()));
-
-        // Initialize connection
-        connection.on_connect(&context).await?;
+        let context = ClientCtx::new(client_notification_tx, Some(tx.clone()));
+        self.context = Some(context.clone());
 
         // Clone sink for notification handler
         let notification_sink = tx.clone();
@@ -389,6 +462,8 @@ where
         // Send the initialized notification to complete the handshake
         self.send_notification("notifications/initialized", None)
             .await?;
+
+        self.call_on_connect().await?;
 
         Ok(result)
     }
@@ -1082,13 +1157,10 @@ mod tests {
 
         // Create and connect client using connect_stream
         let mut client = Client::new("test-client", "1.0.0");
-        client
+        let result = client
             .connect_stream(client_reader, client_writer)
             .await
             .expect("Failed to connect client");
-
-        // Test that we can initialize
-        let result = client.init().await.expect("Failed to initialize");
 
         assert_eq!(result.server_info.name, "test-server");
 

@@ -79,7 +79,7 @@ mod tests {
             .connect_stream(client_reader, client_writer)
             .await
             .unwrap();
-        client.init().await.unwrap();
+        client.list_tools(None).await.ok();
 
         // Verify on_connect was called
         assert_eq!(server_impl.connect_count.load(Ordering::SeqCst), 1);
@@ -123,7 +123,6 @@ mod tests {
         // Connect client
         let mut client = Client::new("tcp-client", "1.0.0");
         client.connect_tcp(&addr.to_string()).await.unwrap();
-        client.init().await.unwrap();
 
         // Verify on_connect
         sleep(Duration::from_millis(100)).await;
@@ -155,7 +154,7 @@ mod tests {
             .connect_http(&format!("http://{addr}"))
             .await
             .unwrap();
-        client1.init().await.unwrap();
+        client1.list_tools(None).await.ok();
 
         // HTTP server has single lifecycle - one on_connect for all clients
         assert_eq!(server_impl.connect_count.load(Ordering::SeqCst), 1);
@@ -169,7 +168,7 @@ mod tests {
             .connect_http(&format!("http://{addr}"))
             .await
             .unwrap();
-        client2.init().await.unwrap();
+        client2.list_tools(None).await.ok();
 
         // Still only one on_connect
         assert_eq!(server_impl.connect_count.load(Ordering::SeqCst), 1);
@@ -203,6 +202,7 @@ mod tests {
         .await
         .unwrap();
         client1.init().await.unwrap();
+        client1.list_tools(None).await.ok();
 
         assert_eq!(server_impl.connect_count.load(Ordering::SeqCst), 1);
 
@@ -214,6 +214,7 @@ mod tests {
         .await
         .unwrap();
         client2.init().await.unwrap();
+        client2.list_tools(None).await.ok();
 
         assert_eq!(server_impl.connect_count.load(Ordering::SeqCst), 2);
 
@@ -247,7 +248,6 @@ mod tests {
             .connect_stream(client_reader, client_writer)
             .await
             .unwrap();
-        client.init().await.unwrap();
 
         // Verify client can make requests
         let tools = client.list_tools(None).await.unwrap();
@@ -277,7 +277,7 @@ mod tests {
                 .connect_stream(client_reader, client_writer)
                 .await
                 .unwrap();
-            client.init().await.unwrap();
+            client.list_tools(None).await.ok();
 
             let addrs = server_impl.connect_addrs.lock().await;
             assert_eq!(addrs.last().unwrap(), "unknown");
@@ -299,7 +299,7 @@ mod tests {
                 .connect_http(&format!("http://{addr}"))
                 .await
                 .unwrap();
-            client.init().await.unwrap();
+            client.list_tools(None).await.ok();
 
             let addrs = server_impl.connect_addrs.lock().await;
             assert_eq!(addrs.last().unwrap(), &addr);

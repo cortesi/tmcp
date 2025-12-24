@@ -290,13 +290,10 @@ mod tests {
 
         // Create tmcp client
         let mut client = Client::new("test-client", "0.1.0");
-        client
+        let init_result = client
             .connect_stream(client_reader, client_writer)
             .await
             .unwrap();
-
-        // Initialize
-        let init_result = client.init().await.unwrap();
 
         // Check server info is valid
         assert!(!init_result.server_info.name.is_empty());

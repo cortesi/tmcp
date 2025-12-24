@@ -224,8 +224,8 @@ impl ServerHandle {
         let shutdown_token = CancellationToken::new();
         let shutdown_token_task = shutdown_token.clone();
 
-        // Track whether we've called on_connect yet
-        let mut connected = false;
+        // Track whether we've called on_connect after initialization
+        let mut initialized = false;
 
         // Start the main server loop in a background task
         let handle = tokio::spawn(async move {
@@ -241,27 +241,55 @@ impl ServerHandle {
                         match result {
                             Some(Ok(message)) => {
                                 if let Some(conn) = &connection {
-                                    // Call on_connect when we receive the first message from client
-                                    if !connected {
-                                        if let Err(e) = conn.on_connect(&server_ctx, &remote_addr).await {
-                                            error!("Error during on_connect: {}", e);
-                                            break;
-                                        }
-                                        connected = true;
-                                    }
+                                    match message {
+                                        JSONRPCMessage::Request(request)
+                                            if !initialized && request.request.method == "initialize" =>
+                                        {
+                                            let response =
+                                                handle_request(conn.as_ref().as_ref(), request, &server_ctx)
+                                                    .await;
+                                            let should_connect =
+                                                matches!(response, JSONRPCMessage::Response(_));
 
-                                    // Handle responses and errors from client specially
-                                    match &message {
+                                            {
+                                                let mut sink = sink_tx.lock().await;
+                                                if let Err(e) = sink.send(response).await {
+                                                    error!("Error sending initialize response: {}", e);
+                                                    break;
+                                                }
+                                            }
+
+                                            if should_connect {
+                                                if let Err(e) = conn.on_connect(&server_ctx, &remote_addr).await {
+                                                    error!("Error during on_connect: {}", e);
+                                                    break;
+                                                }
+                                                initialized = true;
+                                            }
+                                        }
                                         JSONRPCMessage::Response(response) => {
-                                            tracing::info!("Server received response from client: {:?}", response.id);
-                                            server_ctx.handle_client_response(response.clone()).await;
+                                            tracing::info!(
+                                                "Server received response from client: {:?}",
+                                                response.id
+                                            );
+                                            server_ctx.handle_client_response(response).await;
                                         }
                                         JSONRPCMessage::Error(error) => {
-                                            tracing::info!("Server received error from client: {:?}", error.id);
-                                            server_ctx.handle_client_error(error.clone()).await;
+                                            tracing::info!(
+                                                "Server received error from client: {:?}",
+                                                error.id
+                                            );
+                                            server_ctx.handle_client_error(error).await;
                                         }
-                                        _ => {
-                                            if let Err(e) = handle_message_with_connection(conn.clone(), message, response_tx.clone(), &server_ctx).await {
+                                        other => {
+                                            if let Err(e) = handle_message_with_connection(
+                                                conn.clone(),
+                                                other,
+                                                response_tx.clone(),
+                                                &server_ctx,
+                                            )
+                                            .await
+                                            {
                                                 error!("Error handling message: {}", e);
                                             }
                                         }

@@ -54,7 +54,7 @@ pub mod testutils;
 
 pub use api::*;
 pub use arguments::Arguments;
-pub use client::Client;
+pub use client::{Client, ProcessConnection};
 pub use connection::{ClientHandler, ServerHandler};
 pub use context::{ClientCtx, ServerCtx};
 pub use error::{Error, Result};

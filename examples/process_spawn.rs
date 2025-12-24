@@ -26,10 +26,10 @@ async fn main() -> Result<()> {
     info!("Spawning MCP server process...");
 
     // Spawn the process and connect to it
-    let mut child = match client.connect_process(cmd).await {
-        Ok(child) => {
+    let connection = match client.connect_process(cmd).await {
+        Ok(connection) => {
             info!("Successfully spawned and connected to process");
-            child
+            connection
         }
         Err(e) => {
             error!("Failed to spawn process: {}", e);
@@ -37,26 +37,14 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Initialize the connection
-    match client.init().await {
-        Ok(result) => {
-            info!(
-                "Connected to server: {} v{}",
-                result.server_info.name, result.server_info.version
-            );
+    let tmcp::ProcessConnection { mut child, init } = connection;
+    info!(
+        "Connected to server: {} v{}",
+        init.server_info.name, init.server_info.version
+    );
 
-            if let Some(instructions) = result.instructions {
-                info!("Server instructions: {}", instructions);
-            }
-        }
-        Err(e) => {
-            error!("Failed to initialize: {}", e);
-            // Kill the process if initialization fails
-            if let Err(err) = child.kill().await {
-                error!("Failed to kill child process after init error: {}", err);
-            }
-            return Err(e);
-        }
+    if let Some(instructions) = init.instructions {
+        info!("Server instructions: {}", instructions);
     }
 
     // List available tools

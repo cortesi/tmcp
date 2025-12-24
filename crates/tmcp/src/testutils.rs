@@ -47,7 +47,7 @@ pub fn make_duplex_pair() -> (
 }
 
 /// Spin up an in-memory server using the supplied handler factory
-/// and establish a connected [`Client`].
+/// and establish a connected [`Client`] without running initialization.
 ///
 /// The helper takes care of wiring up the in-memory transport and saves the
 /// caller from having to remember the exact incantations required to start the
@@ -71,12 +71,15 @@ where
     let mut client = Client::new("test-client", "1.0.0");
 
     // Connect the client to its side of the in-memory transport.
-    client.connect_stream(client_reader, client_writer).await?;
+    client
+        .connect_stream_raw(client_reader, client_writer)
+        .await?;
 
     Ok((client, server_handle))
 }
 
 /// Helper function to create a connected client and server with a custom client handler.
+/// The client transport is connected but not initialized.
 pub async fn connected_client_and_server_with_conn<F, C>(
     handler_factory: F,
     client_handler: C,
@@ -98,7 +101,9 @@ where
     let mut client = Client::new("test-client", "1.0.0").with_handler(client_handler);
 
     // Connect the client to its side of the in-memory transport.
-    client.connect_stream(client_reader, client_writer).await?;
+    client
+        .connect_stream_raw(client_reader, client_writer)
+        .await?;
 
     Ok((client, server_handle))
 }

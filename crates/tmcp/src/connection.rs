@@ -18,7 +18,7 @@ use crate::{
 /// for any mutable state.
 #[async_trait]
 pub trait ClientHandler: Send + Sync + Clone {
-    /// Called when a new connection is established
+    /// Called after the initialization handshake completes.
     async fn on_connect(&self, _context: &ClientCtx) -> Result<()> {
         Ok(())
     }
@@ -76,7 +76,7 @@ pub trait ClientHandler: Send + Sync + Clone {
 /// for any mutable state.
 #[async_trait]
 pub trait ServerHandler: Send + Sync {
-    /// Called when a new connection is established
+    /// Called after the client has completed the initialize handshake.
     ///
     /// # Arguments
     /// * `context` - The server context
