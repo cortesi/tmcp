@@ -44,6 +44,7 @@ mod tests {
         ) -> Result<ListToolsResult> {
             tracing::info!("EchoConnection.tools_list called");
             let schema = ToolSchema {
+                schema: None,
                 schema_type: "object".to_string(),
                 properties: Some({
                     let mut props = HashMap::new();
@@ -68,6 +69,7 @@ mod tests {
             _context: &ServerCtx,
             name: String,
             arguments: Option<Arguments>,
+            _task: Option<TaskMetadata>,
         ) -> Result<CallToolResult> {
             if name != "echo" {
                 return Err(Error::ToolExecutionFailed {
@@ -83,7 +85,7 @@ mod tests {
             })?;
 
             Ok(CallToolResult {
-                content: vec![Content::Text(TextContent {
+                content: vec![ContentBlock::Text(TextContent {
                     text: message,
                     annotations: None,
                     _meta: None,
@@ -116,6 +118,7 @@ mod tests {
                 prompts: None,
                 logging: None,
                 completions: None,
+                tasks: None,
                 experimental: None,
             });
 
@@ -307,14 +310,14 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("text".to_string(), json!("hello"));
         let result = client
-            .call_tool("reverse", Some(args.into()))
+            .call_tool("reverse", Some(args.into()), None)
             .await
             .unwrap();
 
         // Verify reversed result
         assert_eq!(result.content.len(), 1);
         match &result.content[0] {
-            Content::Text(text) => {
+            ContentBlock::Text(text) => {
                 assert_eq!(text.text, "olleh");
             }
             _ => panic!("Expected text content"),

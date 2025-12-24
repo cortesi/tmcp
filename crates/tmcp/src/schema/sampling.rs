@@ -23,6 +23,14 @@ pub struct CreateMessageParams {
     pub stop_sequences: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    #[serde(rename = "toolChoice", skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _meta: Option<RequestMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,11 +41,24 @@ pub enum IncludeContext {
     AllServers,
 }
 
-#[with_meta]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolChoice {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ToolChoiceMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolChoiceMode {
+    Auto,
+    Required,
+    None,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMessageResult {
-    pub role: Role,
-    pub content: SamplingContent,
+    #[serde(flatten)]
+    pub message: SamplingMessage,
     pub model: String,
     #[serde(rename = "stopReason", skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<StopReason>,
@@ -49,22 +70,16 @@ pub enum StopReason {
     EndTurn,
     StopSequence,
     MaxTokens,
+    ToolUse,
     #[serde(untagged)]
     Other(String),
 }
 
+#[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingMessage {
     pub role: Role,
-    pub content: SamplingContent,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum SamplingContent {
-    Text(TextContent),
-    Image(ImageContent),
-    Audio(AudioContent),
+    pub content: OneOrMany<SamplingMessageContentBlock>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

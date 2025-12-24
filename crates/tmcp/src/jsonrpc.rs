@@ -14,9 +14,20 @@ where
     let params = serde_json::to_value(notification)
         .ok()
         .and_then(|v| v.as_object().cloned())
-        .map(|obj| NotificationParams {
-            _meta: None,
-            other: obj.into_iter().collect(),
+        .and_then(|mut obj| {
+            obj.remove("method");
+            let meta = obj
+                .remove("_meta")
+                .and_then(|value| value.as_object().cloned())
+                .map(|map| map.into_iter().collect::<HashMap<_, _>>());
+            if obj.is_empty() && meta.is_none() {
+                None
+            } else {
+                Some(NotificationParams {
+                    _meta: meta,
+                    other: obj.into_iter().collect(),
+                })
+            }
         });
 
     JSONRPCNotification {
@@ -35,9 +46,11 @@ pub trait NotificationTrait: serde::Serialize {
 impl NotificationTrait for schema::ServerNotification {
     fn method(&self) -> String {
         match self {
-            Self::ToolListChanged => "notifications/tools/list_changed".to_string(),
-            Self::ResourceListChanged => "notifications/resources/list_changed".to_string(),
-            Self::PromptListChanged => "notifications/prompts/list_changed".to_string(),
+            Self::ToolListChanged { .. } => "notifications/tools/list_changed".to_string(),
+            Self::ResourceListChanged { .. } => "notifications/resources/list_changed".to_string(),
+            Self::PromptListChanged { .. } => "notifications/prompts/list_changed".to_string(),
+            Self::ElicitationComplete { .. } => "notifications/elicitation/complete".to_string(),
+            Self::TaskStatus { .. } => "notifications/tasks/status".to_string(),
             Self::ResourceUpdated { .. } => "notifications/resources/updated".to_string(),
             Self::LoggingMessage { .. } => "notifications/message".to_string(),
             Self::Progress { .. } => "notifications/progress".to_string(),
@@ -50,8 +63,9 @@ impl NotificationTrait for schema::ServerNotification {
 impl NotificationTrait for schema::ClientNotification {
     fn method(&self) -> String {
         match self {
-            Self::Initialized => "notifications/initialized".to_string(),
-            Self::RootsListChanged => "notifications/roots/list_changed".to_string(),
+            Self::Initialized { .. } => "notifications/initialized".to_string(),
+            Self::RootsListChanged { .. } => "notifications/roots/list_changed".to_string(),
+            Self::TaskStatus { .. } => "notifications/tasks/status".to_string(),
             Self::Cancelled { .. } => "notifications/cancelled".to_string(),
             Self::Progress { .. } => "notifications/progress".to_string(),
         }
@@ -64,10 +78,10 @@ pub fn create_jsonrpc_error(
     code: i64,
     message: String,
     data: Option<serde_json::Value>,
-) -> JSONRPCError {
-    JSONRPCError {
+) -> JSONRPCErrorResponse {
+    JSONRPCErrorResponse {
         jsonrpc: JSONRPC_VERSION.to_string(),
-        id,
+        id: Some(id),
         error: ErrorObject {
             code: code as i32,
             message,
@@ -84,7 +98,7 @@ where
     match result {
         Ok(value) => {
             let json_value = serde_json::to_value(value).unwrap_or(serde_json::json!({}));
-            JSONRPCMessage::Response(JSONRPCResponse {
+            JSONRPCMessage::Response(JSONRPCResponse::Result(JSONRPCResultResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id,
                 result: schema::JSONRpcResult {
@@ -97,18 +111,18 @@ where
                         map
                     },
                 },
-            })
+            }))
         }
         Err(e) => {
             if let Some(jsonrpc_error) = e.to_jsonrpc_response(id.clone()) {
-                JSONRPCMessage::Error(jsonrpc_error)
+                JSONRPCMessage::Response(JSONRPCResponse::Error(jsonrpc_error))
             } else {
-                JSONRPCMessage::Error(create_jsonrpc_error(
+                JSONRPCMessage::Response(JSONRPCResponse::Error(create_jsonrpc_error(
                     id,
                     INTERNAL_ERROR as i64,
                     e.to_string(),
                     None,
-                ))
+                )))
             }
         }
     }

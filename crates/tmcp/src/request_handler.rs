@@ -28,9 +28,9 @@ type TimeoutResult<T> = StdResult<StdResult<T, oneshot::error::RecvError>, Elaps
 use crate::{
     error::{Error, Result},
     schema::{
-        INVALID_PARAMS, JSONRPC_VERSION, JSONRPCError, JSONRPCMessage, JSONRPCNotification,
-        JSONRPCRequest, JSONRPCResponse, METHOD_NOT_FOUND, Notification, NotificationParams,
-        Request, RequestId, RequestParams,
+        INVALID_PARAMS, JSONRPC_VERSION, JSONRPCMessage, JSONRPCNotification, JSONRPCRequest,
+        JSONRPCResponse, METHOD_NOT_FOUND, Notification, NotificationParams, Request, RequestId,
+        RequestMeta, RequestParams,
     },
     transport::TransportStream,
 };
@@ -38,22 +38,13 @@ use crate::{
 /// Default request timeout in milliseconds (30 seconds).
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
-/// Type for handling either a response or error from JSON-RPC
-#[derive(Debug)]
-pub enum ResponseOrError {
-    /// Successful JSON-RPC response payload.
-    Response(JSONRPCResponse),
-    /// JSON-RPC error payload.
-    Error(JSONRPCError),
-}
-
 /// Transport sink type used by the request handler.
 pub type TransportSink = Arc<Mutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
 
 /// Metadata for a pending request.
 struct PendingRequest {
     /// Channel to send the response back to the caller.
-    response_tx: oneshot::Sender<ResponseOrError>,
+    response_tx: oneshot::Sender<JSONRPCResponse>,
 }
 
 /// Common request/response handling functionality shared between Client and ServerCtx.
@@ -117,7 +108,7 @@ impl RequestHandler {
         &self,
         id: &str,
         request: &Req,
-    ) -> Result<oneshot::Receiver<ResponseOrError>>
+    ) -> Result<oneshot::Receiver<JSONRPCResponse>>
     where
         Req: serde::Serialize + RequestMethod,
     {
@@ -155,7 +146,7 @@ impl RequestHandler {
         &self,
         id: String,
         method: &str,
-        response_rx: oneshot::Receiver<ResponseOrError>,
+        response_rx: oneshot::Receiver<JSONRPCResponse>,
     ) -> Result<Res>
     where
         Res: DeserializeOwned,
@@ -181,13 +172,13 @@ impl RequestHandler {
         &self,
         id: String,
         method: &str,
-        result: TimeoutResult<ResponseOrError>,
+        result: TimeoutResult<JSONRPCResponse>,
     ) -> Result<Res>
     where
         Res: DeserializeOwned,
     {
         match result {
-            Ok(Ok(response_or_error)) => Self::decode_response(method, response_or_error),
+            Ok(Ok(response)) => Self::decode_response(method, response),
             Ok(Err(_recv_error)) => {
                 self.pending_requests.remove(&id);
                 Err(Error::Protocol(
@@ -254,31 +245,39 @@ impl RequestHandler {
     where
         Req: serde::Serialize + RequestMethod,
     {
+        let mut params_obj = serde_json::to_value(request)?
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        params_obj.remove("method");
+        let meta = params_obj
+            .remove("_meta")
+            .and_then(|value| serde_json::from_value::<RequestMeta>(value).ok());
+        let params = if params_obj.is_empty() && meta.is_none() {
+            None
+        } else {
+            Some(RequestParams {
+                _meta: meta,
+                other: params_obj.into_iter().collect(),
+            })
+        };
         Ok(JSONRPCRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id: RequestId::String(id.to_string()),
             request: Request {
                 method: request.method().to_string(),
-                params: Some(RequestParams {
-                    _meta: None,
-                    other: serde_json::to_value(request)?
-                        .as_object()
-                        .unwrap_or(&serde_json::Map::new())
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                }),
+                params,
             },
         })
     }
 
     /// Decode a response payload into the expected result type.
-    fn decode_response<Res>(method: &str, response: ResponseOrError) -> Result<Res>
+    fn decode_response<Res>(method: &str, response: JSONRPCResponse) -> Result<Res>
     where
         Res: DeserializeOwned,
     {
         match response {
-            ResponseOrError::Response(response) => {
+            JSONRPCResponse::Result(response) => {
                 let mut result_value = serde_json::Map::new();
 
                 if let Some(meta) = response.result._meta {
@@ -292,7 +291,7 @@ impl RequestHandler {
                 serde_json::from_value(serde_json::Value::Object(result_value))
                     .map_err(|e| Error::Protocol(format!("Failed to deserialize response: {e}")))
             }
-            ResponseOrError::Error(error) => match error.error.code {
+            JSONRPCResponse::Error(error) => match error.error.code {
                 METHOD_NOT_FOUND => Err(Error::MethodNotFound(error.error.message)),
                 INVALID_PARAMS => Err(Error::InvalidParams(format!(
                     "{}: {}",
@@ -311,7 +310,10 @@ impl RequestHandler {
     /// This method handles both string and numeric request IDs by normalizing them
     /// to a consistent key format.
     pub async fn handle_response(&self, response: JSONRPCResponse) {
-        let id = response.id.to_key();
+        let Some(id) = Self::response_id(&response) else {
+            tracing::warn!("Received error response without ID");
+            return;
+        };
 
         tracing::debug!(
             "Handling response for ID: {}, pending requests: {}",
@@ -319,36 +321,25 @@ impl RequestHandler {
             self.pending_requests.len()
         );
 
-        if let Some((_, pending)) = self.pending_requests.remove(&id) {
-            if pending
-                .response_tx
-                .send(ResponseOrError::Response(response))
-                .is_err()
-            {
+        self.dispatch_response(&id, response);
+    }
+
+    /// Extract the request ID key from a JSON-RPC response.
+    fn response_id(response: &JSONRPCResponse) -> Option<String> {
+        match response {
+            JSONRPCResponse::Result(result) => Some(result.id.to_key()),
+            JSONRPCResponse::Error(error) => error.id.as_ref().map(RequestId::to_key),
+        }
+    }
+
+    /// Route a response to the pending request receiver, if present.
+    fn dispatch_response(&self, id: &str, response: JSONRPCResponse) {
+        if let Some((_, pending)) = self.pending_requests.remove(id) {
+            if pending.response_tx.send(response).is_err() {
                 tracing::debug!("Response receiver dropped for request {}", id);
             }
         } else {
             tracing::warn!("Received response for unknown request ID: {}", id);
-        }
-    }
-
-    /// Handle an error response from the remote side.
-    ///
-    /// This method handles both string and numeric request IDs by normalizing them
-    /// to a consistent key format.
-    pub async fn handle_error(&self, error: JSONRPCError) {
-        let id = error.id.to_key();
-
-        if let Some((_, pending)) = self.pending_requests.remove(&id) {
-            if pending
-                .response_tx
-                .send(ResponseOrError::Error(error))
-                .is_err()
-            {
-                tracing::debug!("Error receiver dropped for request {}", id);
-            }
-        } else {
-            tracing::warn!("Received error for unknown request ID: {}", id);
         }
     }
 }

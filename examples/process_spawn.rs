@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
     // Call a tool if available
     let args = Arguments::new().set("message", "Hello from spawned process!")?;
 
-    match client.call_tool("echo", Some(args)).await {
+    match client.call_tool("echo", Some(args), None).await {
         Ok(result) => {
             info!("Tool response: {:?}", result.content);
         }

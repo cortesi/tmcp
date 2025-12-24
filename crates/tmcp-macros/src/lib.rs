@@ -310,6 +310,7 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
             context: &tmcp::ServerCtx,
             name: String,
             arguments: Option<tmcp::Arguments>,
+            _task: Option<tmcp::schema::TaskMetadata>,
         ) -> tmcp::Result<tmcp::schema::CallToolResult> {
             match name.as_str() {
                 #(#tool_matches)*

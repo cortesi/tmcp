@@ -94,11 +94,11 @@ mod tests {
         args.insert("message".to_string(), serde_json::json!("hello"));
 
         let result = server
-            .call_tool(ctx.ctx(), "echo".to_string(), Some(args.into()))
+            .call_tool(ctx.ctx(), "echo".to_string(), Some(args.into()), None)
             .await
             .unwrap();
         match &result.content[0] {
-            Content::Text(text) => assert_eq!(text.text, "hello"),
+            ContentBlock::Text(text) => assert_eq!(text.text, "hello"),
             _ => panic!("Expected text content"),
         }
 
@@ -108,11 +108,11 @@ mod tests {
         args.insert("b".to_string(), serde_json::json!(2.5));
 
         let result = server
-            .call_tool(ctx.ctx(), "add".to_string(), Some(args.into()))
+            .call_tool(ctx.ctx(), "add".to_string(), Some(args.into()), None)
             .await
             .unwrap();
         match &result.content[0] {
-            Content::Text(text) => assert_eq!(text.text, "6"),
+            ContentBlock::Text(text) => assert_eq!(text.text, "6"),
             _ => panic!("Expected text content"),
         }
     }
@@ -124,14 +124,14 @@ mod tests {
 
         // Unknown tool
         let err = server
-            .call_tool(ctx.ctx(), "unknown".to_string(), None)
+            .call_tool(ctx.ctx(), "unknown".to_string(), None, None)
             .await
             .unwrap_err();
         assert!(matches!(err, Error::MethodNotFound(_)));
 
         // Missing arguments
         let err = server
-            .call_tool(ctx.ctx(), "echo".to_string(), None)
+            .call_tool(ctx.ctx(), "echo".to_string(), None, None)
             .await
             .unwrap_err();
         assert!(matches!(err, Error::InvalidParams(_)));
@@ -142,7 +142,7 @@ mod tests {
         args.insert("b".to_string(), serde_json::json!(2.0));
 
         let err = server
-            .call_tool(ctx.ctx(), "add".to_string(), Some(args.into()))
+            .call_tool(ctx.ctx(), "add".to_string(), Some(args.into()), None)
             .await
             .unwrap_err();
         assert!(matches!(err, Error::InvalidParams(_)));
@@ -219,12 +219,12 @@ mod tests {
         args.insert("message".to_string(), serde_json::json!("test"));
 
         let result = server
-            .call_tool(ctx.ctx(), "test_tool".to_string(), Some(args.into()))
+            .call_tool(ctx.ctx(), "test_tool".to_string(), Some(args.into()), None)
             .await
             .unwrap();
 
         match &result.content[0] {
-            Content::Text(text) => assert_eq!(text.text, "Custom: test"),
+            ContentBlock::Text(text) => assert_eq!(text.text, "Custom: test"),
             _ => panic!("Expected text content"),
         }
     }

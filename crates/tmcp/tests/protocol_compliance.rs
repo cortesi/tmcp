@@ -23,6 +23,7 @@ impl TestConnection {
 
         // Echo tool
         let echo_schema = ToolSchema {
+            schema: None,
             schema_type: "object".to_string(),
             properties: Some({
                 let mut props = HashMap::new();
@@ -45,6 +46,7 @@ impl TestConnection {
 
         // Add tool
         let add_schema = ToolSchema {
+            schema: None,
             schema_type: "object".to_string(),
             properties: Some({
                 let mut props = HashMap::new();
@@ -107,6 +109,7 @@ impl ServerHandler for TestConnection {
         _context: &ServerCtx,
         name: String,
         arguments: Option<Arguments>,
+        _task: Option<TaskMetadata>,
     ) -> Result<CallToolResult> {
         match name.as_str() {
             "echo" => {
@@ -171,19 +174,19 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("message".to_string(), json!("Hello, World!"));
         let result = conn
-            .call_tool(&context, "echo".to_string(), Some(args.into()))
+            .call_tool(&context, "echo".to_string(), Some(args.into()), None)
             .await
             .unwrap();
         assert_eq!(result.content.len(), 1);
         match &result.content[0] {
-            Content::Text(text) => assert_eq!(text.text, "Hello, World!"),
+            ContentBlock::Text(text) => assert_eq!(text.text, "Hello, World!"),
             _ => panic!("Expected text content"),
         }
 
         // Test error on missing arguments
         let context = create_test_context();
         let error = conn
-            .call_tool(&context, "echo".to_string(), None)
+            .call_tool(&context, "echo".to_string(), None, None)
             .await
             .unwrap_err();
         match error {
@@ -196,7 +199,7 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("wrong_field".to_string(), json!("value"));
         let error = conn
-            .call_tool(&context, "echo".to_string(), Some(args.into()))
+            .call_tool(&context, "echo".to_string(), Some(args.into()), None)
             .await
             .unwrap_err();
         match error {
@@ -222,12 +225,12 @@ mod tests {
         args.insert("a".to_string(), json!(5));
         args.insert("b".to_string(), json!(3));
         let result = conn
-            .call_tool(&context, "add".to_string(), Some(args.into()))
+            .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
             .unwrap();
         assert_eq!(result.content.len(), 1);
         match &result.content[0] {
-            Content::Text(text) => assert_eq!(text.text, "8"),
+            ContentBlock::Text(text) => assert_eq!(text.text, "8"),
             _ => panic!("Expected text content"),
         }
 
@@ -237,12 +240,12 @@ mod tests {
         args.insert("a".to_string(), json!(1.5));
         args.insert("b".to_string(), json!(2.5));
         let result = conn
-            .call_tool(&context, "add".to_string(), Some(args.into()))
+            .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
             .unwrap();
         assert_eq!(result.content.len(), 1);
         match &result.content[0] {
-            Content::Text(text) => assert_eq!(text.text, "4"),
+            ContentBlock::Text(text) => assert_eq!(text.text, "4"),
             _ => panic!("Expected text content"),
         }
 
@@ -252,19 +255,19 @@ mod tests {
         args.insert("a".to_string(), json!(-5));
         args.insert("b".to_string(), json!(3));
         let result = conn
-            .call_tool(&context, "add".to_string(), Some(args.into()))
+            .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
             .unwrap();
         assert_eq!(result.content.len(), 1);
         match &result.content[0] {
-            Content::Text(text) => assert_eq!(text.text, "-2"),
+            ContentBlock::Text(text) => assert_eq!(text.text, "-2"),
             _ => panic!("Expected text content"),
         }
 
         // Test error on missing arguments
         let context = create_test_context();
         let error = conn
-            .call_tool(&context, "add".to_string(), None)
+            .call_tool(&context, "add".to_string(), None, None)
             .await
             .unwrap_err();
         match error {
@@ -277,7 +280,7 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("b".to_string(), json!(5));
         let error = conn
-            .call_tool(&context, "add".to_string(), Some(args.into()))
+            .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
             .unwrap_err();
         match error {
@@ -290,7 +293,7 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("a".to_string(), json!(5));
         let error = conn
-            .call_tool(&context, "add".to_string(), Some(args.into()))
+            .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
             .unwrap_err();
         match error {
@@ -328,7 +331,7 @@ mod tests {
     #[test]
     fn test_content_serialization() {
         // Test that Content serializes correctly
-        let text_content = Content::Text(TextContent {
+        let text_content = ContentBlock::Text(TextContent {
             text: "Hello".to_string(),
             annotations: None,
             _meta: None,

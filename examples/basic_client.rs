@@ -94,13 +94,13 @@ async fn main() -> Result<()> {
         message: format!("Hello from tmcp {mode} client!"),
     };
     // If "echo" took no arguments you could call it with `None`:
-    // let result = client.call_tool("echo_no_args", None).await?;
+    // let result = client.call_tool("echo_no_args", None, None).await?;
 
     let args = Arguments::from_struct(params)?;
-    let result = client.call_tool("echo", Some(args)).await?;
+    let result = client.call_tool("echo", Some(args), None).await?;
 
     // Assume text response
-    if let Some(schema::Content::Text(text_content)) = result.content.first() {
+    if let Some(schema::ContentBlock::Text(text_content)) = result.content.first() {
         info!("Response: {}", text_content.text);
     }
 

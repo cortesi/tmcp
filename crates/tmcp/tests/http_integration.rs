@@ -36,6 +36,7 @@ mod tests {
             _cursor: Option<Cursor>,
         ) -> Result<ListToolsResult> {
             let schema = ToolSchema {
+                schema: None,
                 schema_type: "object".to_string(),
                 properties: Some({
                     let mut props = HashMap::new();
@@ -53,6 +54,7 @@ mod tests {
             _context: &ServerCtx,
             name: String,
             arguments: Option<Arguments>,
+            _task: Option<TaskMetadata>,
         ) -> Result<CallToolResult> {
             use tmcp::Error;
             if name != "echo" {
@@ -90,8 +92,11 @@ mod tests {
         // Call echo tool
         let mut args = HashMap::new();
         args.insert("message".to_string(), json!("hello"));
-        let result = client.call_tool("echo", Some(args.into())).await.unwrap();
-        if let Some(schema::Content::Text(text)) = result.content.first() {
+        let result = client
+            .call_tool("echo", Some(args.into()), None)
+            .await
+            .unwrap();
+        if let Some(schema::ContentBlock::Text(text)) = result.content.first() {
             assert_eq!(text.text, "hello");
         } else {
             panic!("expected text response");

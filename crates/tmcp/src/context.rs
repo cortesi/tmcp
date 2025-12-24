@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use tokio::sync::broadcast;
@@ -63,10 +65,10 @@ impl ClientCtx {
     /// Send a cancellation notification for the current request
     pub fn cancel(&self, reason: Option<String>) -> Result<()> {
         if let Some(request_id) = &self.request_id {
-            self.send_notification(schema::ClientNotification::Cancelled {
-                request_id: request_id.clone(),
+            self.send_notification(schema::ClientNotification::cancelled(
+                Some(request_id.clone()),
                 reason,
-            })
+            ))
         } else {
             Err(Error::InternalError(
                 "No request ID available to cancel".into(),
@@ -84,16 +86,16 @@ impl ServerAPI for ClientCtx {
         capabilities: schema::ClientCapabilities,
         client_info: schema::Implementation,
     ) -> Result<schema::InitializeResult> {
-        self.request(schema::ClientRequest::Initialize {
+        self.request(schema::ClientRequest::initialize(
             protocol_version,
             capabilities,
             client_info,
-        })
+        ))
         .await
     }
 
     async fn ping(&mut self) -> Result<()> {
-        let _: schema::EmptyResult = self.request(schema::ClientRequest::Ping).await?;
+        let _: schema::EmptyResult = self.request(schema::ClientRequest::ping()).await?;
         Ok(())
     }
 
@@ -101,41 +103,35 @@ impl ServerAPI for ClientCtx {
         &mut self,
         cursor: impl Into<Option<schema::Cursor>> + Send,
     ) -> Result<schema::ListToolsResult> {
-        self.request(schema::ClientRequest::ListTools {
-            cursor: cursor.into(),
-        })
-        .await
+        self.request(schema::ClientRequest::list_tools(cursor.into()))
+            .await
     }
 
     async fn call_tool(
         &mut self,
         name: impl Into<String> + Send,
         arguments: Option<crate::Arguments>,
+        task: Option<schema::TaskMetadata>,
     ) -> Result<schema::CallToolResult> {
-        self.request(schema::ClientRequest::CallTool {
-            name: name.into(),
-            arguments,
-        })
-        .await
+        self.request(schema::ClientRequest::call_tool(name, arguments, task))
+            .await
     }
 
     async fn list_resources(
         &mut self,
         cursor: impl Into<Option<schema::Cursor>> + Send,
     ) -> Result<schema::ListResourcesResult> {
-        self.request(schema::ClientRequest::ListResources {
-            cursor: cursor.into(),
-        })
-        .await
+        self.request(schema::ClientRequest::list_resources(cursor.into()))
+            .await
     }
 
     async fn list_resource_templates(
         &mut self,
         cursor: impl Into<Option<schema::Cursor>> + Send,
     ) -> Result<schema::ListResourceTemplatesResult> {
-        self.request(schema::ClientRequest::ListResourceTemplates {
-            cursor: cursor.into(),
-        })
+        self.request(schema::ClientRequest::list_resource_templates(
+            cursor.into(),
+        ))
         .await
     }
 
@@ -143,20 +139,20 @@ impl ServerAPI for ClientCtx {
         &mut self,
         uri: impl Into<String> + Send,
     ) -> Result<schema::ReadResourceResult> {
-        self.request(schema::ClientRequest::ReadResource { uri: uri.into() })
+        self.request(schema::ClientRequest::read_resource(uri))
             .await
     }
 
     async fn resources_subscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
         let _: schema::EmptyResult = self
-            .request(schema::ClientRequest::Subscribe { uri: uri.into() })
+            .request(schema::ClientRequest::subscribe(uri))
             .await?;
         Ok(())
     }
 
     async fn resources_unsubscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
         let _: schema::EmptyResult = self
-            .request(schema::ClientRequest::Unsubscribe { uri: uri.into() })
+            .request(schema::ClientRequest::unsubscribe(uri))
             .await?;
         Ok(())
     }
@@ -165,42 +161,68 @@ impl ServerAPI for ClientCtx {
         &mut self,
         cursor: impl Into<Option<schema::Cursor>> + Send,
     ) -> Result<schema::ListPromptsResult> {
-        self.request(schema::ClientRequest::ListPrompts {
-            cursor: cursor.into(),
-        })
-        .await
+        self.request(schema::ClientRequest::list_prompts(cursor.into()))
+            .await
     }
 
     async fn get_prompt(
         &mut self,
         name: impl Into<String> + Send,
-        arguments: Option<crate::Arguments>,
+        arguments: Option<HashMap<String, String>>,
     ) -> Result<schema::GetPromptResult> {
-        self.request(schema::ClientRequest::GetPrompt {
-            name: name.into(),
-            arguments,
-        })
-        .await
+        self.request(schema::ClientRequest::get_prompt(name, arguments))
+            .await
     }
 
     async fn complete(
         &mut self,
         reference: schema::Reference,
         argument: schema::ArgumentInfo,
+        context: Option<schema::CompleteContext>,
     ) -> Result<schema::CompleteResult> {
-        self.request(schema::ClientRequest::Complete {
-            reference,
-            argument,
-            context: None,
-        })
+        self.request(schema::ClientRequest::complete(
+            reference, argument, context,
+        ))
         .await
     }
 
     async fn set_level(&mut self, level: schema::LoggingLevel) -> Result<()> {
         let _: schema::EmptyResult = self
-            .request(schema::ClientRequest::SetLevel { level })
+            .request(schema::ClientRequest::set_level(level))
             .await?;
         Ok(())
+    }
+
+    async fn get_task(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<schema::GetTaskResult> {
+        self.request(schema::ClientRequest::get_task(task_id))
+            .await
+    }
+
+    async fn get_task_payload(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<schema::GetTaskPayloadResult> {
+        self.request(schema::ClientRequest::get_task_payload(task_id))
+            .await
+    }
+
+    async fn list_tasks(
+        &mut self,
+        cursor: impl Into<Option<schema::Cursor>> + Send,
+    ) -> Result<schema::ListTasksResult> {
+        self.request(schema::ClientRequest::list_tasks(cursor.into()))
+            .await
+    }
+
+    async fn cancel_task(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<schema::CancelTaskResult> {
+        self.request(schema::ClientRequest::cancel_task(task_id))
+            .await
     }
 }
 
@@ -262,20 +284,13 @@ impl ServerCtx {
         handler.handle_response(response).await
     }
 
-    /// Handle an error response from the client
-    pub(crate) async fn handle_client_error(&self, error: schema::JSONRPCError) {
-        // Clone the handler to avoid holding locks across await points
-        let handler = self.request_handler.clone();
-        handler.handle_error(error).await
-    }
-
     /// Send a cancellation notification for the current request
     pub fn cancel(&self, reason: Option<String>) -> Result<()> {
         if let Some(request_id) = &self.request_id {
-            self.notify(schema::ServerNotification::Cancelled {
-                request_id: request_id.clone(),
+            self.notify(schema::ServerNotification::cancelled(
+                Some(request_id.clone()),
                 reason,
-            })
+            ))
         } else {
             Err(Error::InternalError(
                 "No request ID available to cancel".into(),
@@ -288,7 +303,7 @@ impl ServerCtx {
 #[async_trait]
 impl ClientAPI for ServerCtx {
     async fn ping(&mut self) -> Result<()> {
-        let _: schema::EmptyResult = self.request(schema::ServerRequest::Ping).await?;
+        let _: schema::EmptyResult = self.request(schema::ServerRequest::ping()).await?;
         Ok(())
     }
 
@@ -296,15 +311,50 @@ impl ClientAPI for ServerCtx {
         &mut self,
         params: schema::CreateMessageParams,
     ) -> Result<schema::CreateMessageResult> {
-        self.request(schema::ServerRequest::CreateMessage(Box::new(params)))
+        self.request(schema::ServerRequest::create_message(params))
             .await
     }
 
     async fn list_roots(&mut self) -> Result<schema::ListRootsResult> {
-        self.request(schema::ServerRequest::ListRoots).await
+        self.request(schema::ServerRequest::list_roots()).await
     }
 
-    async fn elicit(&mut self, params: schema::ElicitParams) -> Result<schema::ElicitResult> {
-        self.request(schema::ServerRequest::Elicit(params)).await
+    async fn elicit(
+        &mut self,
+        params: schema::ElicitRequestParams,
+    ) -> Result<schema::ElicitResult> {
+        self.request(schema::ServerRequest::elicit(params)).await
+    }
+
+    async fn get_task(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<schema::GetTaskResult> {
+        self.request(schema::ServerRequest::get_task(task_id))
+            .await
+    }
+
+    async fn get_task_payload(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<schema::GetTaskPayloadResult> {
+        self.request(schema::ServerRequest::get_task_payload(task_id))
+            .await
+    }
+
+    async fn list_tasks(
+        &mut self,
+        cursor: impl Into<Option<schema::Cursor>> + Send,
+    ) -> Result<schema::ListTasksResult> {
+        self.request(schema::ServerRequest::list_tasks(cursor.into()))
+            .await
+    }
+
+    async fn cancel_task(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<schema::CancelTaskResult> {
+        self.request(schema::ServerRequest::cancel_task(task_id))
+            .await
     }
 }

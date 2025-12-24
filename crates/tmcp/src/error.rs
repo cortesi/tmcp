@@ -3,8 +3,8 @@ use std::{io, result::Result as StdResult};
 use thiserror::Error;
 
 use crate::schema::{
-    ErrorObject, INVALID_PARAMS, INVALID_REQUEST, JSONRPC_VERSION, JSONRPCError, METHOD_NOT_FOUND,
-    PARSE_ERROR, RequestId,
+    ErrorObject, INVALID_PARAMS, INVALID_REQUEST, JSONRPC_VERSION, JSONRPCErrorResponse,
+    METHOD_NOT_FOUND, PARSE_ERROR, RequestId,
 };
 
 #[derive(Error, Debug, Clone)]
@@ -139,7 +139,10 @@ impl Error {
     }
 
     /// Convert error to a specific JSONRPC response if applicable
-    pub(crate) fn to_jsonrpc_response(&self, request_id: RequestId) -> Option<JSONRPCError> {
+    pub(crate) fn to_jsonrpc_response(
+        &self,
+        request_id: RequestId,
+    ) -> Option<JSONRPCErrorResponse> {
         let (code, message) = match self {
             Self::ToolNotFound(tool_name) => {
                 (METHOD_NOT_FOUND, format!("Tool not found: {tool_name}"))
@@ -161,9 +164,9 @@ impl Error {
             _ => return None,
         };
 
-        Some(JSONRPCError {
+        Some(JSONRPCErrorResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
-            id: request_id,
+            id: Some(request_id),
             error: ErrorObject {
                 code,
                 message,

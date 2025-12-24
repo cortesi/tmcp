@@ -1,12 +1,16 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 
 use crate::{
     error::Result,
     schema::{
-        ArgumentInfo, CallToolResult, ClientCapabilities, CompleteResult, CreateMessageParams,
-        CreateMessageResult, Cursor, ElicitParams, ElicitResult, GetPromptResult, Implementation,
+        ArgumentInfo, CallToolResult, CancelTaskResult, ClientCapabilities, CompleteContext,
+        CompleteResult, CreateMessageParams, CreateMessageResult, Cursor, ElicitRequestParams,
+        ElicitResult, GetPromptResult, GetTaskPayloadResult, GetTaskResult, Implementation,
         InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-        ListRootsResult, ListToolsResult, LoggingLevel, ReadResourceResult, Reference,
+        ListRootsResult, ListTasksResult, ListToolsResult, LoggingLevel, ReadResourceResult,
+        Reference, TaskMetadata,
     },
 };
 
@@ -36,6 +40,7 @@ pub trait ServerAPI: Send + Sync {
         &mut self,
         name: impl Into<String> + Send,
         arguments: Option<crate::Arguments>,
+        task: Option<TaskMetadata>,
     ) -> Result<CallToolResult>;
 
     /// List available resources with optional pagination
@@ -70,7 +75,7 @@ pub trait ServerAPI: Send + Sync {
     async fn get_prompt(
         &mut self,
         name: impl Into<String> + Send,
-        arguments: Option<crate::Arguments>,
+        arguments: Option<HashMap<String, String>>,
     ) -> Result<GetPromptResult>;
 
     /// Handle completion requests
@@ -78,10 +83,29 @@ pub trait ServerAPI: Send + Sync {
         &mut self,
         reference: Reference,
         argument: ArgumentInfo,
+        context: Option<CompleteContext>,
     ) -> Result<CompleteResult>;
 
     /// Set the logging level
     async fn set_level(&mut self, level: LoggingLevel) -> Result<()>;
+
+    /// Retrieve the state of a task.
+    async fn get_task(&mut self, task_id: impl Into<String> + Send) -> Result<GetTaskResult>;
+
+    /// Retrieve the result of a completed task.
+    async fn get_task_payload(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<GetTaskPayloadResult>;
+
+    /// List tasks with optional pagination.
+    async fn list_tasks(
+        &mut self,
+        cursor: impl Into<Option<Cursor>> + Send,
+    ) -> Result<ListTasksResult>;
+
+    /// Cancel a task by ID.
+    async fn cancel_task(&mut self, task_id: impl Into<String> + Send) -> Result<CancelTaskResult>;
 }
 
 /// ClientAPI holds all client methods defined by the MCP specification. These methods are exposed
@@ -98,5 +122,23 @@ pub trait ClientAPI: Send + Sync {
     async fn list_roots(&mut self) -> Result<ListRootsResult>;
 
     /// Handle elicitation requests from the server
-    async fn elicit(&mut self, params: ElicitParams) -> Result<ElicitResult>;
+    async fn elicit(&mut self, params: ElicitRequestParams) -> Result<ElicitResult>;
+
+    /// Retrieve the state of a task.
+    async fn get_task(&mut self, task_id: impl Into<String> + Send) -> Result<GetTaskResult>;
+
+    /// Retrieve the result of a completed task.
+    async fn get_task_payload(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<GetTaskPayloadResult>;
+
+    /// List tasks with optional pagination.
+    async fn list_tasks(
+        &mut self,
+        cursor: impl Into<Option<Cursor>> + Send,
+    ) -> Result<ListTasksResult>;
+
+    /// Cancel a task by ID.
+    async fn cancel_task(&mut self, task_id: impl Into<String> + Send) -> Result<CancelTaskResult>;
 }

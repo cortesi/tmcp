@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures::{SinkExt, StreamExt};
+use serde::Serialize;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, ToSocketAddrs},
@@ -268,18 +269,17 @@ impl ServerHandle {
                                             }
                                         }
                                         JSONRPCMessage::Response(response) => {
+                                            let response_id = match &response {
+                                                JSONRPCResponse::Result(result) => {
+                                                    Some(result.id.clone())
+                                                }
+                                                JSONRPCResponse::Error(error) => error.id.clone(),
+                                            };
                                             tracing::info!(
                                                 "Server received response from client: {:?}",
-                                                response.id
+                                                response_id
                                             );
                                             server_ctx.handle_client_response(response).await;
-                                        }
-                                        JSONRPCMessage::Error(error) => {
-                                            tracing::info!(
-                                                "Server received error from client: {:?}",
-                                                error.id
-                                            );
-                                            server_ctx.handle_client_error(error).await;
                                         }
                                         other => {
                                             if let Err(e) = handle_message_with_connection(
@@ -421,24 +421,26 @@ impl ServerHandle {
                 .as_ref()
                 .and_then(|c| c.subscribe)
                 .unwrap_or(false),
-            ServerNotification::ResourceListChanged => self
+            ServerNotification::ResourceListChanged { .. } => self
                 .capabilities
                 .resources
                 .as_ref()
                 .and_then(|c| c.list_changed)
                 .unwrap_or(false),
-            ServerNotification::ToolListChanged => self
+            ServerNotification::ToolListChanged { .. } => self
                 .capabilities
                 .tools
                 .as_ref()
                 .and_then(|c| c.list_changed)
                 .unwrap_or(false),
-            ServerNotification::PromptListChanged => self
+            ServerNotification::PromptListChanged { .. } => self
                 .capabilities
                 .prompts
                 .as_ref()
                 .and_then(|c| c.list_changed)
                 .unwrap_or(false),
+            ServerNotification::ElicitationComplete { .. } => true,
+            ServerNotification::TaskStatus { .. } => self.capabilities.tasks.is_some(),
             ServerNotification::Progress { .. } | ServerNotification::Cancelled { .. } => true,
         }
     }
@@ -476,22 +478,6 @@ fn handle_message_without_await(
     if let JSONRPCMessage::Response(_) = message {
         // Response handling is done in the main message loop
         debug!("Response handling delegated to main loop");
-        return;
-    }
-
-    if let JSONRPCMessage::Error(_) = message {
-        // Error handling is done in the main message loop
-        debug!("Error handling delegated to main loop");
-        return;
-    }
-
-    if let JSONRPCMessage::BatchRequest(_) = message {
-        error!("Batch requests not supported");
-        return;
-    }
-
-    if let JSONRPCMessage::BatchResponse(_) = message {
-        warn!("Server received unexpected batch response");
     }
 }
 
@@ -534,7 +520,7 @@ async fn handle_request(
     match result {
         Ok(value) => {
             // Create a successful response
-            JSONRPCMessage::Response(JSONRPCResponse {
+            JSONRPCMessage::Response(JSONRPCResponse::Result(JSONRPCResultResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: request.id,
                 result: schema::JSONRpcResult {
@@ -547,23 +533,23 @@ async fn handle_request(
                         map
                     },
                 },
-            })
+            }))
         }
         Err(e) => {
             // Check if error has a specific JSONRPC response
             if let Some(jsonrpc_error) = e.to_jsonrpc_response(request.id.clone()) {
-                JSONRPCMessage::Error(jsonrpc_error)
+                JSONRPCMessage::Response(JSONRPCResponse::Error(jsonrpc_error))
             } else {
                 // For all other errors, use INTERNAL_ERROR
-                JSONRPCMessage::Error(JSONRPCError {
+                JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: request.id,
+                    id: Some(request.id),
                     error: ErrorObject {
                         code: INTERNAL_ERROR,
                         message: e.to_string(),
                         data: None,
                     },
-                })
+                }))
             }
         }
     }
@@ -575,97 +561,222 @@ async fn handle_request_inner(
     request: JSONRPCRequest,
     ctx: &ServerCtx,
 ) -> Result<serde_json::Value> {
+    let JSONRPCRequest {
+        request: Request { method, params },
+        ..
+    } = request;
+    let client_request = parse_client_request(method, params)?;
+
+    dispatch_client_request(conn, ctx, client_request).await
+}
+
+/// Parse a client request from the JSON-RPC method and params payload.
+fn parse_client_request(method: String, params: Option<RequestParams>) -> Result<ClientRequest> {
     let mut request_obj = serde_json::Map::new();
     request_obj.insert(
         "method".to_string(),
-        serde_json::Value::String(request.request.method.clone()),
+        serde_json::Value::String(method.clone()),
     );
-    if let Some(params) = request.request.params {
+    if let Some(params) = params {
+        if let Some(meta) = params._meta {
+            request_obj.insert("_meta".to_string(), serde_json::to_value(meta)?);
+        }
         for (key, value) in params.other {
             request_obj.insert(key, value);
         }
     }
 
-    let client_request =
-        match serde_json::from_value::<ClientRequest>(serde_json::Value::Object(request_obj)) {
-            Ok(req) => req,
-            Err(err) => {
-                // Check if it's an unknown method or invalid parameters
-                let err_str = err.to_string();
-                if err_str.contains("unknown variant") {
-                    return Err(Error::MethodNotFound(request.request.method.clone()));
-                } else {
-                    // It's a known method with invalid parameters
-                    return Err(Error::InvalidParams(format!(
-                        "Invalid parameters for {}: {}",
-                        request.request.method, err
-                    )));
-                }
+    match serde_json::from_value::<ClientRequest>(serde_json::Value::Object(request_obj)) {
+        Ok(req) => Ok(req),
+        Err(err) => {
+            let err_str = err.to_string();
+            if err_str.contains("unknown variant") {
+                Err(Error::MethodNotFound(method))
+            } else {
+                Err(Error::InvalidParams(format!(
+                    "Invalid parameters for {}: {}",
+                    method, err
+                )))
             }
-        };
+        }
+    }
+}
 
-    match client_request {
+/// Dispatch a parsed client request to the appropriate handler.
+async fn dispatch_client_request(
+    conn: &dyn ServerHandler,
+    ctx: &ServerCtx,
+    request: ClientRequest,
+) -> Result<serde_json::Value> {
+    match request {
         ClientRequest::Initialize {
             protocol_version,
             capabilities,
             client_info,
-        } => conn
-            .initialize(ctx, protocol_version, capabilities, client_info)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ClientRequest::Ping => {
+            _meta: _,
+        } => serialize_result(
+            conn.initialize(ctx, protocol_version, *capabilities, client_info)
+                .await,
+        ),
+        ClientRequest::Ping { .. } => {
             info!("Server received ping request, sending automatic response");
-            conn.pong(ctx).await.map(|_| serde_json::json!({}))
+            empty_result(conn.pong(ctx).await)
         }
-        ClientRequest::ListTools { cursor } => conn
-            .list_tools(ctx, cursor)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ClientRequest::CallTool { name, arguments } => conn
-            .call_tool(ctx, name, arguments)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ClientRequest::ListResources { cursor } => conn
-            .list_resources(ctx, cursor)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ClientRequest::ListResourceTemplates { cursor } => conn
-            .list_resource_templates(ctx, cursor)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ClientRequest::ReadResource { uri } => conn
-            .read_resource(ctx, uri)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ClientRequest::Subscribe { uri } => conn
-            .resources_subscribe(ctx, uri)
-            .await
-            .map(|_| serde_json::json!({})),
-        ClientRequest::Unsubscribe { uri } => conn
-            .resources_unsubscribe(ctx, uri)
-            .await
-            .map(|_| serde_json::json!({})),
-        ClientRequest::ListPrompts { cursor } => conn
-            .list_prompts(ctx, cursor)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ClientRequest::GetPrompt { name, arguments } => conn
-            .get_prompt(ctx, name, arguments)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
+        ClientRequest::ListTools { .. } | ClientRequest::CallTool { .. } => {
+            handle_tool_request(conn, ctx, request).await
+        }
+        ClientRequest::ListResources { .. }
+        | ClientRequest::ListResourceTemplates { .. }
+        | ClientRequest::ReadResource { .. }
+        | ClientRequest::Subscribe { .. }
+        | ClientRequest::Unsubscribe { .. } => handle_resource_request(conn, ctx, request).await,
+        ClientRequest::ListPrompts { .. } | ClientRequest::GetPrompt { .. } => {
+            handle_prompt_request(conn, ctx, request).await
+        }
+        ClientRequest::Complete { .. } => handle_completion_request(conn, ctx, request).await,
+        ClientRequest::SetLevel { .. } => handle_logging_request(conn, ctx, request).await,
+        ClientRequest::GetTask { .. }
+        | ClientRequest::GetTaskPayload { .. }
+        | ClientRequest::ListTasks { .. }
+        | ClientRequest::CancelTask { .. } => handle_task_request(conn, ctx, request).await,
+    }
+}
+
+/// Handle tool-related client requests.
+async fn handle_tool_request(
+    conn: &dyn ServerHandler,
+    ctx: &ServerCtx,
+    request: ClientRequest,
+) -> Result<serde_json::Value> {
+    match request {
+        ClientRequest::ListTools { cursor, _meta: _ } => {
+            serialize_result(conn.list_tools(ctx, cursor).await)
+        }
+        ClientRequest::CallTool {
+            name,
+            arguments,
+            task,
+            _meta: _,
+        } => serialize_result(conn.call_tool(ctx, name, arguments, task).await),
+        _ => Err(Error::InternalError("Unexpected tool request".to_string())),
+    }
+}
+
+/// Handle resource-related client requests.
+async fn handle_resource_request(
+    conn: &dyn ServerHandler,
+    ctx: &ServerCtx,
+    request: ClientRequest,
+) -> Result<serde_json::Value> {
+    match request {
+        ClientRequest::ListResources { cursor, _meta: _ } => {
+            serialize_result(conn.list_resources(ctx, cursor).await)
+        }
+        ClientRequest::ListResourceTemplates { cursor, _meta: _ } => {
+            serialize_result(conn.list_resource_templates(ctx, cursor).await)
+        }
+        ClientRequest::ReadResource { uri, _meta: _ } => {
+            serialize_result(conn.read_resource(ctx, uri).await)
+        }
+        ClientRequest::Subscribe { uri, _meta: _ } => {
+            empty_result(conn.resources_subscribe(ctx, uri).await)
+        }
+        ClientRequest::Unsubscribe { uri, _meta: _ } => {
+            empty_result(conn.resources_unsubscribe(ctx, uri).await)
+        }
+        _ => Err(Error::InternalError(
+            "Unexpected resource request".to_string(),
+        )),
+    }
+}
+
+/// Handle prompt-related client requests.
+async fn handle_prompt_request(
+    conn: &dyn ServerHandler,
+    ctx: &ServerCtx,
+    request: ClientRequest,
+) -> Result<serde_json::Value> {
+    match request {
+        ClientRequest::ListPrompts { cursor, _meta: _ } => {
+            serialize_result(conn.list_prompts(ctx, cursor).await)
+        }
+        ClientRequest::GetPrompt {
+            name,
+            arguments,
+            _meta: _,
+        } => serialize_result(conn.get_prompt(ctx, name, arguments).await),
+        _ => Err(Error::InternalError(
+            "Unexpected prompt request".to_string(),
+        )),
+    }
+}
+
+/// Handle completion-related client requests.
+async fn handle_completion_request(
+    conn: &dyn ServerHandler,
+    ctx: &ServerCtx,
+    request: ClientRequest,
+) -> Result<serde_json::Value> {
+    match request {
         ClientRequest::Complete {
             reference,
             argument,
-            context: _,
-        } => conn
-            .complete(ctx, reference, argument)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ClientRequest::SetLevel { level } => conn
-            .set_level(ctx, level)
-            .await
-            .map(|_| serde_json::json!({})),
+            context,
+            _meta: _,
+        } => serialize_result(conn.complete(ctx, reference, argument, context).await),
+        _ => Err(Error::InternalError(
+            "Unexpected completion request".to_string(),
+        )),
     }
+}
+
+/// Handle logging-related client requests.
+async fn handle_logging_request(
+    conn: &dyn ServerHandler,
+    ctx: &ServerCtx,
+    request: ClientRequest,
+) -> Result<serde_json::Value> {
+    match request {
+        ClientRequest::SetLevel { level, _meta: _ } => {
+            empty_result(conn.set_level(ctx, level).await)
+        }
+        _ => Err(Error::InternalError(
+            "Unexpected logging request".to_string(),
+        )),
+    }
+}
+
+/// Handle task-related client requests.
+async fn handle_task_request(
+    conn: &dyn ServerHandler,
+    ctx: &ServerCtx,
+    request: ClientRequest,
+) -> Result<serde_json::Value> {
+    match request {
+        ClientRequest::GetTask { task_id, _meta: _ } => {
+            serialize_result(conn.get_task(ctx, task_id).await)
+        }
+        ClientRequest::GetTaskPayload { task_id, _meta: _ } => {
+            serialize_result(conn.get_task_payload(ctx, task_id).await)
+        }
+        ClientRequest::ListTasks { cursor, _meta: _ } => {
+            serialize_result(conn.list_tasks(ctx, cursor).await)
+        }
+        ClientRequest::CancelTask { task_id, _meta: _ } => {
+            serialize_result(conn.cancel_task(ctx, task_id).await)
+        }
+        _ => Err(Error::InternalError("Unexpected task request".to_string())),
+    }
+}
+
+/// Serialize a handler result into JSON for a JSON-RPC response.
+fn serialize_result<T: Serialize>(result: Result<T>) -> Result<serde_json::Value> {
+    result.and_then(|value| serde_json::to_value(value).map_err(Into::into))
+}
+
+/// Convert a unit result into an empty JSON object response.
+fn empty_result(result: Result<()>) -> Result<serde_json::Value> {
+    result.map(|_| serde_json::json!({}))
 }
 
 /// Handle a notification using the Connection trait

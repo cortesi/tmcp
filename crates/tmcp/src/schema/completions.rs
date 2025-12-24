@@ -12,13 +12,13 @@ pub struct ArgumentInfo {
 #[serde(tag = "type")]
 pub enum Reference {
     #[serde(rename = "ref/resource")]
-    Resource(ResourceReference),
+    Resource(ResourceTemplateReference),
     #[serde(rename = "ref/prompt")]
     Prompt(PromptReference),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceReference {
+pub struct ResourceTemplateReference {
     pub uri: String,
 }
 

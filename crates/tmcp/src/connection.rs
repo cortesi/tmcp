@@ -1,12 +1,14 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 
 use crate::{
     Error, Result,
     context::{ClientCtx, ServerCtx},
     schema::{
-        self, Cursor, ElicitParams, ElicitResult, GetPromptResult, InitializeResult,
+        self, Cursor, ElicitRequestParams, ElicitResult, GetPromptResult, InitializeResult,
         ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListRootsResult,
-        ListToolsResult, LoggingLevel, ReadResourceResult,
+        ListTasksResult, ListToolsResult, LoggingLevel, ReadResourceResult,
     },
 };
 
@@ -51,8 +53,50 @@ pub trait ClientHandler: Send + Sync + Clone {
     }
 
     /// Request the server to elicit user input.
-    async fn elicit(&self, _context: &ClientCtx, _params: ElicitParams) -> Result<ElicitResult> {
+    async fn elicit(
+        &self,
+        _context: &ClientCtx,
+        _params: ElicitRequestParams,
+    ) -> Result<ElicitResult> {
         Err(Error::InvalidRequest("elicit not implemented".into()))
+    }
+
+    /// Retrieve the state of a task.
+    async fn get_task(
+        &self,
+        _context: &ClientCtx,
+        _task_id: String,
+    ) -> Result<schema::GetTaskResult> {
+        Err(Error::InvalidRequest("get_task not implemented".into()))
+    }
+
+    /// Retrieve the result of a completed task.
+    async fn get_task_payload(
+        &self,
+        _context: &ClientCtx,
+        _task_id: String,
+    ) -> Result<schema::GetTaskPayloadResult> {
+        Err(Error::InvalidRequest(
+            "get_task_payload not implemented".into(),
+        ))
+    }
+
+    /// List tasks.
+    async fn list_tasks(
+        &self,
+        _context: &ClientCtx,
+        _cursor: Option<Cursor>,
+    ) -> Result<ListTasksResult> {
+        Ok(ListTasksResult::default())
+    }
+
+    /// Cancel a task by ID.
+    async fn cancel_task(
+        &self,
+        _context: &ClientCtx,
+        _task_id: String,
+    ) -> Result<schema::CancelTaskResult> {
+        Err(Error::InvalidRequest("cancel_task not implemented".into()))
     }
 
     /// Handle a notification sent from the server
@@ -119,6 +163,7 @@ pub trait ServerHandler: Send + Sync {
         _context: &ServerCtx,
         name: String,
         _arguments: Option<crate::Arguments>,
+        _task: Option<schema::TaskMetadata>,
     ) -> Result<schema::CallToolResult> {
         Err(Error::ToolExecutionFailed {
             tool: name,
@@ -176,7 +221,7 @@ pub trait ServerHandler: Send + Sync {
         &self,
         _context: &ServerCtx,
         name: String,
-        _arguments: Option<crate::Arguments>,
+        _arguments: Option<HashMap<String, String>>,
     ) -> Result<GetPromptResult> {
         Err(Error::handler_error(
             "prompt",
@@ -190,6 +235,7 @@ pub trait ServerHandler: Send + Sync {
         _context: &ServerCtx,
         _reference: schema::Reference,
         _argument: schema::ArgumentInfo,
+        _context_info: Option<schema::CompleteContext>,
     ) -> Result<schema::CompleteResult> {
         Ok(schema::CompleteResult {
             completion: schema::CompletionInfo {
@@ -221,6 +267,44 @@ pub trait ServerHandler: Send + Sync {
         _params: schema::CreateMessageParams,
     ) -> Result<schema::CreateMessageResult> {
         Err(Error::MethodNotFound("sampling/createMessage".to_string()))
+    }
+
+    /// Retrieve the state of a task.
+    async fn get_task(
+        &self,
+        _context: &ServerCtx,
+        _task_id: String,
+    ) -> Result<schema::GetTaskResult> {
+        Err(Error::InvalidRequest("get_task not implemented".into()))
+    }
+
+    /// Retrieve the result of a completed task.
+    async fn get_task_payload(
+        &self,
+        _context: &ServerCtx,
+        _task_id: String,
+    ) -> Result<schema::GetTaskPayloadResult> {
+        Err(Error::InvalidRequest(
+            "get_task_payload not implemented".into(),
+        ))
+    }
+
+    /// List tasks (for server-initiated tasks/list request)
+    async fn list_tasks(
+        &self,
+        _context: &ServerCtx,
+        _cursor: Option<Cursor>,
+    ) -> Result<ListTasksResult> {
+        Ok(ListTasksResult::default())
+    }
+
+    /// Cancel a task by ID.
+    async fn cancel_task(
+        &self,
+        _context: &ServerCtx,
+        _task_id: String,
+    ) -> Result<schema::CancelTaskResult> {
+        Err(Error::InvalidRequest("cancel_task not implemented".into()))
     }
 
     /// Handle a notification sent from the client

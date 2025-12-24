@@ -72,6 +72,7 @@ impl ServerHandler for TimeoutTestConnection {
         _cursor: Option<schema::Cursor>,
     ) -> Result<schema::ListToolsResult> {
         let object_schema = schema::ToolSchema {
+            schema: None,
             schema_type: "object".to_string(),
             properties: None,
             required: None,
@@ -101,6 +102,7 @@ impl ServerHandler for TimeoutTestConnection {
         _context: &ServerCtx,
         name: String,
         _arguments: Option<tmcp::Arguments>,
+        _task: Option<schema::TaskMetadata>,
     ) -> Result<schema::CallToolResult> {
         match name.as_str() {
             "flakey_operation" => {

@@ -50,21 +50,35 @@ impl ClientHandler for MyClientHandler {
             .messages
             .last()
             .and_then(|m| match &m.content {
-                schema::SamplingContent::Text(text_content) => Some(text_content.text.as_str()),
-                _ => None,
+                schema::OneOrMany::One(block) => match block {
+                    schema::SamplingMessageContentBlock::Text(text_content) => {
+                        Some(text_content.text.as_str())
+                    }
+                    _ => None,
+                },
+                schema::OneOrMany::Many(blocks) => blocks.iter().find_map(|block| match block {
+                    schema::SamplingMessageContentBlock::Text(text_content) => {
+                        Some(text_content.text.as_str())
+                    }
+                    _ => None,
+                }),
             })
             .unwrap_or("(no message)");
 
         Ok(schema::CreateMessageResult {
-            role: schema::Role::Assistant,
-            content: schema::SamplingContent::Text(schema::TextContent {
-                text: format!("Response to: {last_message_text}"),
-                annotations: None,
+            message: schema::SamplingMessage {
+                role: schema::Role::Assistant,
+                content: schema::OneOrMany::One(schema::SamplingMessageContentBlock::Text(
+                    schema::TextContent {
+                        text: format!("Response to: {last_message_text}"),
+                        annotations: None,
+                        _meta: None,
+                    },
+                )),
                 _meta: None,
-            }),
+            },
             model: "example-model".to_string(),
             stop_reason: None,
-            _meta: None,
         })
     }
 

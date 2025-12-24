@@ -45,15 +45,17 @@ mod tests {
         ) -> Result<CreateMessageResult> {
             self.calls.lock().unwrap().push("create_message".into());
             Ok(CreateMessageResult {
-                role: Role::Assistant,
-                content: SamplingContent::Text(TextContent {
-                    text: "Test response".into(),
-                    annotations: None,
+                message: SamplingMessage {
+                    role: Role::Assistant,
+                    content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent {
+                        text: "Test response".into(),
+                        annotations: None,
+                        _meta: None,
+                    })),
                     _meta: None,
-                }),
+                },
                 model: "test-model".into(),
                 stop_reason: None,
-                _meta: None,
             })
         }
 
@@ -101,11 +103,12 @@ mod tests {
         let params = CreateMessageParams {
             messages: vec![SamplingMessage {
                 role: Role::User,
-                content: SamplingContent::Text(TextContent {
+                content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent {
                     text: "Hello".into(),
                     annotations: None,
                     _meta: None,
-                }),
+                })),
+                _meta: None,
             }],
             system_prompt: None,
             include_context: None,
@@ -114,6 +117,10 @@ mod tests {
             metadata: None,
             stop_sequences: None,
             model_preferences: None,
+            tools: None,
+            tool_choice: None,
+            task: None,
+            _meta: None,
         };
 
         let result = connection

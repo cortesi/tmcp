@@ -146,6 +146,8 @@ pub struct Resource {
     pub annotations: Option<Annotations>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<Icon>>,
 }
 
 impl Resource {
@@ -156,6 +158,7 @@ impl Resource {
             mime_type: None,
             annotations: None,
             size: None,
+            icons: None,
             name: name.into(),
             title: None,
             _meta: None,
@@ -179,6 +182,11 @@ impl Resource {
 
     pub fn with_size(mut self, size: i64) -> Self {
         self.size = Some(size);
+        self
+    }
+
+    pub fn with_icons(mut self, icons: impl IntoIterator<Item = Icon>) -> Self {
+        self.icons = Some(icons.into_iter().collect());
         self
     }
 
@@ -212,6 +220,8 @@ pub struct ResourceTemplate {
     pub mime_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Annotations>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<Icon>>,
 }
 
 impl ResourceTemplate {
@@ -221,6 +231,7 @@ impl ResourceTemplate {
             description: None,
             mime_type: None,
             annotations: None,
+            icons: None,
             name: name.into(),
             title: None,
             _meta: None,
@@ -239,6 +250,11 @@ impl ResourceTemplate {
 
     pub fn with_annotations(mut self, annotations: Annotations) -> Self {
         self.annotations = Some(annotations);
+        self
+    }
+
+    pub fn with_icons(mut self, icons: impl IntoIterator<Item = Icon>) -> Self {
+        self.icons = Some(icons.into_iter().collect());
         self
     }
 }

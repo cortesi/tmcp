@@ -49,7 +49,7 @@ impl ListToolsResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallToolResult {
     /// Content returned by the tool call.
-    pub content: Vec<Content>,
+    pub content: Vec<ContentBlock>,
     #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
     /// Whether the tool call resulted in an error.
     pub is_error: Option<bool>,
@@ -70,14 +70,14 @@ impl CallToolResult {
     }
 
     /// Append a content item to the result.
-    pub fn with_content(mut self, content: Content) -> Self {
+    pub fn with_content(mut self, content: ContentBlock) -> Self {
         self.content.push(content);
         self
     }
 
     /// Append a text content item to the result.
     pub fn with_text_content(mut self, text: impl Into<String>) -> Self {
-        self.content.push(Content::Text(TextContent {
+        self.content.push(ContentBlock::Text(TextContent {
             text: text.into(),
             annotations: None,
             _meta: None,
@@ -135,6 +135,22 @@ pub struct ToolAnnotations {
     pub open_world_hint: Option<bool>,
 }
 
+/// Execution-related properties for a tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolExecution {
+    #[serde(rename = "taskSupport", skip_serializing_if = "Option::is_none")]
+    pub task_support: Option<ToolTaskSupport>,
+}
+
+/// Task support options for tool execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolTaskSupport {
+    Forbidden,
+    Optional,
+    Required,
+}
+
 /// Definition for a tool the client can call.
 #[with_meta]
 #[with_basename]
@@ -146,12 +162,18 @@ pub struct Tool {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional tool description.
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Execution-related properties for the tool.
+    pub execution: Option<ToolExecution>,
     #[serde(rename = "outputSchema", skip_serializing_if = "Option::is_none")]
     /// JSON Schema describing tool output.
     pub output_schema: Option<ToolSchema>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional annotations describing tool behavior.
     pub annotations: Option<ToolAnnotations>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional icons for the tool.
+    pub icons: Option<Vec<Icon>>,
 }
 
 impl Tool {
@@ -160,8 +182,10 @@ impl Tool {
         Self {
             input_schema,
             description: None,
+            execution: None,
             output_schema: None,
             annotations: None,
+            icons: None,
             name: name.into(),
             title: None,
             _meta: None,
@@ -177,6 +201,20 @@ impl Tool {
     /// Set the output schema for the tool.
     pub fn with_output_schema(mut self, schema: ToolSchema) -> Self {
         self.output_schema = Some(schema);
+        self
+    }
+
+    /// Set execution metadata for the tool.
+    pub fn with_execution(mut self, execution: ToolExecution) -> Self {
+        self.execution = Some(execution);
+        self
+    }
+
+    /// Set task support for the tool.
+    pub fn with_task_support(mut self, support: ToolTaskSupport) -> Self {
+        self.execution
+            .get_or_insert(ToolExecution { task_support: None })
+            .task_support = Some(support);
         self
     }
 
@@ -223,11 +261,19 @@ impl Tool {
         self.annotations = Some(annotations);
         self
     }
+
+    /// Set the icons for the tool.
+    pub fn with_icons(mut self, icons: impl IntoIterator<Item = Icon>) -> Self {
+        self.icons = Some(icons.into_iter().collect());
+        self
+    }
 }
 
 /// A JSON Schema object defining the input or output schema for a tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
+    #[serde(rename = "$schema", skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
     #[serde(rename = "type")]
     /// JSON Schema type (usually "object").
     pub schema_type: String,
@@ -242,6 +288,7 @@ pub struct ToolSchema {
 impl Default for ToolSchema {
     fn default() -> Self {
         Self {
+            schema: None,
             schema_type: "object".to_string(),
             properties: None,
             required: None,
@@ -285,6 +332,10 @@ impl ToolSchema {
         let schema = schemars::schema_for!(T);
         let schema_value = schema.as_value();
         let schema_obj = schema_value.as_object();
+        let schema_uri = schema_obj
+            .and_then(|obj| obj.get("$schema"))
+            .and_then(|v| v.as_str())
+            .map(|value| value.to_string());
         let schema_type = schema_obj
             .and_then(|obj| obj.get("type"))
             .and_then(|v| v.as_str())
@@ -308,6 +359,7 @@ impl ToolSchema {
                     .collect::<Vec<_>>()
             });
         Self {
+            schema: schema_uri,
             schema_type,
             properties,
             required,

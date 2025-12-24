@@ -16,10 +16,13 @@ pub struct ClientCapabilities {
     pub roots: Option<RootsCapability>,
     /// Present if the client supports sampling from an LLM.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sampling: Option<Value>,
-    /// Present if the client supports elicitation requests.
+    pub sampling: Option<SamplingCapability>,
+    /// Present if the client supports elicitation from the server.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub elicitation: Option<Value>,
+    pub elicitation: Option<ElicitationCapability>,
+    /// Present if the client supports task-augmented requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<ClientTasksCapability>,
 }
 
 impl ClientCapabilities {
@@ -49,13 +52,69 @@ impl ClientCapabilities {
 
     /// Enable sampling capability
     pub fn with_sampling(mut self) -> Self {
-        self.sampling = Some(Value::Object(serde_json::Map::new()));
+        self.sampling = Some(SamplingCapability::default());
         self
     }
 
-    /// Enable elicitation capability
+    /// Enable elicitation capability.
     pub fn with_elicitation(mut self) -> Self {
-        self.elicitation = Some(Value::Object(serde_json::Map::new()));
+        self.elicitation = Some(ElicitationCapability::default());
+        self
+    }
+
+    /// Enable form-based elicitation capability.
+    pub fn with_elicitation_form(mut self) -> Self {
+        self.elicitation
+            .get_or_insert_with(ElicitationCapability::default)
+            .form = Some(HashMap::new());
+        self
+    }
+
+    /// Enable URL-based elicitation capability.
+    pub fn with_elicitation_url(mut self) -> Self {
+        self.elicitation
+            .get_or_insert_with(ElicitationCapability::default)
+            .url = Some(HashMap::new());
+        self
+    }
+
+    /// Enable task listing capability.
+    pub fn with_tasks_list(mut self) -> Self {
+        self.tasks
+            .get_or_insert_with(ClientTasksCapability::default)
+            .list = Some(HashMap::new());
+        self
+    }
+
+    /// Enable task cancellation capability.
+    pub fn with_tasks_cancel(mut self) -> Self {
+        self.tasks
+            .get_or_insert_with(ClientTasksCapability::default)
+            .cancel = Some(HashMap::new());
+        self
+    }
+
+    /// Enable task-augmented sampling/createMessage capability.
+    pub fn with_task_sampling_create_message(mut self) -> Self {
+        self.tasks
+            .get_or_insert_with(ClientTasksCapability::default)
+            .requests
+            .get_or_insert_with(ClientTaskRequestsCapability::default)
+            .sampling
+            .get_or_insert_with(ClientTaskSamplingCapability::default)
+            .create_message = Some(HashMap::new());
+        self
+    }
+
+    /// Enable task-augmented elicitation/create capability.
+    pub fn with_task_elicitation_create(mut self) -> Self {
+        self.tasks
+            .get_or_insert_with(ClientTasksCapability::default)
+            .requests
+            .get_or_insert_with(ClientTaskRequestsCapability::default)
+            .elicitation
+            .get_or_insert_with(ClientTaskElicitationCapability::default)
+            .create = Some(HashMap::new());
         self
     }
 }
@@ -90,6 +149,9 @@ pub struct ServerCapabilities {
     /// Present if the server offers any tools to call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsCapability>,
+    /// Present if the server supports task-augmented requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<ServerTasksCapability>,
 }
 
 impl ServerCapabilities {
@@ -131,6 +193,106 @@ impl ServerCapabilities {
         self.tools = Some(ToolsCapability { list_changed });
         self
     }
+
+    /// Enable task listing capability.
+    pub fn with_tasks_list(mut self) -> Self {
+        self.tasks
+            .get_or_insert_with(ServerTasksCapability::default)
+            .list = Some(HashMap::new());
+        self
+    }
+
+    /// Enable task cancellation capability.
+    pub fn with_tasks_cancel(mut self) -> Self {
+        self.tasks
+            .get_or_insert_with(ServerTasksCapability::default)
+            .cancel = Some(HashMap::new());
+        self
+    }
+
+    /// Enable task-augmented tools/call capability.
+    pub fn with_task_tools_call(mut self) -> Self {
+        self.tasks
+            .get_or_insert_with(ServerTasksCapability::default)
+            .requests
+            .get_or_insert_with(ServerTaskRequestsCapability::default)
+            .tools
+            .get_or_insert_with(ServerTaskToolsCapability::default)
+            .call = Some(HashMap::new());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SamplingCapability {
+    /// Whether the client supports context inclusion via includeContext parameter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<HashMap<String, Value>>,
+    /// Whether the client supports tool use via tools and toolChoice parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<HashMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ElicitationCapability {
+    /// Support for form-based elicitation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form: Option<HashMap<String, Value>>,
+    /// Support for URL-based elicitation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<HashMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClientTasksCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list: Option<HashMap<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<HashMap<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requests: Option<ClientTaskRequestsCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClientTaskRequestsCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<ClientTaskSamplingCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation: Option<ClientTaskElicitationCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClientTaskSamplingCapability {
+    #[serde(rename = "createMessage", skip_serializing_if = "Option::is_none")]
+    pub create_message: Option<HashMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClientTaskElicitationCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub create: Option<HashMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ServerTasksCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list: Option<HashMap<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<HashMap<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requests: Option<ServerTaskRequestsCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ServerTaskRequestsCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<ServerTaskToolsCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ServerTaskToolsCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<HashMap<String, Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

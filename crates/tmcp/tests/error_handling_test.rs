@@ -40,7 +40,7 @@ mod tests {
         // This should use the default implementation which returns ToolNotFound
         let context = create_test_context();
         let result = conn
-            .call_tool(&context, "non_existent".to_string(), None)
+            .call_tool(&context, "non_existent".to_string(), None, None)
             .await;
 
         assert!(result.is_err());
@@ -79,6 +79,7 @@ mod tests {
                 _cursor: Option<schema::Cursor>,
             ) -> Result<schema::ListToolsResult> {
                 let schema = schema::ToolSchema {
+                    schema: None,
                     schema_type: "object".to_string(),
                     properties: Some({
                         let mut props = HashMap::new();
@@ -105,6 +106,7 @@ mod tests {
                 _context: &ServerCtx,
                 name: String,
                 arguments: Option<Arguments>,
+                _task: Option<schema::TaskMetadata>,
             ) -> Result<schema::CallToolResult> {
                 if name != "test_tool" {
                     return Err(Error::ToolNotFound(name));
@@ -127,7 +129,7 @@ mod tests {
         // Test 1: Call with missing arguments
         let context = create_test_context();
         let result = conn
-            .call_tool(&context, "test_tool".to_string(), None)
+            .call_tool(&context, "test_tool".to_string(), None, None)
             .await;
         assert!(matches!(result, Err(Error::InvalidParams(_))));
 
@@ -138,6 +140,7 @@ mod tests {
                 &context,
                 "test_tool".to_string(),
                 Some(HashMap::<String, serde_json::Value>::new().into()),
+                None,
             )
             .await;
         match result {
@@ -152,7 +155,7 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("required_param".to_string(), serde_json::json!("test"));
         let result = conn
-            .call_tool(&context, "test_tool".to_string(), Some(args.into()))
+            .call_tool(&context, "test_tool".to_string(), Some(args.into()), None)
             .await;
         assert!(result.is_ok());
     }
@@ -208,6 +211,7 @@ mod tests {
                         mime_type: Some("text/plain".to_string()),
                         size: None,
                         annotations: None,
+                        icons: None,
                         _meta: None,
                     }),
                 )
@@ -278,7 +282,7 @@ mod tests {
                 &self,
                 _context: &ServerCtx,
                 name: String,
-                _arguments: Option<Arguments>,
+                _arguments: Option<HashMap<String, String>>,
             ) -> Result<schema::GetPromptResult> {
                 // Simulate prompt not found - using MethodNotFound as PromptNotFound doesn't exist
                 Err(Error::MethodNotFound(format!("prompt/{name}")))

@@ -69,24 +69,33 @@ mod tests {
         ) -> Result<CreateMessageResult> {
             self.track_call("create_message");
 
-            let request_text = match &params.messages.first() {
-                Some(msg) => match &msg.content {
-                    SamplingContent::Text(t) => &t.text,
-                    _ => "non-text",
-                },
-                None => "no message",
-            };
+            let request_text = params
+                .messages
+                .first()
+                .and_then(|msg| match &msg.content {
+                    OneOrMany::One(block) => match block {
+                        SamplingMessageContentBlock::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    },
+                    OneOrMany::Many(blocks) => blocks.iter().find_map(|block| match block {
+                        SamplingMessageContentBlock::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    }),
+                })
+                .unwrap_or("no message");
 
             Ok(CreateMessageResult {
-                role: Role::Assistant,
-                content: SamplingContent::Text(TextContent {
-                    text: format!("Client received: {request_text}"),
-                    annotations: None,
+                message: SamplingMessage {
+                    role: Role::Assistant,
+                    content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent {
+                        text: format!("Client received: {request_text}"),
+                        annotations: None,
+                        _meta: None,
+                    })),
                     _meta: None,
-                }),
+                },
                 model: "test-model".to_string(),
                 stop_reason: None,
-                _meta: None,
             })
         }
     }
@@ -135,6 +144,7 @@ mod tests {
             context: &ServerCtx,
             name: String,
             _arguments: Option<Arguments>,
+            _task: Option<TaskMetadata>,
         ) -> Result<CallToolResult> {
             self.track_call(&format!("tool_{name}"));
 
@@ -156,11 +166,14 @@ mod tests {
                     let params = CreateMessageParams {
                         messages: vec![SamplingMessage {
                             role: Role::User,
-                            content: SamplingContent::Text(TextContent {
-                                text: "Server request".to_string(),
-                                annotations: None,
-                                _meta: None,
-                            }),
+                            content: OneOrMany::One(SamplingMessageContentBlock::Text(
+                                TextContent {
+                                    text: "Server request".to_string(),
+                                    annotations: None,
+                                    _meta: None,
+                                },
+                            )),
+                            _meta: None,
                         }],
                         system_prompt: None,
                         include_context: None,
@@ -169,16 +182,26 @@ mod tests {
                         metadata: None,
                         stop_sequences: None,
                         model_preferences: None,
+                        tools: None,
+                        tool_choice: None,
+                        task: None,
+                        _meta: None,
                     };
 
                     let mut ctx = context.clone();
                     let result = ctx.create_message(params).await?;
-                    match result.content {
-                        SamplingContent::Text(text) => {
-                            Ok(CallToolResult::new().with_text_content(text.text))
-                        }
-                        _ => Ok(CallToolResult::new().with_text_content("Non-text response")),
-                    }
+                    let text = match result.message.content {
+                        OneOrMany::One(SamplingMessageContentBlock::Text(text)) => text.text,
+                        OneOrMany::Many(blocks) => blocks
+                            .into_iter()
+                            .find_map(|block| match block {
+                                SamplingMessageContentBlock::Text(text) => Some(text.text),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| "Non-text response".to_string()),
+                        _ => "Non-text response".to_string(),
+                    };
+                    Ok(CallToolResult::new().with_text_content(text))
                 }
 
                 _ => Err(tmcp::Error::ToolExecutionFailed {
@@ -238,7 +261,7 @@ mod tests {
         // Test 1: Server pings client during tool execution
         client_calls.lock().unwrap().clear();
         client
-            .call_tool("ping_client", None)
+            .call_tool("ping_client", None, None)
             .await
             .expect("ping_client tool failed");
 
@@ -251,7 +274,7 @@ mod tests {
         // Test 2: Server queries client roots during tool execution
         client_calls.lock().unwrap().clear();
         let result = client
-            .call_tool("query_client_roots", None)
+            .call_tool("query_client_roots", None, None)
             .await
             .expect("query_client_roots tool failed");
 
@@ -261,14 +284,14 @@ mod tests {
             "Server should have queried client roots"
         );
 
-        if let Some(Content::Text(text)) = result.content.first() {
+        if let Some(ContentBlock::Text(text)) = result.content.first() {
             assert!(text.text.contains("1 client roots"));
         }
 
         // Test 3: Server asks client to generate message during tool execution
         client_calls.lock().unwrap().clear();
         let result = client
-            .call_tool("ask_client_to_generate", None)
+            .call_tool("ask_client_to_generate", None, None)
             .await
             .expect("ask_client_to_generate tool failed");
 
@@ -278,7 +301,7 @@ mod tests {
             "Server should have asked client to create message"
         );
 
-        if let Some(Content::Text(text)) = result.content.first() {
+        if let Some(ContentBlock::Text(text)) = result.content.first() {
             assert_eq!(text.text, "Client received: Server request");
         }
 
@@ -335,7 +358,7 @@ mod tests {
         // Server pings client (reverse direction via tool call)
         client_calls.lock().unwrap().clear();
         client
-            .call_tool("ping_client", None)
+            .call_tool("ping_client", None, None)
             .await
             .expect("Server->Client ping failed");
         assert!(

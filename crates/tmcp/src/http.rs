@@ -34,12 +34,12 @@ use uuid::Uuid;
 use crate::{
     auth::OAuth2Client,
     error::{Error, Result},
-    schema::{JSONRPCMessage, RequestId},
+    schema::{JSONRPCMessage, JSONRPCResponse, RequestId},
     transport::{Transport, TransportStream},
 };
 
 /// MCP protocol version advertised for HTTP transport.
-const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 /// Default HTTP client timeout for transport requests.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -571,7 +571,13 @@ impl Sink<JSONRPCMessage> for HttpServerStream {
             match &item {
                 JSONRPCMessage::Response(resp) => {
                     // Route response to the correct session
-                    if let Some((_, session_id)) = self.request_sessions.remove(&resp.id)
+                    let response_id = match resp {
+                        JSONRPCResponse::Result(result) => Some(result.id.clone()),
+                        JSONRPCResponse::Error(error) => error.id.clone(),
+                    };
+
+                    if let Some(response_id) = response_id
+                        && let Some((_, session_id)) = self.request_sessions.remove(&response_id)
                         && let Some(session) = state.sessions.get(&session_id)
                     {
                         session.sender.unbounded_send(item).ok();
@@ -773,12 +779,6 @@ async fn handle_post(
             // Forward to server logic
             state.incoming_tx.unbounded_send((message, session_id)).ok();
             StatusCode::ACCEPTED.into_response()
-        }
-        JSONRPCMessage::BatchRequest(_)
-        | JSONRPCMessage::Error(_)
-        | JSONRPCMessage::BatchResponse(_) => {
-            // Batch operations not supported in this implementation
-            (StatusCode::BAD_REQUEST, "Batch operations not supported").into_response()
         }
     }
 }

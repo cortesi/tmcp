@@ -82,6 +82,8 @@ pub struct Prompt {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Vec<PromptArgument>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<Icon>>,
 }
 
 impl Prompt {
@@ -89,6 +91,7 @@ impl Prompt {
         Self {
             description: None,
             arguments: None,
+            icons: None,
             name: name.into(),
             title: None,
             _meta: None,
@@ -107,6 +110,11 @@ impl Prompt {
 
     pub fn with_arguments(mut self, arguments: impl IntoIterator<Item = PromptArgument>) -> Self {
         self.arguments = Some(arguments.into_iter().collect());
+        self
+    }
+
+    pub fn with_icons(mut self, icons: impl IntoIterator<Item = Icon>) -> Self {
+        self.icons = Some(icons.into_iter().collect());
         self
     }
 }
@@ -145,22 +153,22 @@ impl PromptArgument {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptMessage {
     pub role: Role,
-    pub content: Content,
+    pub content: ContentBlock,
 }
 
 impl PromptMessage {
-    pub fn new(role: Role, content: Content) -> Self {
+    pub fn new(role: Role, content: ContentBlock) -> Self {
         Self { role, content }
     }
 
-    pub fn user(content: Content) -> Self {
+    pub fn user(content: ContentBlock) -> Self {
         Self {
             role: Role::User,
             content,
         }
     }
 
-    pub fn assistant(content: Content) -> Self {
+    pub fn assistant(content: ContentBlock) -> Self {
         Self {
             role: Role::Assistant,
             content,
@@ -170,7 +178,7 @@ impl PromptMessage {
     pub fn user_text(text: impl Into<String>) -> Self {
         Self {
             role: Role::User,
-            content: Content::Text(TextContent {
+            content: ContentBlock::Text(TextContent {
                 text: text.into(),
                 annotations: None,
                 _meta: None,
@@ -181,7 +189,7 @@ impl PromptMessage {
     pub fn assistant_text(text: impl Into<String>) -> Self {
         Self {
             role: Role::Assistant,
-            content: Content::Text(TextContent {
+            content: ContentBlock::Text(TextContent {
                 text: text.into(),
                 annotations: None,
                 _meta: None,

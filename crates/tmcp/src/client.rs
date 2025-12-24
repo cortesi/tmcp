@@ -1,4 +1,4 @@
-use std::{process::Stdio, sync::Arc};
+use std::{collections::HashMap, process::Stdio, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
@@ -367,31 +367,29 @@ where
                                             error!("Failed to handle server notification: {}", err);
                                         }
                                     }
-                                    JSONRPCMessage::Error(error) => {
-                                        request_handler.handle_error(error).await;
-                                    }
                                     JSONRPCMessage::Request(request) => {
                                         tracing::info!("Client received request from server: {:?}", request.id);
                                         let response = handle_server_request(&connection, &context, request).await;
-                                        tracing::info!("Client sending response to server: {:?}", match &response {
-                                            JSONRPCMessage::Response(r) => format!("{:?}", r.id),
-                                            JSONRPCMessage::Error(e) => format!("{:?}", e.id),
-                                            _ => "Unknown".to_string()
-                                        });
+                                        let response_id = match &response {
+                                            JSONRPCMessage::Response(r) => match r {
+                                                JSONRPCResponse::Result(result) => {
+                                                    format!("{:?}", result.id)
+                                                }
+                                                JSONRPCResponse::Error(error) => {
+                                                    format!("{:?}", error.id)
+                                                }
+                                            },
+                                            _ => "Unknown".to_string(),
+                                        };
+                                        tracing::info!(
+                                            "Client sending response to server: {:?}",
+                                            response_id
+                                        );
                                         let mut sink = tx.lock().await;
                                         if let Err(e) = sink.send(response).await {
                                             error!("Failed to send response to server: {}", e);
                                             break;
                                         }
-                                    }
-                                    JSONRPCMessage::BatchRequest(_batch) => {
-                                        // Clients typically don't receive batch requests from servers
-                                        warn!("Received unexpected batch request from server");
-                                    }
-                                    JSONRPCMessage::BatchResponse(_batch) => {
-                                        warn!(
-                                            "Received batch response - batch requests not supported"
-                                        );
                                     }
                                 }
                             }
@@ -451,11 +449,7 @@ where
         capabilities: ClientCapabilities,
         client_info: Implementation,
     ) -> Result<InitializeResult> {
-        let request = ClientRequest::Initialize {
-            protocol_version,
-            capabilities,
-            client_info,
-        };
+        let request = ClientRequest::initialize(protocol_version, capabilities, client_info);
 
         let result: InitializeResult = self.request(request).await?;
 
@@ -470,7 +464,7 @@ where
 
     /// Respond to ping requests
     async fn ping(&mut self) -> Result<()> {
-        let _: EmptyResult = self.request(ClientRequest::Ping).await?;
+        let _: EmptyResult = self.request(ClientRequest::ping()).await?;
         Ok(())
     }
 
@@ -479,8 +473,8 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListToolsResult> {
-        let cursor: Option<Cursor> = cursor.into();
-        self.request(ClientRequest::ListTools { cursor }).await
+        self.request(ClientRequest::list_tools(cursor.into()))
+            .await
     }
 
     /// Call a tool with the given name and arguments
@@ -488,11 +482,9 @@ where
         &mut self,
         name: impl Into<String> + Send,
         arguments: Option<crate::Arguments>,
+        task: Option<TaskMetadata>,
     ) -> Result<CallToolResult> {
-        let request = ClientRequest::CallTool {
-            name: name.into(),
-            arguments,
-        };
+        let request = ClientRequest::call_tool(name, arguments, task);
         self.request(request).await
     }
 
@@ -501,8 +493,8 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListResourcesResult> {
-        let cursor: Option<Cursor> = cursor.into();
-        self.request(ClientRequest::ListResources { cursor }).await
+        self.request(ClientRequest::list_resources(cursor.into()))
+            .await
     }
 
     /// List resource templates with optional pagination
@@ -510,8 +502,7 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListResourceTemplatesResult> {
-        let cursor: Option<Cursor> = cursor.into();
-        self.request(ClientRequest::ListResourceTemplates { cursor })
+        self.request(ClientRequest::list_resource_templates(cursor.into()))
             .await
     }
 
@@ -520,23 +511,18 @@ where
         &mut self,
         uri: impl Into<String> + Send,
     ) -> Result<ReadResourceResult> {
-        self.request(ClientRequest::ReadResource { uri: uri.into() })
-            .await
+        self.request(ClientRequest::read_resource(uri)).await
     }
 
     /// Subscribe to resource updates
     async fn resources_subscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
-        let _: EmptyResult = self
-            .request(ClientRequest::Subscribe { uri: uri.into() })
-            .await?;
+        let _: EmptyResult = self.request(ClientRequest::subscribe(uri)).await?;
         Ok(())
     }
 
     /// Unsubscribe from resource updates
     async fn resources_unsubscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
-        let _: EmptyResult = self
-            .request(ClientRequest::Unsubscribe { uri: uri.into() })
-            .await?;
+        let _: EmptyResult = self.request(ClientRequest::unsubscribe(uri)).await?;
         Ok(())
     }
 
@@ -545,21 +531,18 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListPromptsResult> {
-        let cursor: Option<Cursor> = cursor.into();
-        self.request(ClientRequest::ListPrompts { cursor }).await
+        self.request(ClientRequest::list_prompts(cursor.into()))
+            .await
     }
 
     /// Get a prompt by name with optional arguments
     async fn get_prompt(
         &mut self,
         name: impl Into<String> + Send,
-        arguments: Option<crate::Arguments>,
+        arguments: Option<HashMap<String, String>>,
     ) -> Result<GetPromptResult> {
-        self.request(ClientRequest::GetPrompt {
-            name: name.into(),
-            arguments,
-        })
-        .await
+        self.request(ClientRequest::get_prompt(name, arguments))
+            .await
     }
 
     /// Handle completion requests
@@ -567,19 +550,39 @@ where
         &mut self,
         reference: Reference,
         argument: ArgumentInfo,
+        context: Option<CompleteContext>,
     ) -> Result<CompleteResult> {
-        self.request(ClientRequest::Complete {
-            reference,
-            argument,
-            context: None,
-        })
-        .await
+        self.request(ClientRequest::complete(reference, argument, context))
+            .await
     }
 
     /// Set the logging level
     async fn set_level(&mut self, level: LoggingLevel) -> Result<()> {
-        let _: EmptyResult = self.request(ClientRequest::SetLevel { level }).await?;
+        let _: EmptyResult = self.request(ClientRequest::set_level(level)).await?;
         Ok(())
+    }
+
+    async fn get_task(&mut self, task_id: impl Into<String> + Send) -> Result<GetTaskResult> {
+        self.request(ClientRequest::get_task(task_id)).await
+    }
+
+    async fn get_task_payload(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<GetTaskPayloadResult> {
+        self.request(ClientRequest::get_task_payload(task_id)).await
+    }
+
+    async fn list_tasks(
+        &mut self,
+        cursor: impl Into<Option<Cursor>> + Send,
+    ) -> Result<ListTasksResult> {
+        self.request(ClientRequest::list_tasks(cursor.into()))
+            .await
+    }
+
+    async fn cancel_task(&mut self, task_id: impl Into<String> + Send) -> Result<CancelTaskResult> {
+        self.request(ClientRequest::cancel_task(task_id)).await
     }
 }
 
@@ -607,6 +610,9 @@ async fn handle_server_request_inner<C: ClientHandler>(
         serde_json::Value::String(request.request.method.clone()),
     );
     if let Some(params) = request.request.params {
+        if let Some(meta) = params._meta {
+            request_obj.insert("_meta".to_string(), serde_json::to_value(meta)?);
+        }
         for (key, value) in params.other {
             request_obj.insert(key, value);
         }
@@ -631,7 +637,7 @@ async fn handle_server_request_inner<C: ClientHandler>(
         };
 
     match server_request {
-        ServerRequest::Ping => {
+        ServerRequest::Ping { _meta: _ } => {
             info!("Server sent ping request, sending pong");
             connection.pong(ctx).await.map(|_| serde_json::json!({}))
         }
@@ -639,12 +645,28 @@ async fn handle_server_request_inner<C: ClientHandler>(
             .create_message(ctx, &request.request.method, *params)
             .await
             .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ServerRequest::ListRoots => connection
+        ServerRequest::ListRoots { _meta: _ } => connection
             .list_roots(ctx)
             .await
             .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
         ServerRequest::Elicit(params) => connection
-            .elicit(ctx, params)
+            .elicit(ctx, *params)
+            .await
+            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
+        ServerRequest::GetTask { task_id, _meta: _ } => connection
+            .get_task(ctx, task_id)
+            .await
+            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
+        ServerRequest::GetTaskPayload { task_id, _meta: _ } => connection
+            .get_task_payload(ctx, task_id)
+            .await
+            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
+        ServerRequest::ListTasks { cursor, _meta: _ } => connection
+            .list_tasks(ctx, cursor)
+            .await
+            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
+        ServerRequest::CancelTask { task_id, _meta: _ } => connection
+            .cancel_task(ctx, task_id)
             .await
             .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
     }
@@ -748,21 +770,21 @@ mod tests {
         // These should all compile cleanly
         drop(async {
             // Call without arguments - passing ()
-            client.call_tool("my_tool", None).await.unwrap();
+            client.call_tool("my_tool", None, None).await.unwrap();
 
             // Call with String for tool name
             let tool_name = "another_tool".to_string();
-            client.call_tool(tool_name, None).await.unwrap();
+            client.call_tool(tool_name, None, None).await.unwrap();
 
             // Call with &String
             let tool_name = "third_tool".to_string();
-            client.call_tool(&tool_name, None).await.unwrap();
+            client.call_tool(&tool_name, None, None).await.unwrap();
 
             // Call with HashMap arguments directly
             let mut args = HashMap::new();
             args.insert("param".to_string(), serde_json::json!("value"));
             client
-                .call_tool("tool_with_args", Some(args.into()))
+                .call_tool("tool_with_args", Some(args.into()), None)
                 .await
                 .unwrap();
 
@@ -770,7 +792,7 @@ mod tests {
             let mut args = HashMap::new();
             args.insert("key".to_string(), serde_json::json!("value"));
             client
-                .call_tool("tool_with_map", Some(args.into()))
+                .call_tool("tool_with_map", Some(args.into()), None)
                 .await
                 .unwrap();
         });
@@ -844,7 +866,10 @@ mod tests {
                 _context: &ClientCtxType,
                 notification: ServerNotification,
             ) -> Result<()> {
-                if matches!(notification, ServerNotification::ToolListChanged) {
+                if matches!(
+                    notification,
+                    ServerNotification::ToolListChanged { _meta: _ }
+                ) {
                     let mut tx_guard = self.tx.lock().await;
                     if let Some(tx) = tx_guard.take() {
                         tx.send(()).ok();
@@ -899,7 +924,7 @@ mod tests {
         client.init().await.expect("Failed to initialize");
 
         // Send server notification
-        server_handle.send_server_notification(&ServerNotification::ToolListChanged);
+        server_handle.send_server_notification(&ServerNotification::tool_list_changed());
 
         // Wait for notification to be received
         timeout(Duration::from_secs(1), rx_notif)
@@ -975,7 +1000,7 @@ mod tests {
 
         client.init().await.expect("Failed to initialize");
 
-        server_handle.send_server_notification(&ServerNotification::ToolListChanged);
+        server_handle.send_server_notification(&ServerNotification::tool_list_changed());
 
         let res = timeout(Duration::from_millis(200), rx_notif).await;
         assert!(res.is_err(), "Notification should be filtered");
@@ -1008,7 +1033,10 @@ mod tests {
                 _context: &ServerCtx,
                 notification: ClientNotification,
             ) -> Result<()> {
-                if matches!(notification, ClientNotification::Initialized) {
+                if matches!(
+                    notification,
+                    ClientNotification::Initialized { _meta: _ }
+                ) {
                     let maybe_tx = self.tx.lock().unwrap().take();
                     if let Some(tx) = maybe_tx {
                         tx.send(()).ok();
@@ -1025,7 +1053,7 @@ mod tests {
         #[async_trait::async_trait]
         impl ClientHandlerTrait for NotifyClientHandler {
             async fn on_connect(&self, context: &ClientCtxType) -> Result<()> {
-                context.send_notification(ClientNotification::Initialized)?;
+                context.send_notification(ClientNotification::initialized())?;
                 Ok(())
             }
         }

@@ -9,6 +9,8 @@ mod capabilities;
 mod completions;
 /// Content payload types.
 mod content;
+/// Icon metadata types.
+mod icons;
 /// Implementation metadata.
 mod implementation;
 /// Initialization types.
@@ -23,12 +25,15 @@ mod resources;
 mod roots;
 /// Sampling types.
 mod sampling;
+/// Task types and helpers.
+mod tasks;
 /// Tool schema types.
 mod tools;
 
 pub use capabilities::*;
 pub use completions::*;
 pub use content::*;
+pub use icons::*;
 pub use implementation::*;
 pub use initialization::*;
 pub use jsonrpc::*;
@@ -38,4 +43,5 @@ pub use requests::*;
 pub use resources::*;
 pub use roots::*;
 pub use sampling::*;
+pub use tasks::*;
 pub use tools::*;
