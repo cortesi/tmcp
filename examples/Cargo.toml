@@ -1,0 +1,68 @@
+[package]
+name = "tmcp-examples"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+tmcp = { path = "../crates/tmcp" }
+async-trait = "0.1"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.48", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+webbrowser = "1.0"
+chrono = "0.4"
+
+[[example]]
+name = "basic_server"
+path = "basic_server.rs"
+
+[[example]]
+name = "basic_client"
+path = "basic_client.rs"
+
+[[example]]
+name = "basic_client_stdio"
+path = "basic_client_stdio.rs"
+
+[[example]]
+name = "client_with_connection"
+path = "client_with_connection.rs"
+
+[[example]]
+name = "dynamic_registration"
+path = "dynamic_registration.rs"
+
+[[example]]
+name = "ghusers"
+path = "ghusers.rs"
+
+[[example]]
+name = "oauth_client"
+path = "oauth_client.rs"
+
+[[example]]
+name = "process_spawn"
+path = "process_spawn.rs"
+
+[[example]]
+name = "register_client"
+path = "register_client.rs"
+
+[[example]]
+name = "stream_connection"
+path = "stream_connection.rs"
+
+[[example]]
+name = "timeout_server"
+path = "timeout_server.rs"
+
+[[example]]
+name = "weather_server"
+path = "weather_server.rs"

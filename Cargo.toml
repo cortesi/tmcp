@@ -9,7 +9,7 @@ keywords = ["mcp", "ai", "anthropic","openai"]
 
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "examples"]
 
 [workspace.lints.rust]
 missing_docs = "warn"

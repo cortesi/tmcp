@@ -11,7 +11,7 @@ from pathlib import Path
 
 # Define paths relative to the project root
 PROJECT_ROOT = Path(__file__).parent.parent
-EXAMPLE_PATH = PROJECT_ROOT / "crates/tmcp/examples/weather_server.rs"
+EXAMPLE_PATH = PROJECT_ROOT / "examples/weather_server.rs"
 LIB_RS_PATH = PROJECT_ROOT / "crates/tmcp/src/lib.rs"
 README_PATH = PROJECT_ROOT / "README.md"
 

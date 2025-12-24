@@ -43,7 +43,7 @@ both client and server roles with async/await APIs.
 
 ## Example 
 
-From `./crates/tmcp/examples/weather_server.rs` 
+From `./examples/weather_server.rs` 
 
 ```rust
 use serde::{Deserialize, Serialize};
