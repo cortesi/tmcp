@@ -3,19 +3,19 @@
 use serde::{Deserialize, Serialize};
 use tmcp::{Result, Server, ServerCtx, mcp_server, schema::*, schemars, tool};
 
+/// Example server.
 #[derive(Default)]
-/// Example server implementation for weather.
 struct WeatherServer;
 
+/// Parameters for the weather tool.
 // Tool input schema is automatically derived from the struct using serde and schemars.
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-/// Parameters for the weather tool.
 struct WeatherParams {
     /// City name to query.
     city: String,
 }
 
-// The mcp_server macro generates the necessary boilerplate to expose methods as MCP tools.
+// The `mcp_server` macro generates the necessary boilerplate to expose methods as MCP tools.
 #[mcp_server]
 impl WeatherServer {
     // The doc comment becomes the tool's description in the MCP schema.

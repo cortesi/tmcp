@@ -45,20 +45,26 @@ both client and server roles with async/await APIs.
 
 From `./examples/weather_server.rs` 
 
+<!-- snips: ./examples/weather_server.rs -->
 ```rust
-use serde::{Deserialize, Serialize};
-use tmcp::{mcp_server, schema::*, schemars, tool, Result, Server, ServerCtx};
+//! Minimal weather server example.
 
+use serde::{Deserialize, Serialize};
+use tmcp::{Result, Server, ServerCtx, mcp_server, schema::*, schemars, tool};
+
+/// Example server.
 #[derive(Default)]
 struct WeatherServer;
 
+/// Parameters for the weather tool.
 // Tool input schema is automatically derived from the struct using serde and schemars.
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 struct WeatherParams {
+    /// City name to query.
     city: String,
 }
 
-// The mcp_server macro generates the necessary boilerplate to expose methods as MCP tools.
+// The `mcp_server` macro generates the necessary boilerplate to expose methods as MCP tools.
 #[mcp_server]
 impl WeatherServer {
     // The doc comment becomes the tool's description in the MCP schema.
@@ -82,4 +88,5 @@ async fn main() -> Result<()> {
     server.serve_stdio().await?;
     Ok(())
 }
+
 ```
