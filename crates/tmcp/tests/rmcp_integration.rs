@@ -72,10 +72,7 @@ mod tests {
             _task: Option<TaskMetadata>,
         ) -> Result<CallToolResult> {
             if name != "echo" {
-                return Err(Error::ToolExecutionFailed {
-                    tool: name,
-                    message: "Tool not found".to_string(),
-                });
+                return Err(Error::ToolNotFound(name));
             }
 
             let args = arguments
@@ -108,19 +105,17 @@ mod tests {
         let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
 
         // Create and configure tmcp server
-        let server = Server::default()
-            .with_handler(|| EchoConnection)
-            .with_capabilities(ServerCapabilities {
-                tools: Some(ToolsCapability {
-                    list_changed: Some(true),
-                }),
-                resources: None,
-                prompts: None,
-                logging: None,
-                completions: None,
-                tasks: None,
-                experimental: None,
-            });
+        let server = Server::new(|| EchoConnection).with_capabilities(ServerCapabilities {
+            tools: Some(ToolsCapability {
+                list_changed: Some(true),
+            }),
+            resources: None,
+            prompts: None,
+            logging: None,
+            completions: None,
+            tasks: None,
+            experimental: None,
+        });
 
         // Start tmcp server in background using the new serve_stream method
         let server_handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)

@@ -22,19 +22,59 @@ use crate::{
 };
 
 /// MCP Server implementation
-pub struct Server<F = fn() -> Box<dyn ServerHandler>> {
+pub struct Server<F> {
     /// Server capability configuration.
     capabilities: ServerCapabilities,
     /// Factory for creating per-connection handlers.
-    connection_factory: Option<F>,
+    connection_factory: F,
 }
 
-impl Default for Server<fn() -> Box<dyn ServerHandler>> {
-    fn default() -> Self {
-        Self {
-            capabilities: ServerCapabilities::default(),
-            connection_factory: None,
-        }
+/// Create a new server with a handler factory.
+///
+/// The factory function is called once for each incoming connection,
+/// allowing each connection to have its own handler instance with
+/// independent state.
+///
+/// # Example
+///
+/// ```ignore
+/// let server = Server::new(MyHandler::default);
+/// server.serve_stdio().await?;
+/// ```
+pub fn new_server<C, G>(
+    factory: G,
+) -> Server<impl Fn() -> Box<dyn ServerHandler> + Clone + Send + Sync + 'static>
+where
+    C: ServerHandler + 'static,
+    G: Fn() -> C + Clone + Send + Sync + 'static,
+{
+    Server {
+        capabilities: ServerCapabilities::default(),
+        connection_factory: move || Box::new(factory()) as Box<dyn ServerHandler>,
+    }
+}
+
+impl Server<()> {
+    /// Create a new server with a handler factory.
+    ///
+    /// The factory function is called once for each incoming connection,
+    /// allowing each connection to have its own handler instance with
+    /// independent state.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let server = Server::new(MyHandler::default);
+    /// server.serve_stdio().await?;
+    /// ```
+    pub fn new<C, G>(
+        factory: G,
+    ) -> Server<impl Fn() -> Box<dyn ServerHandler> + Clone + Send + Sync + 'static>
+    where
+        C: ServerHandler + 'static,
+        G: Fn() -> C + Clone + Send + Sync + 'static,
+    {
+        new_server(factory)
     }
 }
 
@@ -42,33 +82,13 @@ impl<F> Server<F>
 where
     F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
 {
-    /// Set the handler factory for creating handler instances (internal use).
-    pub(crate) fn with_handler_factory<G>(self, factory: G) -> Server<G>
-    where
-        G: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
-    {
-        Server {
-            capabilities: self.capabilities,
-            connection_factory: Some(factory),
-        }
-    }
-
-    /// Set a handler factory that creates handler instances per connection.
+    /// Create a server from a pre-boxed handler factory.
     ///
-    /// The factory function is called once for each incoming connection,
-    /// allowing each connection to have its own handler instance with
-    /// independent state.
-    pub fn with_handler<C, G>(
-        self,
-        factory: G,
-    ) -> Server<impl Fn() -> Box<dyn ServerHandler> + Clone + Send + Sync + 'static>
-    where
-        C: ServerHandler + 'static,
-        G: Fn() -> C + Clone + Send + Sync + 'static,
-    {
-        Server {
-            capabilities: self.capabilities,
-            connection_factory: Some(move || Box::new(factory()) as Box<dyn ServerHandler>),
+    /// This is for internal use when the factory already returns `Box<dyn ServerHandler>`.
+    pub(crate) fn from_factory(factory: F) -> Self {
+        Self {
+            capabilities: ServerCapabilities::default(),
+            connection_factory: factory,
         }
     }
 
@@ -211,12 +231,7 @@ impl ServerHandle {
         let notification_tx_handle = notification_tx.clone();
 
         // Create connection instance wrapped in Arc for shared access
-        let connection: Option<Arc<Box<dyn ServerHandler>>> =
-            if let Some(factory) = &server.connection_factory {
-                Some(Arc::new(factory()))
-            } else {
-                None
-            };
+        let connection = Arc::new((server.connection_factory)());
 
         // Create a single ServerCtx instance that will be used throughout the connection
         let server_ctx = ServerCtx::new(notification_tx, Some(sink_tx.clone()));
@@ -241,62 +256,57 @@ impl ServerHandle {
                     result = stream_rx.next() => {
                         match result {
                             Some(Ok(message)) => {
-                                if let Some(conn) = &connection {
-                                    match message {
-                                        JSONRPCMessage::Request(request)
-                                            if !initialized && request.request.method == "initialize" =>
+                                match message {
+                                    JSONRPCMessage::Request(request)
+                                        if !initialized && request.request.method == "initialize" =>
+                                    {
+                                        let response =
+                                            handle_request(connection.as_ref().as_ref(), request, &server_ctx)
+                                                .await;
+                                        let should_connect =
+                                            matches!(response, JSONRPCMessage::Response(_));
+
                                         {
-                                            let response =
-                                                handle_request(conn.as_ref().as_ref(), request, &server_ctx)
-                                                    .await;
-                                            let should_connect =
-                                                matches!(response, JSONRPCMessage::Response(_));
-
-                                            {
-                                                let mut sink = sink_tx.lock().await;
-                                                if let Err(e) = sink.send(response).await {
-                                                    error!("Error sending initialize response: {}", e);
-                                                    break;
-                                                }
-                                            }
-
-                                            if should_connect {
-                                                if let Err(e) = conn.on_connect(&server_ctx, &remote_addr).await {
-                                                    error!("Error during on_connect: {}", e);
-                                                    break;
-                                                }
-                                                initialized = true;
+                                            let mut sink = sink_tx.lock().await;
+                                            if let Err(e) = sink.send(response).await {
+                                                error!("Error sending initialize response: {}", e);
+                                                break;
                                             }
                                         }
-                                        JSONRPCMessage::Response(response) => {
-                                            let response_id = match &response {
-                                                JSONRPCResponse::Result(result) => {
-                                                    Some(result.id.clone())
-                                                }
-                                                JSONRPCResponse::Error(error) => error.id.clone(),
-                                            };
-                                            tracing::info!(
-                                                "Server received response from client: {:?}",
-                                                response_id
-                                            );
-                                            server_ctx.handle_client_response(response).await;
-                                        }
-                                        other => {
-                                            if let Err(e) = handle_message_with_connection(
-                                                conn.clone(),
-                                                other,
-                                                response_tx.clone(),
-                                                &server_ctx,
-                                            )
-                                            .await
-                                            {
-                                                error!("Error handling message: {}", e);
+
+                                        if should_connect {
+                                            if let Err(e) = connection.on_connect(&server_ctx, &remote_addr).await {
+                                                error!("Error during on_connect: {}", e);
+                                                break;
                                             }
+                                            initialized = true;
                                         }
                                     }
-                                } else {
-                                    error!("No connection factory provided - unable to handle messages");
-                                    break;
+                                    JSONRPCMessage::Response(response) => {
+                                        let response_id = match &response {
+                                            JSONRPCResponse::Result(result) => {
+                                                Some(result.id.clone())
+                                            }
+                                            JSONRPCResponse::Error(error) => error.id.clone(),
+                                        };
+                                        tracing::info!(
+                                            "Server received response from client: {:?}",
+                                            response_id
+                                        );
+                                        server_ctx.handle_client_response(response).await;
+                                    }
+                                    other => {
+                                        if let Err(e) = handle_message_with_connection(
+                                            connection.clone(),
+                                            other,
+                                            response_tx.clone(),
+                                            &server_ctx,
+                                        )
+                                        .await
+                                        {
+                                            error!("Error handling message: {}", e);
+                                        }
+                                    }
                                 }
                             }
                             Some(Err(e)) => {
@@ -342,9 +352,7 @@ impl ServerHandle {
             }
 
             // Clean up connection
-            if let Some(conn) = connection
-                && let Err(e) = conn.on_shutdown().await
-            {
+            if let Err(e) = connection.on_shutdown().await {
                 error!("Error during server shutdown: {}", e);
             }
 

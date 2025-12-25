@@ -142,10 +142,7 @@ impl ServerHandler for TimeoutTestConnection {
             "reliable_operation" => {
                 Ok(schema::CallToolResult::new().with_text_content("Reliable operation completed"))
             }
-            _ => Err(Error::ToolExecutionFailed {
-                tool: name,
-                message: "Tool not found".to_string(),
-            }),
+            _ => Err(Error::ToolNotFound(name)),
         }
     }
 }
@@ -195,17 +192,16 @@ async fn main() -> Result<()> {
     info!("  - reliable_operation: Always succeeds immediately");
 
     // Use the new simplified API to serve TCP connections
-    Server::default()
-        .with_handler(move || {
-            TimeoutTestConnection::new(
-                server_info.clone(),
-                capabilities.clone(),
-                2, // Fails first 2 attempts
-                5, // Takes 5 seconds
-            )
-        })
-        .serve_tcp(addr)
-        .await?;
+    Server::new(move || {
+        TimeoutTestConnection::new(
+            server_info.clone(),
+            capabilities.clone(),
+            2, // Fails first 2 attempts
+            5, // Takes 5 seconds
+        )
+    })
+    .serve_tcp(addr)
+    .await?;
 
     Ok(())
 }

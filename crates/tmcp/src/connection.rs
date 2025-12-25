@@ -165,10 +165,7 @@ pub trait ServerHandler: Send + Sync {
         _arguments: Option<crate::Arguments>,
         _task: Option<schema::TaskMetadata>,
     ) -> Result<schema::CallToolResult> {
-        Err(Error::ToolExecutionFailed {
-            tool: name,
-            message: "Tool not found".to_string(),
-        })
+        Err(Error::ToolNotFound(name))
     }
 
     /// List available resources

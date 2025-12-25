@@ -16,8 +16,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_method_not_found() {
-        // Test that the default tools_call implementation returns ToolNotFound
+    async fn test_tool_not_found() {
+        // Test that the default call_tool implementation returns ToolNotFound
         #[derive(Default)]
         struct MinimalConnection;
 
@@ -45,9 +45,8 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(Error::ToolExecutionFailed { tool, message }) => {
+            Err(Error::ToolNotFound(tool)) => {
                 assert_eq!(tool, "non_existent");
-                assert!(message.contains("not found"), "Message was: {message}");
             }
             _ => panic!("unexpected result: {result:?}"),
         }

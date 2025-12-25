@@ -8,32 +8,31 @@ contains related changes and leaves the system in a consistent, testable state.
 Source: [./ergo.md](./ergo.md)
 
 
-## 1. Stage One: Critical Correctness Fixes
+## 1. Stage One: Critical Correctness Fixes ✓
 
 These items fix bugs or incorrect behavior that could cause runtime failures or protocol
 violations. Must be fixed before other changes.
 
-1. [ ] **Fix `#[mcp_server]` default capabilities** (ergo.md item 3)
+1. [x] **Fix `#[mcp_server]` default capabilities** (ergo.md item 3)
    - Location: `crates/tmcp-macros/src/lib.rs:382-383`
    - Problem: Macro always emits `.with_tools(false)` regardless of whether `#[tool]` methods exist
    - Fix: Count `#[tool]` methods during macro expansion; emit `.with_tools(true)` when count > 0
-   - Also detect `#[resource]` and `#[prompt]` methods for their respective capabilities
+   - Also: Fixed macro to use `env!("CARGO_PKG_VERSION")` for version instead of hardcoded "0.1.0"
    - Test: Create server with tools, verify `initialize` response has `capabilities.tools = Some(...)`
 
-2. [ ] **Standardize tool-not-found errors** (ergo.md item 6)
+2. [x] **Standardize tool-not-found errors** (ergo.md item 6)
    - Locations: `crates/tmcp-macros/src/lib.rs:317`, `crates/tmcp/src/connection.rs:167-171`
    - Problem: Macro returns `Error::MethodNotFound`, ServerHandler default returns
      `Error::ToolExecutionFailed` for the same condition
-   - Fix: Add `Error::ToolNotFound(String)` variant; update both locations to use it; ensure it
-     maps to JSON-RPC `METHOD_NOT_FOUND` error code
+   - Fix: Updated both locations to use existing `Error::ToolNotFound(String)` variant
    - Test: Call unknown tool, verify consistent error type and JSON-RPC error code
 
-3. [ ] **Require handler in Server constructor** (ergo.md item 7)
+3. [x] **Require handler in Server constructor** (ergo.md item 7)
    - Location: `crates/tmcp/src/server.rs:25-38, 297-299`
    - Problem: `Server::default()` compiles but fails at runtime with confusing error when client
      connects
-   - Fix: Make handler mandatory via `Server::new(handler)` constructor; remove `Server::default()`
-     and `with_handler()` method entirely
+   - Fix: Added `Server::new(handler)` constructor; removed `Default` impl and `with_handler()`
+   - Added `Server::from_factory()` (crate-internal) for pre-boxed handler factories
    - Test: Verify `Server::new(MyHandler::default)` is the only way to construct; old patterns
      fail to compile
 

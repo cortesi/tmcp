@@ -314,7 +314,7 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
         ) -> tmcp::Result<tmcp::schema::CallToolResult> {
             match name.as_str() {
                 #(#tool_matches)*
-                _ => Err(tmcp::Error::MethodNotFound(format!("Unknown tool: {}", name)))
+                _ => Err(tmcp::Error::ToolNotFound(name))
             }
         }
     }
@@ -370,22 +370,28 @@ fn generate_initialize(info: &ServerInfo, custom_init_fn: Option<&syn::Ident>) -
     }
 }
 
+/// Determine if tools capability should be advertised based on tool count.
+fn has_tools(info: &ServerInfo) -> bool {
+    !info.tools.is_empty()
+}
+
 /// Generate the default ServerHandler::initialize implementation.
 fn generate_default_initialize(info: &ServerInfo) -> TokenStream {
     let snake_case_name = info.struct_name.to_snake_case();
     let description = &info.description;
+    let has_tools = has_tools(info);
 
     let initialize_result = if description.is_empty() {
         quote! {
             tmcp::schema::InitializeResult::new(#snake_case_name)
-                .with_version("0.1.0")
-                .with_tools(false)
+                .with_version(env!("CARGO_PKG_VERSION"))
+                .with_tools(#has_tools)
         }
     } else {
         quote! {
             tmcp::schema::InitializeResult::new(#snake_case_name)
-                .with_version("0.1.0")
-                .with_tools(false)
+                .with_version(env!("CARGO_PKG_VERSION"))
+                .with_tools(#has_tools)
                 .with_instructions(#description)
         }
     };

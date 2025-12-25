@@ -59,7 +59,7 @@ where
     F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
 {
     // Build server.
-    let server = Server::default().with_handler_factory(handler_factory);
+    let server = Server::from_factory(handler_factory);
 
     // Two in-memory pipes to serve as the transport.
     let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
@@ -89,7 +89,7 @@ where
     C: ClientHandler + 'static,
 {
     // Build server.
-    let server = Server::default().with_handler_factory(handler_factory);
+    let server = Server::from_factory(handler_factory);
 
     // Two in-memory pipes to serve as the transport.
     let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();

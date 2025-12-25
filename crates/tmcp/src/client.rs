@@ -824,7 +824,7 @@ mod tests {
 
         let (client_transport, server_transport) = TestTransport::create_pair();
 
-        let server = Server::default().with_handler(TestConnection::default);
+        let server = Server::new(TestConnection::default);
         let server_handle = ServerHandle::new(server, server_transport)
             .await
             .expect("Failed to start server");
@@ -901,8 +901,7 @@ mod tests {
         let (client_transport, server_transport) = TestTransport::create_pair();
 
         // Start server with tools/listChanged capability so notification is forwarded
-        let server = Server::default()
-            .with_handler(DummyServerHandler::default)
+        let server = Server::new(DummyServerHandler::default)
             .with_capabilities(ServerCapabilities::default().with_tools(Some(true)));
         let server_handle = ServerHandle::new(server, server_transport)
             .await
@@ -982,7 +981,7 @@ mod tests {
         let (client_transport, server_transport) = TestTransport::create_pair();
 
         // Start server without tools capability
-        let server = Server::default().with_handler(DummyServerHandler::default);
+        let server = Server::new(DummyServerHandler::default);
         let server_handle = ServerHandle::new(server, server_transport)
             .await
             .expect("Failed to start server");
@@ -1065,7 +1064,7 @@ mod tests {
         // Start server with notif connection
         let server = {
             let tx_clone = shared_tx.clone();
-            Server::default().with_handler(move || NotifyServerHandler {
+            Server::new(move || NotifyServerHandler {
                 tx: tx_clone.clone(),
             })
         };
@@ -1161,9 +1160,8 @@ mod tests {
         let (server_reader, client_writer) = duplex(8192);
 
         // Create and configure server
-        let server = Server::default()
-            .with_handler(TestStreamHandler::default)
-            .with_capabilities(ServerCapabilities {
+        let server =
+            Server::new(TestStreamHandler::default).with_capabilities(ServerCapabilities {
                 tools: Some(ToolsCapability {
                     list_changed: Some(true),
                 }),
@@ -1246,7 +1244,7 @@ mod tests {
         let (client_transport, server_transport) = TestTransport::create_pair();
 
         // Create a new test server
-        let server = Server::default().with_handler(TestConnection::default);
+        let server = Server::new(TestConnection::default);
         let _server2 = ServerHandle::new(server, server_transport)
             .await
             .expect("Failed to start second server");

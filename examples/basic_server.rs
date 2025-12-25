@@ -86,10 +86,7 @@ async fn main() -> Result<()> {
     }) {
         Commands::Stdio => {
             // Run in stdio mode - no logging to avoid interfering with JSON-RPC
-            Server::default()
-                .with_handler(BasicServer::default)
-                .serve_stdio()
-                .await?;
+            Server::new(BasicServer::default).serve_stdio().await?;
         }
         Commands::Tcp { host, port } => {
             // Initialize logging for network modes
@@ -98,10 +95,7 @@ async fn main() -> Result<()> {
             let addr = format!("{host}:{port}");
             info!("Starting TCP MCP server on {}", addr);
 
-            Server::default()
-                .with_handler(BasicServer::default)
-                .serve_tcp(addr)
-                .await?;
+            Server::new(BasicServer::default).serve_tcp(addr).await?;
         }
         Commands::Http { host, port } => {
             // Initialize logging for network modes
@@ -110,10 +104,7 @@ async fn main() -> Result<()> {
             let addr = format!("{host}:{port}");
             info!("Starting HTTP MCP server on {}", addr);
 
-            let handle = Server::default()
-                .with_handler(BasicServer::default)
-                .serve_http(addr)
-                .await?;
+            let handle = Server::new(BasicServer::default).serve_http(addr).await?;
 
             // Wait for Ctrl+C signal
             ctrl_c().await?;

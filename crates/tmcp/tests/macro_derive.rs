@@ -127,7 +127,7 @@ mod tests {
             .call_tool(ctx.ctx(), "unknown".to_string(), None, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::MethodNotFound(_)));
+        assert!(matches!(err, Error::ToolNotFound(_)));
 
         // Missing arguments
         let err = server

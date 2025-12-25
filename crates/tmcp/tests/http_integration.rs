@@ -73,8 +73,10 @@ mod tests {
         fmt::try_init().ok();
 
         // Use port 0 to let the OS assign an available port
-        let server = Server::default().with_handler(EchoConnection::default);
-        let server_handle = server.serve_http("127.0.0.1:0").await.unwrap();
+        let server_handle = Server::new(EchoConnection::default)
+            .serve_http("127.0.0.1:0")
+            .await
+            .unwrap();
 
         // Get the actual bound address
         let bound_addr = server_handle.bound_addr.as_ref().unwrap();
