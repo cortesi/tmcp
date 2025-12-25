@@ -35,16 +35,9 @@ mod tests {
             _context: &ServerCtx,
             _cursor: Option<Cursor>,
         ) -> Result<ListToolsResult> {
-            let schema = ToolSchema {
-                schema: None,
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert("message".to_string(), json!({"type": "string"}));
-                    props
-                }),
-                required: Some(vec!["message".to_string()]),
-            };
+            let schema = ToolSchema::default()
+                .with_property("message", json!({"type": "string"}))
+                .with_required("message");
             Ok(ListToolsResult::default()
                 .with_tool(Tool::new("echo", schema).with_description("Echo message")))
         }
@@ -91,13 +84,10 @@ mod tests {
             .unwrap();
         assert_eq!(init.server_info.name, "http-echo-server");
 
-        // Call echo tool
+        // Call echo tool - HashMap implements Serialize so can be passed directly
         let mut args = HashMap::new();
         args.insert("message".to_string(), json!("hello"));
-        let result = client
-            .call_tool("echo", Some(args.into()), None)
-            .await
-            .unwrap();
+        let result = client.call_tool("echo", args).await.unwrap();
         if let Some(schema::ContentBlock::Text(text)) = result.content.first() {
             assert_eq!(text.text, "hello");
         } else {

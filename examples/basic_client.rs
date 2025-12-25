@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use tmcp::{Arguments, Client, Result, schema, schemars};
+use tmcp::{Client, Result, schema, schemars};
 use tracing::info;
 use tracing_subscriber::fmt;
 
@@ -93,11 +93,11 @@ async fn main() -> Result<()> {
     let params = EchoParams {
         message: format!("Hello from tmcp {mode} client!"),
     };
-    // If "echo" took no arguments you could call it with `None`:
-    // let result = client.call_tool("echo_no_args", None, None).await?;
+    // If "echo" took no arguments you could call it with `()`:
+    // let result = client.call_tool("echo_no_args", ()).await?;
 
-    let args = Arguments::from_struct(params)?;
-    let result = client.call_tool("echo", Some(args), None).await?;
+    // call_tool now accepts any Serialize type directly
+    let result = client.call_tool("echo", params).await?;
 
     // Assume text response
     if let Some(schema::ContentBlock::Text(text_content)) = result.content.first() {

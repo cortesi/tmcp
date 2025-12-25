@@ -90,38 +90,43 @@ These changes ensure configuration is consistent and doesn't require duplication
    - Test: Verify HTTP headers use correct protocol version
 
 
-## 4. Stage Four: Ergonomics Improvements
+## 4. Stage Four: Ergonomics Improvements ✓
 
 These changes reduce boilerplate and make common operations easier.
 
-1. [ ] **Accept `impl Serialize` in `call_tool`** (ergo.md item 2)
+1. [x] **Accept `impl Serialize` in `call_tool`** (ergo.md item 2)
    - Location: `crates/tmcp/src/client.rs` (now inherent impl after Stage 2)
    - Problem: Every call_tool requires `Arguments::from_struct(params)?` boilerplate
-   - Fix: Change `call_tool` signature to accept `impl Serialize` directly; do conversion internally
-   - Add `call_tool_typed<P: Serialize, R: DeserializeOwned>` for typed responses
+   - Fix: Changed `call_tool` to accept `impl Serialize + Send`; conversion done internally
+   - Added `call_tool_with_task` for passing task metadata
+   - Added `call_tool_typed<R: DeserializeOwned>` for typed responses
    - Test: Call tool with struct directly, verify serialization works
 
-2. [ ] **Store full JSON Schema in ToolSchema** (ergo.md item 10)
-   - Location: `crates/tmcp/src/schema/tools.rs:331-366`
-   - Problem: `ToolSchema::from_json_schema` drops description, enum, format, constraints, etc.
-   - Fix: Change `ToolSchema` to store schema as `serde_json::Value` directly; remove the lossy
-     field-by-field extraction
+2. [x] **Store full JSON Schema in ToolSchema** (ergo.md item 10)
+   - Location: `crates/tmcp/src/schema/tools.rs`
+   - Problem: `ToolSchema::from_json_schema` dropped description, enum, format, constraints, etc.
+   - Fix: Changed `ToolSchema` to transparent wrapper around `serde_json::Value`; added getter
+     methods `schema_type()`, `properties()`, `required()` for backwards compatibility
+   - `from_json_schema<T>()` now preserves full schema including descriptions
+   - Updated all usages to builder pattern: `ToolSchema::default().with_property(...).with_required(...)`
    - Test: Derive JsonSchema with field descriptions, verify they appear in tool listing
 
-3. [ ] **Remove Clone requirement from ClientHandler** (ergo.md item 11)
-   - Location: `crates/tmcp/src/connection.rs:22`
+3. [x] **Remove Clone requirement from ClientHandler** (ergo.md item 11)
+   - Location: `crates/tmcp/src/connection.rs:22`, `crates/tmcp/src/client.rs`
    - Problem: `ClientHandler: Clone` forces users to Arc-wrap all state
-   - Fix: Store `Arc<dyn ClientHandler>` internally; handler only needs `Send + Sync`
-   - Test: Create stateful handler without Arc, verify it compiles and works
+   - Fix: Store handler in `Arc<C>` internally; removed Clone from trait bounds
+   - Removed now-unnecessary manual Clone implementations from test handlers
+   - Test: Create stateful handler without Clone, verify it compiles and works
 
 
 ## 5. Stage Five: Quality of Life Additions
 
 These are additive changes that improve developer experience.
 
-1. [ ] **Add typed tool-call helper** (ergo.md item 12)
+1. [x] **Add typed tool-call helper** (ergo.md item 12)
    - Location: `crates/tmcp/src/client.rs`
-   - Add: `client.call_tool_typed::<P, R>(name, params).await?` returning deserialized `R`
+   - Note: Already implemented as part of Stage 4 item 1
+   - Added: `client.call_tool_typed::<R>(name, params).await?` returning deserialized `R`
    - Handles: Serialization, Arguments construction, result parsing, error mapping
    - Test: Call echo tool with typed params and response
 

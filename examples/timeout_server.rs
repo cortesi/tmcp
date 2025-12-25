@@ -71,12 +71,7 @@ impl ServerHandler for TimeoutTestConnection {
         _context: &ServerCtx,
         _cursor: Option<schema::Cursor>,
     ) -> Result<schema::ListToolsResult> {
-        let object_schema = schema::ToolSchema {
-            schema: None,
-            schema_type: "object".to_string(),
-            properties: None,
-            required: None,
-        };
+        let object_schema = schema::ToolSchema::default();
 
         Ok(schema::ListToolsResult::new()
             .with_tool(

@@ -77,22 +77,15 @@ mod tests {
                 _context: &ServerCtx,
                 _cursor: Option<schema::Cursor>,
             ) -> Result<schema::ListToolsResult> {
-                let schema = schema::ToolSchema {
-                    schema: None,
-                    schema_type: "object".to_string(),
-                    properties: Some({
-                        let mut props = HashMap::new();
-                        props.insert(
-                            "required_param".to_string(),
-                            serde_json::json!({
-                                "type": "string",
-                                "description": "A required parameter"
-                            }),
-                        );
-                        props
-                    }),
-                    required: Some(vec!["required_param".to_string()]),
-                };
+                let schema = schema::ToolSchema::default()
+                    .with_property(
+                        "required_param",
+                        serde_json::json!({
+                            "type": "string",
+                            "description": "A required parameter"
+                        }),
+                    )
+                    .with_required("required_param");
 
                 Ok(schema::ListToolsResult::new().with_tool(
                     schema::Tool::new("test_tool", schema)

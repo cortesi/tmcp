@@ -149,13 +149,13 @@ mod tests {
 
             match name.as_str() {
                 "ping_client" => {
-                    let mut ctx = context.clone();
+                    let ctx = context.clone();
                     ctx.ping().await?;
                     Ok(CallToolResult::new().with_text_content("Client pinged"))
                 }
 
                 "query_client_roots" => {
-                    let mut ctx = context.clone();
+                    let ctx = context.clone();
                     let roots = ctx.list_roots().await?;
                     Ok(CallToolResult::new()
                         .with_text_content(format!("Found {} client roots", roots.roots.len())))
@@ -187,7 +187,7 @@ mod tests {
                         _meta: None,
                     };
 
-                    let mut ctx = context.clone();
+                    let ctx = context.clone();
                     let result = ctx.create_message(params).await?;
                     let text = match result.message.content {
                         OneOrMany::One(SamplingMessageContentBlock::Text(text)) => text.text,
@@ -260,7 +260,7 @@ mod tests {
         // Test 1: Server pings client during tool execution
         client_calls.lock().unwrap().clear();
         client
-            .call_tool("ping_client", None, None)
+            .call_tool("ping_client", ())
             .await
             .expect("ping_client tool failed");
 
@@ -273,7 +273,7 @@ mod tests {
         // Test 2: Server queries client roots during tool execution
         client_calls.lock().unwrap().clear();
         let result = client
-            .call_tool("query_client_roots", None, None)
+            .call_tool("query_client_roots", ())
             .await
             .expect("query_client_roots tool failed");
 
@@ -290,7 +290,7 @@ mod tests {
         // Test 3: Server asks client to generate message during tool execution
         client_calls.lock().unwrap().clear();
         let result = client
-            .call_tool("ask_client_to_generate", None, None)
+            .call_tool("ask_client_to_generate", ())
             .await
             .expect("ask_client_to_generate tool failed");
 
@@ -357,7 +357,7 @@ mod tests {
         // Server pings client (reverse direction via tool call)
         client_calls.lock().unwrap().clear();
         client
-            .call_tool("ping_client", None, None)
+            .call_tool("ping_client", ())
             .await
             .expect("Server->Client ping failed");
         assert!(

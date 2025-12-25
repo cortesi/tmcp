@@ -196,12 +196,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
 
             // Parse and display input parameters
-            if let Some(properties) = &tool.input_schema.properties
+            if let Some(properties) = tool.input_schema.properties()
                 && !properties.is_empty()
             {
                 println!("  Parameters:");
 
-                let required = tool.input_schema.required.as_deref().unwrap_or(&[]);
+                let required = tool.input_schema.required().unwrap_or_default();
 
                 for (name, schema) in properties {
                     let param_type = schema
@@ -212,7 +212,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         .get("description")
                         .and_then(|d| d.as_str())
                         .unwrap_or("");
-                    let is_required = required.contains(name);
+                    let is_required = required.contains(&name.as_str());
 
                     let param_header = format!(
                         "    - {} ({}){}: ",

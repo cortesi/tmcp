@@ -270,50 +270,90 @@ impl Tool {
 }
 
 /// A JSON Schema object defining the input or output schema for a tool.
+///
+/// This type preserves the complete JSON Schema, including all fields like
+/// descriptions, enums, formats, and constraints. It serializes transparently
+/// as a JSON Schema object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSchema {
-    #[serde(rename = "$schema", skip_serializing_if = "Option::is_none")]
-    pub schema: Option<String>,
-    #[serde(rename = "type")]
-    /// JSON Schema type (usually "object").
-    pub schema_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// JSON Schema properties map.
-    pub properties: Option<HashMap<String, Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Required property names.
-    pub required: Option<Vec<String>>,
-}
+#[serde(transparent)]
+pub struct ToolSchema(pub Value);
 
 impl Default for ToolSchema {
     fn default() -> Self {
-        Self {
-            schema: None,
-            schema_type: "object".to_string(),
-            properties: None,
-            required: None,
-        }
+        Self(serde_json::json!({
+            "type": "object"
+        }))
     }
 }
 
 impl ToolSchema {
+    /// Create a new schema from a JSON value.
+    pub fn new(schema: Value) -> Self {
+        Self(schema)
+    }
+
+    /// Get the underlying JSON value.
+    pub fn as_value(&self) -> &Value {
+        &self.0
+    }
+
+    /// Get a mutable reference to the underlying JSON value.
+    pub fn as_value_mut(&mut self) -> &mut Value {
+        &mut self.0
+    }
+
+    /// Get the schema type (e.g., "object", "string").
+    pub fn schema_type(&self) -> Option<&str> {
+        self.0.get("type").and_then(|v| v.as_str())
+    }
+
+    /// Get the properties map if this is an object schema.
+    pub fn properties(&self) -> Option<&serde_json::Map<String, Value>> {
+        self.0.get("properties").and_then(|v| v.as_object())
+    }
+
+    /// Get the required field names if this is an object schema.
+    pub fn required(&self) -> Option<Vec<&str>> {
+        self.0
+            .get("required")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+    }
+
     /// Add a property schema.
     pub fn with_property(mut self, name: impl Into<String>, schema: Value) -> Self {
-        self.properties
-            .get_or_insert_with(HashMap::new)
-            .insert(name.into(), schema);
+        if let Some(obj) = self.0.as_object_mut() {
+            let properties = obj
+                .entry("properties")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(props) = properties.as_object_mut() {
+                props.insert(name.into(), schema);
+            }
+        }
         self
     }
 
     /// Replace the properties map.
     pub fn with_properties(mut self, properties: HashMap<String, Value>) -> Self {
-        self.properties = Some(properties);
+        if let Some(obj) = self.0.as_object_mut() {
+            obj.insert(
+                "properties".to_string(),
+                Value::Object(properties.into_iter().collect()),
+            );
+        }
         self
     }
 
     /// Add a required property name.
     pub fn with_required(mut self, name: impl Into<String>) -> Self {
-        self.required.get_or_insert_with(Vec::new).push(name.into());
+        if let Some(obj) = self.0.as_object_mut() {
+            let required = obj
+                .entry("required")
+                .or_insert_with(|| Value::Array(Vec::new()));
+            if let Some(arr) = required.as_array_mut() {
+                arr.push(Value::String(name.into()));
+            }
+        }
         self
     }
 
@@ -322,55 +362,30 @@ impl ToolSchema {
         mut self,
         names: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
-        let required = self.required.get_or_insert_with(Vec::new);
-        required.extend(names.into_iter().map(|n| n.into()));
+        if let Some(obj) = self.0.as_object_mut() {
+            let required = obj
+                .entry("required")
+                .or_insert_with(|| Value::Array(Vec::new()));
+            if let Some(arr) = required.as_array_mut() {
+                arr.extend(names.into_iter().map(|n| Value::String(n.into())));
+            }
+        }
         self
     }
 
     /// Build a schema from a schemars JsonSchema type.
+    ///
+    /// This preserves the complete schema including descriptions, enums,
+    /// formats, and all other JSON Schema features.
     pub fn from_json_schema<T: schemars::JsonSchema>() -> Self {
         let schema = schemars::schema_for!(T);
-        let schema_value = schema.as_value();
-        let schema_obj = schema_value.as_object();
-        let schema_uri = schema_obj
-            .and_then(|obj| obj.get("$schema"))
-            .and_then(|v| v.as_str())
-            .map(|value| value.to_string());
-        let schema_type = schema_obj
-            .and_then(|obj| obj.get("type"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("object")
-            .to_string();
-        let properties = schema_obj
-            .and_then(|obj| obj.get("properties"))
-            .and_then(|v| v.as_object())
-            .map(|props| {
-                props
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect::<HashMap<_, _>>()
-            });
-        let required = schema_obj
-            .and_then(|obj| obj.get("required"))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            });
-        Self {
-            schema: schema_uri,
-            schema_type,
-            properties,
-            required,
-        }
+        Self(schema.as_value().clone())
     }
 
     /// Checks if a given property name is required in this schema.
     pub fn is_required(&self, name: &str) -> bool {
-        self.required
-            .as_ref()
-            .map(|req| req.iter().any(|r| r == name))
+        self.required()
+            .map(|req| req.contains(&name))
             .unwrap_or(false)
     }
 }

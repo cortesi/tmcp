@@ -2,7 +2,7 @@ use std::{collections::HashMap, process::Stdio, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     process::{Child, Command},
@@ -38,8 +38,8 @@ where
 {
     /// Tracks requests and routes responses.
     request_handler: RequestHandler,
-    /// Connection callbacks for server-initiated requests.
-    connection: C,
+    /// Connection callbacks for server-initiated requests (wrapped in Arc for sharing).
+    connection: Arc<C>,
     /// Context used for connection callbacks.
     context: Option<ClientCtx>,
     /// Client name reported during initialization.
@@ -65,7 +65,7 @@ impl Client<()> {
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             request_handler: RequestHandler::new(None, "req".to_string()),
-            connection: (),
+            connection: Arc::new(()),
             context: None,
             name: name.into(),
             version: version.into(),
@@ -81,7 +81,7 @@ impl Client<()> {
     pub fn with_handler<C: ClientHandler>(self, handler: C) -> Client<C> {
         Client {
             request_handler: self.request_handler,
-            connection: handler,
+            connection: Arc::new(handler),
             context: self.context,
             name: self.name,
             version: self.version,
@@ -364,13 +364,13 @@ where
                                     JSONRPCMessage::Notification(notification) => {
                                         // Convert the JSON-RPC notification into a typed
                                         // ServerNotification and pass it to the connection handler.
-                                        if let Err(err) = handle_server_notification(&connection, &context, notification).await {
+                                        if let Err(err) = handle_server_notification(connection.as_ref(), &context, notification).await {
                                             error!("Failed to handle server notification: {}", err);
                                         }
                                     }
                                     JSONRPCMessage::Request(request) => {
                                         tracing::info!("Client received request from server: {:?}", request.id);
-                                        let response = handle_server_request(&connection, &context, request).await;
+                                        let response = handle_server_request(connection.as_ref(), &context, request).await;
                                         let response_id = match &response {
                                             JSONRPCMessage::Response(r) => match r {
                                                 JSONRPCResponse::Result(result) => {
@@ -479,15 +479,84 @@ where
         self.request(ClientRequest::list_tools(cursor.into())).await
     }
 
-    /// Call a tool with the given name and arguments
+    /// Call a tool with the given name and arguments.
+    ///
+    /// Arguments can be any serializable type. Pass `()` for tools that take no arguments.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // With a struct
+    /// #[derive(Serialize)]
+    /// struct EchoArgs { message: String }
+    /// let result = client.call_tool("echo", EchoArgs { message: "hello".into() }).await?;
+    ///
+    /// // With no arguments
+    /// let result = client.call_tool("ping", ()).await?;
+    /// ```
     pub async fn call_tool(
         &mut self,
         name: impl Into<String> + Send,
-        arguments: Option<crate::Arguments>,
+        arguments: impl Serialize + Send,
+    ) -> Result<CallToolResult> {
+        let args = crate::Arguments::from_struct(arguments)?;
+        let request = ClientRequest::call_tool(name, Some(args), None);
+        self.request(request).await
+    }
+
+    /// Call a tool with arguments and task metadata.
+    ///
+    /// Use this when you need to pass task metadata for progress tracking.
+    pub async fn call_tool_with_task(
+        &mut self,
+        name: impl Into<String> + Send,
+        arguments: impl Serialize + Send,
         task: Option<TaskMetadata>,
     ) -> Result<CallToolResult> {
-        let request = ClientRequest::call_tool(name, arguments, task);
+        let args = crate::Arguments::from_struct(arguments)?;
+        let request = ClientRequest::call_tool(name, Some(args), task);
         self.request(request).await
+    }
+
+    /// Call a tool and deserialize the text response into a typed result.
+    ///
+    /// This is a convenience method that:
+    /// 1. Serializes the arguments
+    /// 2. Calls the tool
+    /// 3. Extracts the first text content block
+    /// 4. Deserializes it as JSON into type `R`
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[derive(Serialize)]
+    /// struct CalcArgs { a: i32, b: i32 }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct CalcResult { sum: i32 }
+    ///
+    /// let result: CalcResult = client.call_tool_typed("add", CalcArgs { a: 1, b: 2 }).await?;
+    /// ```
+    pub async fn call_tool_typed<R: DeserializeOwned>(
+        &mut self,
+        name: impl Into<String> + Send,
+        arguments: impl Serialize + Send,
+    ) -> Result<R> {
+        let result = self.call_tool(name, arguments).await?;
+
+        // Find the first text content block
+        let text = result
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::Text(t) => Some(&t.text),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Protocol("Tool returned no text content".into()))?;
+
+        serde_json::from_str(text).map_err(|e| Error::JsonParse {
+            message: format!("Failed to parse tool response: {e}"),
+        })
     }
 
     /// List available resources with optional pagination
@@ -772,37 +841,38 @@ mod tests {
 
     #[test]
     fn test_call_tool_api() {
+        // Define struct for testing Serialize arguments
+        #[derive(serde::Serialize)]
+        struct MyParams {
+            key: String,
+        }
+
         // This test just verifies the API is ergonomic - it doesn't run async code
         let mut client = Client::new("test-client", "1.0.0");
 
         // These should all compile cleanly
         drop(async {
-            // Call without arguments - passing ()
-            client.call_tool("my_tool", None, None).await.unwrap();
+            // Call without arguments - pass () which serializes to empty object
+            client.call_tool("my_tool", ()).await.unwrap();
 
             // Call with String for tool name
             let tool_name = "another_tool".to_string();
-            client.call_tool(tool_name, None, None).await.unwrap();
+            client.call_tool(tool_name, ()).await.unwrap();
 
             // Call with &String
             let tool_name = "third_tool".to_string();
-            client.call_tool(&tool_name, None, None).await.unwrap();
+            client.call_tool(&tool_name, ()).await.unwrap();
 
-            // Call with HashMap arguments directly
+            // Call with HashMap arguments directly (implements Serialize)
             let mut args = HashMap::new();
             args.insert("param".to_string(), serde_json::json!("value"));
-            client
-                .call_tool("tool_with_args", Some(args.into()), None)
-                .await
-                .unwrap();
+            client.call_tool("tool_with_args", args).await.unwrap();
 
-            // Call with Some(HashMap)
-            let mut args = HashMap::new();
-            args.insert("key".to_string(), serde_json::json!("value"));
-            client
-                .call_tool("tool_with_map", Some(args.into()), None)
-                .await
-                .unwrap();
+            // Call with a struct that implements Serialize
+            let params = MyParams {
+                key: "value".to_string(),
+            };
+            client.call_tool("tool_with_struct", params).await.unwrap();
         });
     }
 
@@ -857,14 +927,6 @@ mod tests {
         // Custom client connection that records notifications
         struct NotifClientHandler {
             tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-        }
-
-        impl Clone for NotifClientHandler {
-            fn clone(&self) -> Self {
-                Self {
-                    tx: self.tx.clone(),
-                }
-            }
         }
 
         #[async_trait::async_trait]
@@ -947,14 +1009,6 @@ mod tests {
     async fn test_server_notification_filtered_without_capability() {
         struct NotifClientHandler {
             tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-        }
-
-        impl Clone for NotifClientHandler {
-            fn clone(&self) -> Self {
-                Self {
-                    tx: self.tx.clone(),
-                }
-            }
         }
 
         #[async_trait::async_trait]

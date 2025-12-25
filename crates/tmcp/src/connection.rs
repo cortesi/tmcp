@@ -19,7 +19,7 @@ use crate::{
 /// Implementations should use interior mutability (`Arc<Mutex<_>>`, `RwLock`, etc.)
 /// for any mutable state.
 #[async_trait]
-pub trait ClientHandler: Send + Sync + Clone {
+pub trait ClientHandler: Send + Sync {
     /// Called after the initialization handshake completes.
     async fn on_connect(&self, _context: &ClientCtx) -> Result<()> {
         Ok(())

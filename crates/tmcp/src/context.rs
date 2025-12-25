@@ -130,12 +130,11 @@ impl ServerCtx {
             ))
         }
     }
-}
 
-/// MCP protocol methods for client interaction.
-///
-/// These methods allow a server to make requests to the connected client.
-impl ServerCtx {
+    // --- MCP protocol methods for client interaction ---
+    //
+    // These methods allow a server to make requests to the connected client.
+
     /// Respond to ping requests from the client
     pub async fn ping(&self) -> Result<()> {
         let _: schema::EmptyResult = self.request(schema::ServerRequest::ping()).await?;

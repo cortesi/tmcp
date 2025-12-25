@@ -43,22 +43,15 @@ mod tests {
             _cursor: Option<Cursor>,
         ) -> Result<ListToolsResult> {
             tracing::info!("EchoConnection.tools_list called");
-            let schema = ToolSchema {
-                schema: None,
-                schema_type: "object".to_string(),
-                properties: Some({
-                    let mut props = HashMap::new();
-                    props.insert(
-                        "message".to_string(),
-                        json!({
-                            "type": "string",
-                            "description": "The message to echo"
-                        }),
-                    );
-                    props
-                }),
-                required: Some(vec!["message".to_string()]),
-            };
+            let schema = ToolSchema::default()
+                .with_property(
+                    "message",
+                    json!({
+                        "type": "string",
+                        "description": "The message to echo"
+                    }),
+                )
+                .with_required("message");
 
             Ok(ListToolsResult::new()
                 .with_tool(Tool::new("echo", schema).with_description("Echoes the input message")))
@@ -291,13 +284,10 @@ mod tests {
         assert_eq!(tools.tools.len(), 1);
         assert_eq!(tools.tools[0].name, "reverse");
 
-        // Call reverse tool
+        // Call reverse tool - HashMap implements Serialize so can be passed directly
         let mut args = HashMap::new();
         args.insert("text".to_string(), json!("hello"));
-        let result = client
-            .call_tool("reverse", Some(args.into()), None)
-            .await
-            .unwrap();
+        let result = client.call_tool("reverse", args).await.unwrap();
 
         // Verify reversed result
         assert_eq!(result.content.len(), 1);

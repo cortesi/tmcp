@@ -824,17 +824,17 @@ mod tests {
     fn test_tool_input_schema_from_json_schema() {
         let schema = ToolSchema::from_json_schema::<TestInput>();
 
-        assert_eq!(schema.schema_type, "object");
+        assert_eq!(schema.schema_type(), Some("object"));
 
-        let properties = schema.properties.expect("Should have properties");
+        let properties = schema.properties().expect("Should have properties");
         assert!(properties.contains_key("name"));
         assert!(properties.contains_key("age"));
         assert!(properties.contains_key("email"));
 
-        let required = schema.required.expect("Should have required fields");
-        assert!(required.contains(&"name".to_string()));
-        assert!(required.contains(&"age".to_string()));
-        assert!(!required.contains(&"email".to_string()));
+        let required = schema.required().expect("Should have required fields");
+        assert!(required.contains(&"name"));
+        assert!(required.contains(&"age"));
+        assert!(!required.contains(&"email"));
     }
 
     #[derive(JsonSchema, Serialize)]
@@ -848,9 +848,9 @@ mod tests {
     fn test_complex_schema_conversion() {
         let schema = ToolSchema::from_json_schema::<ComplexInput>();
 
-        assert_eq!(schema.schema_type, "object");
+        assert_eq!(schema.schema_type(), Some("object"));
 
-        let properties = schema.properties.expect("Should have properties");
+        let properties = schema.properties().expect("Should have properties");
         assert!(properties.contains_key("id"));
         assert!(properties.contains_key("tags"));
         assert!(properties.contains_key("metadata"));

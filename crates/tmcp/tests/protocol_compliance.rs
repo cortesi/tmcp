@@ -22,22 +22,15 @@ impl TestConnection {
         let mut tools = HashMap::new();
 
         // Echo tool
-        let echo_schema = ToolSchema {
-            schema: None,
-            schema_type: "object".to_string(),
-            properties: Some({
-                let mut props = HashMap::new();
-                props.insert(
-                    "message".to_string(),
-                    json!({
-                        "type": "string",
-                        "description": "The message to echo"
-                    }),
-                );
-                props
-            }),
-            required: Some(vec!["message".to_string()]),
-        };
+        let echo_schema = ToolSchema::default()
+            .with_property(
+                "message",
+                json!({
+                    "type": "string",
+                    "description": "The message to echo"
+                }),
+            )
+            .with_required("message");
 
         tools.insert(
             "echo".to_string(),
@@ -45,29 +38,23 @@ impl TestConnection {
         );
 
         // Add tool
-        let add_schema = ToolSchema {
-            schema: None,
-            schema_type: "object".to_string(),
-            properties: Some({
-                let mut props = HashMap::new();
-                props.insert(
-                    "a".to_string(),
-                    json!({
-                        "type": "number",
-                        "description": "First number"
-                    }),
-                );
-                props.insert(
-                    "b".to_string(),
-                    json!({
-                        "type": "number",
-                        "description": "Second number"
-                    }),
-                );
-                props
-            }),
-            required: Some(vec!["a".to_string(), "b".to_string()]),
-        };
+        let add_schema = ToolSchema::default()
+            .with_property(
+                "a",
+                json!({
+                    "type": "number",
+                    "description": "First number"
+                }),
+            )
+            .with_property(
+                "b",
+                json!({
+                    "type": "number",
+                    "description": "Second number"
+                }),
+            )
+            .with_required("a")
+            .with_required("b");
 
         tools.insert(
             "add".to_string(),
@@ -314,16 +301,17 @@ mod tests {
             assert!(!tool.name.is_empty());
 
             // Verify input schema is valid
-            assert_eq!(tool.input_schema.schema_type, "object");
+            assert_eq!(tool.input_schema.schema_type(), Some("object"));
 
             // Check it has properties
-            assert!(tool.input_schema.properties.is_some());
-            let props = tool.input_schema.properties.as_ref().unwrap();
+            let props = tool
+                .input_schema
+                .properties()
+                .expect("should have properties");
             assert!(!props.is_empty());
 
             // Check it has required fields
-            assert!(tool.input_schema.required.is_some());
-            let required = tool.input_schema.required.as_ref().unwrap();
+            let required = tool.input_schema.required().expect("should have required");
             assert!(!required.is_empty());
         }
     }
