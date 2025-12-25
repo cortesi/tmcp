@@ -37,26 +37,28 @@ violations. Must be fixed before other changes.
      fail to compile
 
 
-## 2. Stage Two: API Naming Consistency
+## 2. Stage Two: API Naming Consistency ✓
 
 These changes fix confusing naming that makes the API harder to learn and use correctly.
 
-1. [ ] **Move API methods to inherent impls** (ergo.md item 1)
+1. [x] **Move API methods to inherent impls** (ergo.md item 1)
    - Location: `crates/tmcp/src/api.rs:19-109`
    - Problem: `ServerAPI` contains methods clients call on servers, but users import it to use the
      `Client` struct - naming is backwards from user's perspective
-   - Fix: Move all methods from `ServerAPI` trait to inherent impl on `Client`; move all methods
-     from `ClientAPI` trait to inherent impl on `ServerCtx`; delete both traits
+   - Fix: Moved all methods from `ServerAPI` trait to inherent impl on `Client`; moved all methods
+     from `ClientAPI` trait to inherent impl on `ServerCtx`; deleted both traits and api.rs
+   - Also: Removed unused `request_handler` field and `request` method from `ClientCtx` since it was
+     only used by the deleted `impl ServerAPI for ClientCtx`
    - Result: `use tmcp::Client` is all users need - no confusing trait imports
-   - Update all examples and README
-   - Test: Verify examples compile with just `use tmcp::Client`
+   - Updated all examples, tests, and mcptool
+   - Test: All examples compile with just `use tmcp::Client`
 
-2. [ ] **Unify notification method names to `notify`** (ergo.md item 4)
-   - Location: `crates/tmcp/src/context.rs:43-48` (ClientCtx) and `255-259` (ServerCtx)
+2. [x] **Unify notification method names to `notify`** (ergo.md item 4)
+   - Location: `crates/tmcp/src/context.rs` (ClientCtx and ServerCtx)
    - Problem: `ClientCtx::send_notification` vs `ServerCtx::notify` - inconsistent naming
-   - Fix: Rename `ClientCtx::send_notification` to `notify`
-   - Update all usages in examples and tests
-   - Test: Verify notification sending works from both contexts
+   - Fix: Renamed `ClientCtx::send_notification` to `notify`
+   - Updated all usages in examples, tests, and mcptool
+   - Test: Notification sending works from both contexts
 
 
 ## 3. Stage Three: Capabilities & Configuration Alignment

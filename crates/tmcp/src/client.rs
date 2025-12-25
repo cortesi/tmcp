@@ -11,7 +11,6 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    api::ServerAPI,
     auth::OAuth2Client,
     connection::ClientHandler,
     context::ClientCtx,
@@ -123,11 +122,13 @@ where
     ///
     /// Calling `init` triggers the `ClientHandler::on_connect` callback after the
     /// initialization handshake completes.
-    pub async fn init(&mut self) -> Result<InitializeResult> {
+    pub async fn init(&mut self) -> Result<InitializeResult>
+    where
+        C: Sync,
+    {
         let client_info = Implementation::new(self.name.clone(), self.version.clone());
 
-        <Self as ServerAPI>::initialize(
-            self,
+        self.initialize(
             LATEST_PROTOCOL_VERSION.to_string(),
             self.client_capabilities.clone(),
             client_info,
@@ -338,7 +339,7 @@ where
         let (client_notification_tx, mut client_notification_rx) = broadcast::channel(100);
 
         // Create the context for the connection
-        let context = ClientCtx::new(client_notification_tx, Some(tx.clone()));
+        let context = ClientCtx::new(client_notification_tx);
         self.context = Some(context.clone());
 
         // Clone sink for notification handler
@@ -436,14 +437,16 @@ where
     }
 }
 
-/// Implementation of ServerAPI trait for Client
-#[async_trait]
-impl<C> ServerAPI for Client<C>
+/// MCP protocol methods for server interaction.
+///
+/// These methods implement the client-side MCP protocol operations
+/// for communicating with an MCP server.
+impl<C> Client<C>
 where
     C: ClientHandler + Send + Sync + 'static,
 {
     /// Initialize the connection with protocol version and capabilities
-    async fn initialize(
+    pub async fn initialize(
         &mut self,
         protocol_version: String,
         capabilities: ClientCapabilities,
@@ -463,13 +466,13 @@ where
     }
 
     /// Respond to ping requests
-    async fn ping(&mut self) -> Result<()> {
+    pub async fn ping(&mut self) -> Result<()> {
         let _: EmptyResult = self.request(ClientRequest::ping()).await?;
         Ok(())
     }
 
     /// List available tools with optional pagination
-    async fn list_tools(
+    pub async fn list_tools(
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListToolsResult> {
@@ -477,7 +480,7 @@ where
     }
 
     /// Call a tool with the given name and arguments
-    async fn call_tool(
+    pub async fn call_tool(
         &mut self,
         name: impl Into<String> + Send,
         arguments: Option<crate::Arguments>,
@@ -488,7 +491,7 @@ where
     }
 
     /// List available resources with optional pagination
-    async fn list_resources(
+    pub async fn list_resources(
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListResourcesResult> {
@@ -497,7 +500,7 @@ where
     }
 
     /// List resource templates with optional pagination
-    async fn list_resource_templates(
+    pub async fn list_resource_templates(
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListResourceTemplatesResult> {
@@ -506,7 +509,7 @@ where
     }
 
     /// Read a resource by URI
-    async fn resources_read(
+    pub async fn resources_read(
         &mut self,
         uri: impl Into<String> + Send,
     ) -> Result<ReadResourceResult> {
@@ -514,19 +517,19 @@ where
     }
 
     /// Subscribe to resource updates
-    async fn resources_subscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
+    pub async fn resources_subscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
         let _: EmptyResult = self.request(ClientRequest::subscribe(uri)).await?;
         Ok(())
     }
 
     /// Unsubscribe from resource updates
-    async fn resources_unsubscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
+    pub async fn resources_unsubscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
         let _: EmptyResult = self.request(ClientRequest::unsubscribe(uri)).await?;
         Ok(())
     }
 
     /// List available prompts with optional pagination
-    async fn list_prompts(
+    pub async fn list_prompts(
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListPromptsResult> {
@@ -535,7 +538,7 @@ where
     }
 
     /// Get a prompt by name with optional arguments
-    async fn get_prompt(
+    pub async fn get_prompt(
         &mut self,
         name: impl Into<String> + Send,
         arguments: Option<HashMap<String, String>>,
@@ -545,7 +548,7 @@ where
     }
 
     /// Handle completion requests
-    async fn complete(
+    pub async fn complete(
         &mut self,
         reference: Reference,
         argument: ArgumentInfo,
@@ -556,30 +559,37 @@ where
     }
 
     /// Set the logging level
-    async fn set_level(&mut self, level: LoggingLevel) -> Result<()> {
+    pub async fn set_level(&mut self, level: LoggingLevel) -> Result<()> {
         let _: EmptyResult = self.request(ClientRequest::set_level(level)).await?;
         Ok(())
     }
 
-    async fn get_task(&mut self, task_id: impl Into<String> + Send) -> Result<GetTaskResult> {
+    /// Retrieve the state of a task.
+    pub async fn get_task(&mut self, task_id: impl Into<String> + Send) -> Result<GetTaskResult> {
         self.request(ClientRequest::get_task(task_id)).await
     }
 
-    async fn get_task_payload(
+    /// Retrieve the result of a completed task.
+    pub async fn get_task_payload(
         &mut self,
         task_id: impl Into<String> + Send,
     ) -> Result<GetTaskPayloadResult> {
         self.request(ClientRequest::get_task_payload(task_id)).await
     }
 
-    async fn list_tasks(
+    /// List tasks with optional pagination.
+    pub async fn list_tasks(
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListTasksResult> {
         self.request(ClientRequest::list_tasks(cursor.into())).await
     }
 
-    async fn cancel_task(&mut self, task_id: impl Into<String> + Send) -> Result<CancelTaskResult> {
+    /// Cancel a task by ID.
+    pub async fn cancel_task(
+        &mut self,
+        task_id: impl Into<String> + Send,
+    ) -> Result<CancelTaskResult> {
         self.request(ClientRequest::cancel_task(task_id)).await
     }
 }
@@ -1047,7 +1057,7 @@ mod tests {
         #[async_trait::async_trait]
         impl ClientHandlerTrait for NotifyClientHandler {
             async fn on_connect(&self, context: &ClientCtxType) -> Result<()> {
-                context.send_notification(ClientNotification::initialized())?;
+                context.notify(ClientNotification::initialized())?;
                 Ok(())
             }
         }

@@ -12,7 +12,7 @@ mod tests {
     use rmcp_model::{CallToolRequestParam, PaginatedRequestParam};
     use serde_json::json;
     use tmcp::{
-        Arguments, Client, Error, Result, Server, ServerAPI, ServerCtx, ServerHandler, schema::*,
+        Arguments, Client, Error, Result, Server, ServerCtx, ServerHandler, schema::*,
         testutils::make_duplex_pair,
     };
     use tokio::{

@@ -134,7 +134,7 @@ pub fn test_server_ctx(notification_tx: broadcast::Sender<ServerNotification>) -
 /// Create a ClientCtx for testing purposes.
 /// This creates a ClientCtx with only notification capability (no request/response).
 pub fn test_client_ctx(notification_tx: broadcast::Sender<ClientNotification>) -> ClientCtx {
-    ClientCtx::new(notification_tx, None)
+    ClientCtx::new(notification_tx)
 }
 
 /// Test context for [`ServerHandler`] implementations.

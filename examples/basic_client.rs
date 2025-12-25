@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use tmcp::{Arguments, Client, Result, ServerAPI, schema, schemars};
+use tmcp::{Arguments, Client, Result, schema, schemars};
 use tracing::info;
 use tracing_subscriber::fmt;
 

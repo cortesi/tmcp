@@ -4,7 +4,7 @@ use std::{error::Error, sync::Arc};
 
 use clap::Parser;
 use tmcp::{
-    Client, ServerAPI,
+    Client,
     auth::{
         ClientMetadata, DynamicRegistrationClient, OAuth2CallbackServer, OAuth2Client, OAuth2Config,
     },

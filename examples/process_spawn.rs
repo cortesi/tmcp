@@ -5,7 +5,7 @@
 //! - Connect to it using the process's stdin/stdout
 //! - Manage the process lifecycle
 
-use tmcp::{Arguments, Client, Result, ServerAPI};
+use tmcp::{Arguments, Client, Result};
 use tokio::process::Command;
 use tracing::{Level, error, info};
 

@@ -22,8 +22,6 @@
 //! - **HTTP**: `server.listen_http("127.0.0.1:3000")` (uses SSE for server->client)
 //! - **Stdio**: `server.listen_stdio()` for subprocess integration
 
-/// Server-side request/response API traits and helpers.
-mod api;
 /// Argument envelope used by tool calls and prompt arguments.
 mod arguments;
 /// Client implementation and transport orchestration.
@@ -52,7 +50,6 @@ pub mod auth;
 pub mod schema;
 pub mod testutils;
 
-pub use api::*;
 pub use arguments::Arguments;
 pub use client::{Client, ProcessConnection};
 pub use connection::{ClientHandler, ServerHandler};

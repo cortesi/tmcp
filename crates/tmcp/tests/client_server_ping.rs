@@ -6,7 +6,7 @@ mod tests {
 
     use async_trait::async_trait;
     use tmcp::{
-        ClientCtx, ClientHandler, Result, ServerAPI, ServerCtx, ServerHandler,
+        ClientCtx, ClientHandler, Result, ServerCtx, ServerHandler,
         schema::*,
         testutils::{
             connected_client_and_server_with_conn, shutdown_client_and_server, test_client_ctx,

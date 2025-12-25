@@ -18,7 +18,7 @@ use std::{error::Error, sync::Arc};
 
 use clap::Parser;
 use tmcp::{
-    Client, ServerAPI,
+    Client,
     auth::{OAuth2CallbackServer, OAuth2Client, OAuth2Config, OAuth2Token},
 };
 use tracing::{Level, debug, subscriber};

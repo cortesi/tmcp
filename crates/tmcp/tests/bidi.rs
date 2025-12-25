@@ -10,8 +10,7 @@ mod tests {
 
     use async_trait::async_trait;
     use tmcp::{
-        Arguments, ClientAPI, ClientCtx, ClientHandler, Result, ServerAPI, ServerCtx,
-        ServerHandler,
+        Arguments, ClientCtx, ClientHandler, Result, ServerCtx, ServerHandler,
         schema::*,
         testutils::{connected_client_and_server_with_conn, shutdown_client_and_server},
     };

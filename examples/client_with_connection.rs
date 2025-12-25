@@ -1,7 +1,7 @@
 //! Example MCP client using a custom connection type.
 
 use async_trait::async_trait;
-use tmcp::{Client, ClientCtx, ClientHandler, Result, ServerAPI, schema};
+use tmcp::{Client, ClientCtx, ClientHandler, Result, schema};
 use tokio::signal::ctrl_c;
 use tracing_subscriber::fmt;
 
@@ -18,7 +18,7 @@ impl ClientHandler for MyClientHandler {
         println!("Client connection established for: {}", self.name);
 
         // Example: Send a notification when connected
-        context.send_notification(schema::ClientNotification::initialized())?;
+        context.notify(schema::ClientNotification::initialized())?;
 
         Ok(())
     }

@@ -7,7 +7,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use tmcp::{
-        Arguments, Client, Result, Server, ServerAPI, ServerCtx, ServerHandler,
+        Arguments, Client, Result, Server, ServerCtx, ServerHandler,
         schema::{self, *},
     };
     use tokio::time::{Duration, sleep};
