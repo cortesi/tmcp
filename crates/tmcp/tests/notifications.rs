@@ -53,9 +53,7 @@ mod tests {
             tokio::spawn(async move {
                 sleep(Duration::from_millis(500)).await;
                 // Send roots list changed notification.
-                match context.notify(schema::ServerNotification::ToolListChanged {
-                    _meta: None,
-                }) {
+                match context.notify(schema::ServerNotification::ToolListChanged { _meta: None }) {
                     Ok(_) => {
                         tracing::info!("Server sent roots_list_changed notification");
                         *sent_notification.lock().unwrap() = true;

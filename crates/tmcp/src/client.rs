@@ -473,8 +473,7 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListToolsResult> {
-        self.request(ClientRequest::list_tools(cursor.into()))
-            .await
+        self.request(ClientRequest::list_tools(cursor.into())).await
     }
 
     /// Call a tool with the given name and arguments
@@ -577,8 +576,7 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListTasksResult> {
-        self.request(ClientRequest::list_tasks(cursor.into()))
-            .await
+        self.request(ClientRequest::list_tasks(cursor.into())).await
     }
 
     async fn cancel_task(&mut self, task_id: impl Into<String> + Send) -> Result<CancelTaskResult> {
@@ -1033,10 +1031,7 @@ mod tests {
                 _context: &ServerCtx,
                 notification: ClientNotification,
             ) -> Result<()> {
-                if matches!(
-                    notification,
-                    ClientNotification::Initialized { _meta: _ }
-                ) {
+                if matches!(notification, ClientNotification::Initialized { _meta: _ }) {
                     let maybe_tx = self.tx.lock().unwrap().take();
                     if let Some(tx) = maybe_tx {
                         tx.send(()).ok();

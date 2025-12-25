@@ -144,9 +144,7 @@ impl ServerAPI for ClientCtx {
     }
 
     async fn resources_subscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
-        let _: schema::EmptyResult = self
-            .request(schema::ClientRequest::subscribe(uri))
-            .await?;
+        let _: schema::EmptyResult = self.request(schema::ClientRequest::subscribe(uri)).await?;
         Ok(())
     }
 
@@ -197,8 +195,7 @@ impl ServerAPI for ClientCtx {
         &mut self,
         task_id: impl Into<String> + Send,
     ) -> Result<schema::GetTaskResult> {
-        self.request(schema::ClientRequest::get_task(task_id))
-            .await
+        self.request(schema::ClientRequest::get_task(task_id)).await
     }
 
     async fn get_task_payload(
@@ -330,8 +327,7 @@ impl ClientAPI for ServerCtx {
         &mut self,
         task_id: impl Into<String> + Send,
     ) -> Result<schema::GetTaskResult> {
-        self.request(schema::ServerRequest::get_task(task_id))
-            .await
+        self.request(schema::ServerRequest::get_task(task_id)).await
     }
 
     async fn get_task_payload(

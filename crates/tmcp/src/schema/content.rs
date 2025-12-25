@@ -130,6 +130,21 @@ pub struct TextContent {
     pub annotations: Option<Annotations>,
 }
 
+impl TextContent {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            annotations: None,
+            _meta: None,
+        }
+    }
+
+    pub fn with_annotations(mut self, annotations: Annotations) -> Self {
+        self.annotations = Some(annotations);
+        self
+    }
+}
+
 #[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageContent {
@@ -140,6 +155,22 @@ pub struct ImageContent {
     pub annotations: Option<Annotations>,
 }
 
+impl ImageContent {
+    pub fn new(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
+        Self {
+            data: data.into(),
+            mime_type: mime_type.into(),
+            annotations: None,
+            _meta: None,
+        }
+    }
+
+    pub fn with_annotations(mut self, annotations: Annotations) -> Self {
+        self.annotations = Some(annotations);
+        self
+    }
+}
+
 #[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioContent {
@@ -148,6 +179,22 @@ pub struct AudioContent {
     pub mime_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Annotations>,
+}
+
+impl AudioContent {
+    pub fn new(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
+        Self {
+            data: data.into(),
+            mime_type: mime_type.into(),
+            annotations: None,
+            _meta: None,
+        }
+    }
+
+    pub fn with_annotations(mut self, annotations: Annotations) -> Self {
+        self.annotations = Some(annotations);
+        self
+    }
 }
 
 /// A request from the assistant to call a tool.

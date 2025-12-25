@@ -178,22 +178,14 @@ impl PromptMessage {
     pub fn user_text(text: impl Into<String>) -> Self {
         Self {
             role: Role::User,
-            content: ContentBlock::Text(TextContent {
-                text: text.into(),
-                annotations: None,
-                _meta: None,
-            }),
+            content: ContentBlock::Text(TextContent::new(text)),
         }
     }
 
     pub fn assistant_text(text: impl Into<String>) -> Self {
         Self {
             role: Role::Assistant,
-            content: ContentBlock::Text(TextContent {
-                text: text.into(),
-                annotations: None,
-                _meta: None,
-            }),
+            content: ContentBlock::Text(TextContent::new(text)),
         }
     }
 }

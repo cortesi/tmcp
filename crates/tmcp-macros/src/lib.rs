@@ -568,7 +568,7 @@ pub fn with_meta(
     // Create the _meta field
     let meta_field: syn::Field = syn::parse_quote! {
         /// Optional metadata field for extensions.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub _meta: Option<std::collections::HashMap<String, serde_json::Value>>
     };
 

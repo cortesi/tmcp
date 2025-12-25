@@ -225,10 +225,7 @@ impl ClientRequest {
     }
 
     /// Create a new GetPrompt request
-    pub fn get_prompt(
-        name: impl Into<String>,
-        arguments: Option<HashMap<String, String>>,
-    ) -> Self {
+    pub fn get_prompt(name: impl Into<String>, arguments: Option<HashMap<String, String>>) -> Self {
         Self::GetPrompt {
             name: name.into(),
             arguments,
@@ -238,17 +235,26 @@ impl ClientRequest {
 
     /// Create a new ListPrompts request
     pub fn list_prompts(cursor: Option<Cursor>) -> Self {
-        Self::ListPrompts { cursor, _meta: None }
+        Self::ListPrompts {
+            cursor,
+            _meta: None,
+        }
     }
 
     /// Create a new ListResources request
     pub fn list_resources(cursor: Option<Cursor>) -> Self {
-        Self::ListResources { cursor, _meta: None }
+        Self::ListResources {
+            cursor,
+            _meta: None,
+        }
     }
 
     /// Create a new ListResourceTemplates request
     pub fn list_resource_templates(cursor: Option<Cursor>) -> Self {
-        Self::ListResourceTemplates { cursor, _meta: None }
+        Self::ListResourceTemplates {
+            cursor,
+            _meta: None,
+        }
     }
 
     /// Create a new ReadResource request
@@ -291,7 +297,10 @@ impl ClientRequest {
 
     /// Create a new ListTools request
     pub fn list_tools(cursor: Option<Cursor>) -> Self {
-        Self::ListTools { cursor, _meta: None }
+        Self::ListTools {
+            cursor,
+            _meta: None,
+        }
     }
 
     /// Create a new GetTask request
@@ -312,7 +321,10 @@ impl ClientRequest {
 
     /// Create a new ListTasks request
     pub fn list_tasks(cursor: Option<Cursor>) -> Self {
-        Self::ListTasks { cursor, _meta: None }
+        Self::ListTasks {
+            cursor,
+            _meta: None,
+        }
     }
 
     /// Create a new CancelTask request
@@ -574,7 +586,10 @@ impl ServerRequest {
 
     /// Create a new ListTasks request
     pub fn list_tasks(cursor: Option<Cursor>) -> Self {
-        Self::ListTasks { cursor, _meta: None }
+        Self::ListTasks {
+            cursor,
+            _meta: None,
+        }
     }
 
     /// Create a new CancelTask request
@@ -867,7 +882,10 @@ mod tests {
         assert_eq!(json["cursor"], "test-cursor");
 
         // Test ListTools without cursor
-        let request = ClientRequest::ListTools { cursor: None, _meta: None };
+        let request = ClientRequest::ListTools {
+            cursor: None,
+            _meta: None,
+        };
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["method"], "tools/list");
         assert!(!json.as_object().unwrap().contains_key("cursor"));

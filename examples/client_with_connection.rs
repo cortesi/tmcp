@@ -18,7 +18,7 @@ impl ClientHandler for MyClientHandler {
         println!("Client connection established for: {}", self.name);
 
         // Example: Send a notification when connected
-        context.send_notification(schema::ClientNotification::Initialized)?;
+        context.send_notification(schema::ClientNotification::initialized())?;
 
         Ok(())
     }
