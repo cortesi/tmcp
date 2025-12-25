@@ -34,12 +34,9 @@ use uuid::Uuid;
 use crate::{
     auth::OAuth2Client,
     error::{Error, Result},
-    schema::{JSONRPCMessage, JSONRPCResponse, RequestId},
+    schema::{JSONRPCMessage, JSONRPCResponse, LATEST_PROTOCOL_VERSION, RequestId},
     transport::{Transport, TransportStream},
 };
-
-/// MCP protocol version advertised for HTTP transport.
-const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 /// Default HTTP client timeout for transport requests.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -227,7 +224,7 @@ impl HttpClientTransport {
         );
         headers.insert(
             "MCP-Protocol-Version",
-            HeaderValue::from_static(MCP_PROTOCOL_VERSION),
+            HeaderValue::from_static(LATEST_PROTOCOL_VERSION),
         );
 
         if let Some(session_id) = &self.session_id {
@@ -339,7 +336,7 @@ impl Transport for HttpClientTransport {
                 headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
                 headers.insert(
                     "MCP-Protocol-Version",
-                    HeaderValue::from_static(MCP_PROTOCOL_VERSION),
+                    HeaderValue::from_static(LATEST_PROTOCOL_VERSION),
                 );
 
                 if let Some(ref sid) = session_id {
@@ -632,7 +629,7 @@ async fn handle_post(
 
     // Validate protocol version
     if let Some(version) = headers.get("MCP-Protocol-Version")
-        && version != MCP_PROTOCOL_VERSION
+        && version != LATEST_PROTOCOL_VERSION
     {
         return (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response();
     }
@@ -787,7 +784,7 @@ async fn handle_post(
 async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) -> Response {
     // Validate protocol version
     if let Some(version) = headers.get("MCP-Protocol-Version")
-        && version != MCP_PROTOCOL_VERSION
+        && version != LATEST_PROTOCOL_VERSION
     {
         return (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response();
     }

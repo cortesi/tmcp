@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use futures::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -23,8 +26,6 @@ use crate::{
 
 /// MCP Server implementation
 pub struct Server<F> {
-    /// Server capability configuration.
-    capabilities: ServerCapabilities,
     /// Factory for creating per-connection handlers.
     connection_factory: F,
 }
@@ -35,12 +36,8 @@ pub struct Server<F> {
 /// allowing each connection to have its own handler instance with
 /// independent state.
 ///
-/// # Example
-///
-/// ```ignore
-/// let server = Server::new(MyHandler::default);
-/// server.serve_stdio().await?;
-/// ```
+/// Server capabilities are specified by returning them from the handler's
+/// [`ServerHandler::initialize`] method. See [`Server::new`] for a complete example.
 pub fn new_server<C, G>(
     factory: G,
 ) -> Server<impl Fn() -> Box<dyn ServerHandler> + Clone + Send + Sync + 'static>
@@ -49,7 +46,6 @@ where
     G: Fn() -> C + Clone + Send + Sync + 'static,
 {
     Server {
-        capabilities: ServerCapabilities::default(),
         connection_factory: move || Box::new(factory()) as Box<dyn ServerHandler>,
     }
 }
@@ -61,10 +57,39 @@ impl Server<()> {
     /// allowing each connection to have its own handler instance with
     /// independent state.
     ///
+    /// Server capabilities are specified by returning them from the handler's
+    /// [`ServerHandler::initialize`] method. This makes the handler the single
+    /// source of truth for what the server advertises to clients.
+    ///
     /// # Example
     ///
     /// ```ignore
-    /// let server = Server::new(MyHandler::default);
+    /// use tmcp::{Server, ServerHandler, ServerCtx, Result};
+    /// use tmcp::schema::{ClientCapabilities, Implementation, InitializeResult};
+    ///
+    /// struct MyHandler;
+    ///
+    /// #[async_trait::async_trait]
+    /// impl ServerHandler for MyHandler {
+    ///     async fn initialize(
+    ///         &self,
+    ///         _ctx: &ServerCtx,
+    ///         _protocol_version: String,
+    ///         _capabilities: ClientCapabilities,
+    ///         _client_info: Implementation,
+    ///     ) -> Result<InitializeResult> {
+    ///         // Specify server capabilities here
+    ///         Ok(InitializeResult::new("my-server")
+    ///             .with_version("1.0.0")
+    ///             .with_tools(true)           // Enable tools capability
+    ///             .with_resources(true, true) // Enable resources with subscribe and list_changed
+    ///             .with_prompts(true)         // Enable prompts capability
+    ///             .with_logging()             // Enable logging capability
+    ///             .with_instructions("A helpful MCP server"))
+    ///     }
+    /// }
+    ///
+    /// let server = Server::new(|| MyHandler);
     /// server.serve_stdio().await?;
     /// ```
     pub fn new<C, G>(
@@ -87,20 +112,8 @@ where
     /// This is for internal use when the factory already returns `Box<dyn ServerHandler>`.
     pub(crate) fn from_factory(factory: F) -> Self {
         Self {
-            capabilities: ServerCapabilities::default(),
             connection_factory: factory,
         }
-    }
-
-    /// Set server capabilities
-    pub fn with_capabilities(mut self, capabilities: ServerCapabilities) -> Self {
-        self.capabilities = capabilities;
-        self
-    }
-
-    /// Get server capabilities
-    pub fn capabilities(&self) -> &ServerCapabilities {
-        &self.capabilities
     }
 
     /// Serve a single connection using the provided transport
@@ -144,22 +157,19 @@ where
 
         // Convert connection factory to Arc for sharing across tasks
         let connection_factory = Arc::new(self.connection_factory);
-        let capabilities = Arc::new(self.capabilities);
 
         loop {
             match listener.accept().await {
                 Ok((stream, peer_addr)) => {
                     info!("New connection from {}", peer_addr);
 
-                    // Clone Arc references for the spawned task
+                    // Clone Arc reference for the spawned task
                     let factory = connection_factory.clone();
-                    let caps = capabilities.clone();
 
                     // Handle each connection in a separate task
                     tokio::spawn(async move {
                         // Create a new server with cloned factory
                         let server = Self {
-                            capabilities: (*caps).clone(),
                             connection_factory: factory.as_ref().clone(),
                         };
 
@@ -202,8 +212,9 @@ pub struct ServerHandle {
     shutdown_token: CancellationToken,
     /// The actual bound address (for servers that bind to a network port)
     pub bound_addr: Option<String>,
-    /// Capabilities advertised to clients.
-    capabilities: ServerCapabilities,
+    /// Capabilities from the handler's initialize response.
+    /// This is set when the client initializes and is used to gate notifications.
+    capabilities: Arc<RwLock<ServerCapabilities>>,
 }
 
 impl ServerHandle {
@@ -213,7 +224,6 @@ impl ServerHandle {
         F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
     {
         transport.connect().await?;
-        let capabilities = server.capabilities.clone();
         let remote_addr = transport.remote_addr();
         let stream = transport.framed()?;
         let (sink_tx, mut stream_rx) = stream.split();
@@ -240,6 +250,10 @@ impl ServerHandle {
         let shutdown_token = CancellationToken::new();
         let shutdown_token_task = shutdown_token.clone();
 
+        // Shared capabilities - updated when client initializes
+        let capabilities = Arc::new(RwLock::new(ServerCapabilities::default()));
+        let capabilities_task = capabilities.clone();
+
         // Track whether we've called on_connect after initialization
         let mut initialized = false;
 
@@ -260,11 +274,21 @@ impl ServerHandle {
                                     JSONRPCMessage::Request(request)
                                         if !initialized && request.request.method == "initialize" =>
                                     {
-                                        let response =
-                                            handle_request(connection.as_ref().as_ref(), request, &server_ctx)
-                                                .await;
-                                        let should_connect =
-                                            matches!(response, JSONRPCMessage::Response(_));
+                                        // Handle initialize specially to capture capabilities
+                                        let (response, init_caps) =
+                                            handle_initialize_request(
+                                                connection.as_ref().as_ref(),
+                                                request,
+                                                &server_ctx
+                                            ).await;
+
+                                        let should_connect = init_caps.is_some();
+
+                                        // Store capabilities from the handler's response
+                                        if let Some(caps) = init_caps
+                                            && let Ok(mut guard) = capabilities_task.write() {
+                                                *guard = caps;
+                                            }
 
                                         {
                                             let mut sink = sink_tx.lock().await;
@@ -421,34 +445,31 @@ impl ServerHandle {
 
     /// Check whether a notification is supported by the configured capabilities.
     fn can_forward_notification(&self, notification: &ServerNotification) -> bool {
+        let caps = self.capabilities.read().unwrap_or_else(|e| e.into_inner());
         match notification {
-            ServerNotification::LoggingMessage { .. } => self.capabilities.logging.is_some(),
-            ServerNotification::ResourceUpdated { .. } => self
-                .capabilities
+            ServerNotification::LoggingMessage { .. } => caps.logging.is_some(),
+            ServerNotification::ResourceUpdated { .. } => caps
                 .resources
                 .as_ref()
                 .and_then(|c| c.subscribe)
                 .unwrap_or(false),
-            ServerNotification::ResourceListChanged { .. } => self
-                .capabilities
+            ServerNotification::ResourceListChanged { .. } => caps
                 .resources
                 .as_ref()
                 .and_then(|c| c.list_changed)
                 .unwrap_or(false),
-            ServerNotification::ToolListChanged { .. } => self
-                .capabilities
+            ServerNotification::ToolListChanged { .. } => caps
                 .tools
                 .as_ref()
                 .and_then(|c| c.list_changed)
                 .unwrap_or(false),
-            ServerNotification::PromptListChanged { .. } => self
-                .capabilities
+            ServerNotification::PromptListChanged { .. } => caps
                 .prompts
                 .as_ref()
                 .and_then(|c| c.list_changed)
                 .unwrap_or(false),
             ServerNotification::ElicitationComplete { .. } => true,
-            ServerNotification::TaskStatus { .. } => self.capabilities.tasks.is_some(),
+            ServerNotification::TaskStatus { .. } => caps.tasks.is_some(),
             ServerNotification::Progress { .. } | ServerNotification::Cancelled { .. } => true,
         }
     }
@@ -508,6 +529,121 @@ fn spawn_request_handler(
             error!("Failed to queue response: {}", e);
         }
     });
+}
+
+/// Handle an initialize request specially, returning both the response and capabilities.
+///
+/// This is needed so the `ServerHandle` can capture the capabilities from the handler's
+/// response rather than from a separate configuration.
+async fn handle_initialize_request(
+    connection: &dyn ServerHandler,
+    request: JSONRPCRequest,
+    context: &ServerCtx,
+) -> (JSONRPCMessage, Option<ServerCapabilities>) {
+    let ctx_with_request = context.with_request_id(request.id.clone());
+
+    // Parse the initialize parameters
+    let params = match &request.request.params {
+        Some(params) => params,
+        None => {
+            return (
+                JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: Some(request.id),
+                    error: ErrorObject {
+                        code: INVALID_PARAMS,
+                        message: "Missing initialize parameters".to_string(),
+                        data: None,
+                    },
+                })),
+                None,
+            );
+        }
+    };
+
+    // Extract initialize parameters
+    let protocol_version = params
+        .other
+        .get("protocolVersion")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let capabilities: ClientCapabilities = params
+        .other
+        .get("capabilities")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    let client_info: Implementation = params
+        .other
+        .get("clientInfo")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_else(|| Implementation::new("unknown", "0.0.0"));
+
+    // Call the handler's initialize method
+    match connection
+        .initialize(
+            &ctx_with_request,
+            protocol_version,
+            capabilities,
+            client_info,
+        )
+        .await
+    {
+        Ok(result) => {
+            // Capture the capabilities from the result
+            let caps = result.capabilities.clone();
+
+            // Serialize the result
+            match serde_json::to_value(&result) {
+                Ok(value) => {
+                    let response =
+                        JSONRPCMessage::Response(JSONRPCResponse::Result(JSONRPCResultResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: request.id,
+                            result: schema::JSONRpcResult {
+                                _meta: None,
+                                other: if let Some(obj) = value.as_object() {
+                                    obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                                } else {
+                                    HashMap::new()
+                                },
+                            },
+                        }));
+                    (response, Some(caps))
+                }
+                Err(e) => (
+                    JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: Some(request.id),
+                        error: ErrorObject {
+                            code: INTERNAL_ERROR,
+                            message: format!("Failed to serialize initialize result: {e}"),
+                            data: None,
+                        },
+                    })),
+                    None,
+                ),
+            }
+        }
+        Err(e) => {
+            let response = if let Some(jsonrpc_error) = e.to_jsonrpc_response(request.id.clone()) {
+                JSONRPCMessage::Response(JSONRPCResponse::Error(jsonrpc_error))
+            } else {
+                JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: Some(request.id),
+                    error: ErrorObject {
+                        code: INTERNAL_ERROR,
+                        message: e.to_string(),
+                        data: None,
+                    },
+                }))
+            };
+            (response, None)
+        }
+    }
 }
 
 /// Handle a request using the Connection trait and convert result to JSONRPCMessage

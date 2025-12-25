@@ -61,26 +61,29 @@ These changes fix confusing naming that makes the API harder to learn and use co
    - Test: Notification sending works from both contexts
 
 
-## 3. Stage Three: Capabilities & Configuration Alignment
+## 3. Stage Three: Capabilities & Configuration Alignment ✓
 
 These changes ensure configuration is consistent and doesn't require duplication.
 
-1. [ ] **Remove `Server::with_capabilities`, make handler authoritative** (ergo.md item 5)
+1. [x] **Remove `Server::with_capabilities`, make handler authoritative** (ergo.md item 5)
    - Locations: `crates/tmcp/src/server.rs:76-79`, macro-generated initialize
    - Problem: `Server::with_capabilities` only affects `ServerHandle` notification gating, but
      handshake capabilities come from `ServerHandler::initialize` - can be inconsistent
    - Fix: Remove `Server::with_capabilities` entirely; `ServerHandle` should read capabilities from
      the initialize response that was already sent; handler is single source of truth
+   - Implementation: Added `Arc<RwLock<ServerCapabilities>>` to `ServerHandle`, captured from
+     handler's initialize response via new `handle_initialize_request` function. Removed
+     `capabilities` field and `with_capabilities()` method from `Server` struct.
    - Test: Verify ServerHandle uses capabilities from initialize handshake
 
-2. [ ] **Use crate version in `#[mcp_server]` generated code** (ergo.md item 8)
+2. [x] **Use crate version in `#[mcp_server]` generated code** (ergo.md item 8)
    - Location: `crates/tmcp-macros/src/lib.rs:381`
    - Problem: Macro hard-codes `.with_version("0.1.0")` instead of using actual crate version
    - Fix: Generate `.with_version(env!("CARGO_PKG_VERSION"))` in macro output
-   - Allow override via `#[mcp_server(version = "custom")]` attribute
+   - Note: Already fixed in Stage 1 (item 1 noted the version fix)
    - Test: Build server, verify version matches Cargo.toml
 
-3. [ ] **Deduplicate protocol version constant** (ergo.md item 9)
+3. [x] **Deduplicate protocol version constant** (ergo.md item 9)
    - Locations: `crates/tmcp/src/http.rs:42`, `crates/tmcp/src/schema/jsonrpc.rs:15`
    - Problem: `MCP_PROTOCOL_VERSION` duplicated, could drift
    - Fix: Remove `http.rs` constant; use `schema::LATEST_PROTOCOL_VERSION` everywhere

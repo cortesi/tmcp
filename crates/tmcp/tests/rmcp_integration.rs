@@ -104,18 +104,8 @@ mod tests {
         // utility.
         let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
 
-        // Create and configure tmcp server
-        let server = Server::new(|| EchoConnection).with_capabilities(ServerCapabilities {
-            tools: Some(ToolsCapability {
-                list_changed: Some(true),
-            }),
-            resources: None,
-            prompts: None,
-            logging: None,
-            completions: None,
-            tasks: None,
-            experimental: None,
-        });
+        // Create tmcp server - capabilities come from handler's initialize response
+        let server = Server::new(|| EchoConnection);
 
         // Start tmcp server in background using the new serve_stream method
         let server_handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)

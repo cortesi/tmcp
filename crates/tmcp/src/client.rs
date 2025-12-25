@@ -887,7 +887,7 @@ mod tests {
             }
         }
 
-        // Minimal server connection
+        // Server handler that advertises tools capability (with list_changed)
         #[derive(Debug, Default)]
         struct DummyServerHandler;
 
@@ -900,7 +900,10 @@ mod tests {
                 _capabilities: ClientCapabilities,
                 _client_info: Implementation,
             ) -> Result<InitializeResult> {
-                Ok(InitializeResult::new("test-server").with_version("1.0.0"))
+                // Return capabilities that include tools with list_changed
+                Ok(InitializeResult::new("test-server")
+                    .with_version("1.0.0")
+                    .with_tools(true))
             }
         }
 
@@ -910,9 +913,8 @@ mod tests {
         // Create transport pair
         let (client_transport, server_transport) = TestTransport::create_pair();
 
-        // Start server with tools/listChanged capability so notification is forwarded
-        let server = Server::new(DummyServerHandler::default)
-            .with_capabilities(ServerCapabilities::default().with_tools(Some(true)));
+        // Start server - capabilities come from handler's initialize response
+        let server = Server::new(DummyServerHandler::default);
         let server_handle = ServerHandle::new(server, server_transport)
             .await
             .expect("Failed to start server");
@@ -1161,7 +1163,9 @@ mod tests {
                 _capabilities: ClientCapabilities,
                 _client_info: Implementation,
             ) -> Result<InitializeResult> {
-                Ok(InitializeResult::new("test-server").with_version("1.0.0"))
+                Ok(InitializeResult::new("test-server")
+                    .with_version("1.0.0")
+                    .with_tools(true))
             }
         }
 
@@ -1169,14 +1173,8 @@ mod tests {
         let (client_reader, server_writer) = duplex(8192);
         let (server_reader, client_writer) = duplex(8192);
 
-        // Create and configure server
-        let server =
-            Server::new(TestStreamHandler::default).with_capabilities(ServerCapabilities {
-                tools: Some(ToolsCapability {
-                    list_changed: Some(true),
-                }),
-                ..Default::default()
-            });
+        // Create server - capabilities come from handler's initialize response
+        let server = Server::new(TestStreamHandler::default);
 
         // Create server transport from the streams
         let server_duplex = GenericDuplex::new(server_reader, server_writer);
