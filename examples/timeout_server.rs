@@ -17,7 +17,7 @@ use std::{
 
 use async_trait::async_trait;
 use tmcp::{Error, Result, Server, ServerCtx, ServerHandler, schema};
-use tokio::time::sleep;
+use tokio::{signal::ctrl_c, time::sleep};
 use tracing::{info, warn};
 
 /// Connection that demonstrates various timeout and retry scenarios
@@ -187,7 +187,7 @@ async fn main() -> Result<()> {
     info!("  - reliable_operation: Always succeeds immediately");
 
     // Use the new simplified API to serve TCP connections
-    Server::new(move || {
+    let handle = Server::new(move || {
         TimeoutTestConnection::new(
             server_info.clone(),
             capabilities.clone(),
@@ -197,6 +197,13 @@ async fn main() -> Result<()> {
     })
     .serve_tcp(addr)
     .await?;
+
+    // Wait for Ctrl+C signal
+    ctrl_c().await?;
+    info!("Shutting down server");
+
+    // Gracefully stop the server
+    handle.stop().await?;
 
     Ok(())
 }

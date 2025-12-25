@@ -95,7 +95,14 @@ async fn main() -> Result<()> {
             let addr = format!("{host}:{port}");
             info!("Starting TCP MCP server on {}", addr);
 
-            Server::new(BasicServer::default).serve_tcp(addr).await?;
+            let handle = Server::new(BasicServer::default).serve_tcp(addr).await?;
+
+            // Wait for Ctrl+C signal
+            ctrl_c().await?;
+            info!("Shutting down TCP server");
+
+            // Gracefully stop the server
+            handle.stop().await?;
         }
         Commands::Http { host, port } => {
             // Initialize logging for network modes

@@ -55,7 +55,7 @@ pub use client::{Client, ProcessConnection};
 pub use connection::{ClientHandler, ServerHandler};
 pub use context::{ClientCtx, ServerCtx};
 pub use error::{Error, Result};
-pub use server::{Server, ServerHandle};
+pub use server::{Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root
 pub use tmcp_macros::{mcp_server, tool};
 

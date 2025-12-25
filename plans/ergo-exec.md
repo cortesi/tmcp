@@ -130,17 +130,20 @@ These are additive changes that improve developer experience.
    - Handles: Serialization, Arguments construction, result parsing, error mapping
    - Test: Call echo tool with typed params and response
 
-2. [ ] **Add `serve_tcp` shutdown handle** (ergo.md item 14)
-   - Location: `crates/tmcp/src/server.rs:117-159`
-   - Problem: `serve_tcp` blocks forever, no graceful shutdown
-   - Fix: Return `ServerHandle` like `serve_http` does
+2. [x] **Add `serve_tcp` shutdown handle** (ergo.md item 14)
+   - Location: `crates/tmcp/src/server.rs`
+   - Problem: `serve_tcp` blocked forever with no graceful shutdown
+   - Fix: Added `TcpServerHandle` struct with `stop()` method; `serve_tcp` now returns handle
+   - Uses `CancellationToken` and `tokio::select!` to check for shutdown in accept loop
+   - Updated `basic_server.rs` and `timeout_server.rs` examples to use graceful shutdown
    - Test: Start server, shut down via handle, verify clean exit
 
-3. [ ] **Add server-initiated client API example** (ergo.md item 15)
-   - Location: `examples/` directory
-   - Problem: No example shows server calling `ctx.list_roots()` or `ctx.create_message()`
-   - Add: `examples/server_client_calls.rs` demonstrating ServerCtx -> ClientAPI usage
-   - Include comments explaining when/why server would call client
+3. [x] **Add server-initiated client API example** (ergo.md item 15)
+   - Location: `examples/server_client_calls.rs`
+   - Added example demonstrating `ServerCtx` methods: `ping()`, `list_roots()`,
+     `create_message()`, `elicit()`
+   - Each capability exposed as a callable tool
+   - Includes comments explaining when/why server would call client
 
 4. [ ] **Add `tmcp::prelude` module** (ergo.md item 16)
    - Location: New `crates/tmcp/src/prelude.rs`

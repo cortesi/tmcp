@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     sync::{Arc, RwLock},
 };
 
@@ -146,46 +147,71 @@ where
     }
 
     /// Serve TCP connections by accepting them in a loop
-    /// This is a convenience method for the common TCP server use case
-    pub async fn serve_tcp(self, addr: impl ToSocketAddrs) -> Result<()>
+    ///
+    /// Returns a [`TcpServerHandle`] that can be used to stop accepting new connections.
+    /// Existing connections will continue until they complete or their clients disconnect.
+    pub async fn serve_tcp(self, addr: impl ToSocketAddrs) -> Result<TcpServerHandle>
     where
         F: Clone,
     {
         let listener = TcpListener::bind(addr).await?;
-        let local_addr = listener.local_addr()?;
-        info!("MCP server listening on {}", local_addr);
+        let bound_addr = listener.local_addr()?;
+        info!("MCP server listening on {}", bound_addr);
 
         // Convert connection factory to Arc for sharing across tasks
         let connection_factory = Arc::new(self.connection_factory);
 
-        loop {
-            match listener.accept().await {
-                Ok((stream, peer_addr)) => {
-                    info!("New connection from {}", peer_addr);
+        // Create shutdown token for coordinating shutdown
+        let shutdown_token = CancellationToken::new();
+        let shutdown_token_loop = shutdown_token.clone();
 
-                    // Clone Arc reference for the spawned task
-                    let factory = connection_factory.clone();
+        // Spawn the accept loop
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    // Check for shutdown signal
+                    _ = shutdown_token_loop.cancelled() => {
+                        info!("TCP server shutting down");
+                        break;
+                    }
+                    // Accept new connections
+                    result = listener.accept() => {
+                        match result {
+                            Ok((stream, peer_addr)) => {
+                                info!("New connection from {}", peer_addr);
 
-                    // Handle each connection in a separate task
-                    tokio::spawn(async move {
-                        // Create a new server with cloned factory
-                        let server = Self {
-                            connection_factory: factory.as_ref().clone(),
-                        };
+                                // Clone Arc reference for the spawned task
+                                let factory = connection_factory.clone();
 
-                        let transport = Box::new(StreamTransport::new(stream));
+                                // Handle each connection in a separate task
+                                tokio::spawn(async move {
+                                    // Create a new server with cloned factory
+                                    let server = Self {
+                                        connection_factory: factory.as_ref().clone(),
+                                    };
 
-                        match server.serve(transport).await {
-                            Ok(()) => info!("Connection from {} closed", peer_addr),
-                            Err(e) => error!("Error handling connection from {}: {}", peer_addr, e),
+                                    let transport = Box::new(StreamTransport::new(stream));
+
+                                    match server.serve(transport).await {
+                                        Ok(()) => info!("Connection from {} closed", peer_addr),
+                                        Err(e) => error!("Error handling connection from {}: {}", peer_addr, e),
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                error!("Failed to accept connection: {}", e);
+                            }
                         }
-                    });
-                }
-                Err(e) => {
-                    error!("Failed to accept connection: {}", e);
+                    }
                 }
             }
-        }
+        });
+
+        Ok(TcpServerHandle {
+            handle,
+            shutdown_token,
+            bound_addr,
+        })
     }
 
     /// Serve HTTP connections
@@ -472,6 +498,37 @@ impl ServerHandle {
             ServerNotification::TaskStatus { .. } => caps.tasks.is_some(),
             ServerNotification::Progress { .. } | ServerNotification::Cancelled { .. } => true,
         }
+    }
+}
+
+/// Handle for controlling a running TCP MCP server
+///
+/// Unlike [`ServerHandle`] which manages a single connection, `TcpServerHandle`
+/// manages an accept loop that spawns handlers for multiple connections.
+pub struct TcpServerHandle {
+    /// Join handle for the accept loop task.
+    handle: JoinHandle<()>,
+    /// Token used to signal shutdown to the accept loop.
+    shutdown_token: CancellationToken,
+    /// The actual bound address.
+    pub bound_addr: SocketAddr,
+}
+
+impl TcpServerHandle {
+    /// Stop accepting new connections and wait for the accept loop to finish.
+    ///
+    /// Note: This stops accepting new connections but does not terminate
+    /// existing connections - they will continue until they complete or
+    /// their clients disconnect.
+    pub async fn stop(self) -> Result<()> {
+        // Signal shutdown
+        self.shutdown_token.cancel();
+
+        // Wait for the accept loop to complete
+        self.handle
+            .await
+            .map_err(|e| Error::InternalError(format!("TCP accept loop failed: {e}")))?;
+        Ok(())
     }
 }
 
