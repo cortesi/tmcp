@@ -6,6 +6,8 @@ use serde::{
 };
 use serde_json::{Map, Value};
 
+use crate::error::Error;
+
 /// Generic argument map used for passing parameters to tools and prompts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -93,6 +95,42 @@ impl Arguments {
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         self.get::<bool>(key)
     }
+
+    /// Require a string parameter, returning an error if missing.
+    ///
+    /// This is a convenience method for the common pattern of extracting
+    /// a required string parameter with proper error handling.
+    pub fn require_string(&self, key: &str) -> crate::Result<String> {
+        self.get_string(key)
+            .ok_or_else(|| Error::InvalidParams(format!("missing required parameter: {}", key)))
+    }
+
+    /// Require an i64 parameter, returning an error if missing.
+    pub fn require_i64(&self, key: &str) -> crate::Result<i64> {
+        self.get_i64(key)
+            .ok_or_else(|| Error::InvalidParams(format!("missing required parameter: {}", key)))
+    }
+
+    /// Require a bool parameter, returning an error if missing.
+    pub fn require_bool(&self, key: &str) -> crate::Result<bool> {
+        self.get_bool(key)
+            .ok_or_else(|| Error::InvalidParams(format!("missing required parameter: {}", key)))
+    }
+
+    /// Require a typed parameter, returning an error if missing or wrong type.
+    pub fn require<T: DeserializeOwned>(&self, key: &str) -> crate::Result<T> {
+        self.get::<T>(key)
+            .ok_or_else(|| Error::InvalidParams(format!("missing or invalid parameter: {}", key)))
+    }
+
+    /// Deserialize into a typed struct with proper error handling.
+    ///
+    /// This wraps `deserialize()` to return the crate's `Result` type
+    /// with an `InvalidParams` error on failure.
+    pub fn into_params<T: DeserializeOwned>(self) -> crate::Result<T> {
+        self.deserialize()
+            .map_err(|e| Error::InvalidParams(format!("invalid parameters: {}", e)))
+    }
 }
 
 impl From<HashMap<String, Value>> for Arguments {
@@ -108,5 +146,91 @@ impl From<HashMap<String, String>> for Arguments {
                 .map(|(k, v)| (k, Value::String(v)))
                 .collect(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_require_string() {
+        let args = Arguments::new().insert("name", "Alice");
+
+        // Present key
+        assert_eq!(args.require_string("name").unwrap(), "Alice");
+
+        // Missing key
+        let err = args.require_string("missing").unwrap_err();
+        assert!(matches!(err, Error::InvalidParams(_)));
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn test_require_i64() {
+        let args = Arguments::new().insert("count", 42);
+
+        // Present key
+        assert_eq!(args.require_i64("count").unwrap(), 42);
+
+        // Missing key
+        let err = args.require_i64("missing").unwrap_err();
+        assert!(matches!(err, Error::InvalidParams(_)));
+    }
+
+    #[test]
+    fn test_require_bool() {
+        let args = Arguments::new().insert("enabled", true);
+
+        // Present key
+        assert!(args.require_bool("enabled").unwrap());
+
+        // Missing key
+        let err = args.require_bool("missing").unwrap_err();
+        assert!(matches!(err, Error::InvalidParams(_)));
+    }
+
+    #[test]
+    fn test_require_typed() {
+        let args = Arguments::new().insert("name", "test").insert("count", 5);
+
+        // Present keys
+        assert_eq!(args.require::<String>("name").unwrap(), "test");
+        assert_eq!(args.require::<i64>("count").unwrap(), 5);
+
+        // Missing key
+        let err = args.require::<String>("missing").unwrap_err();
+        assert!(matches!(err, Error::InvalidParams(_)));
+    }
+
+    #[test]
+    fn test_into_params() {
+        #[derive(Debug, PartialEq, serde::Deserialize)]
+        struct Params {
+            name: String,
+            count: i64,
+        }
+
+        let args = Arguments::new().insert("name", "test").insert("count", 42);
+
+        let params: Params = args.into_params().unwrap();
+        assert_eq!(params.name, "test");
+        assert_eq!(params.count, 42);
+    }
+
+    #[test]
+    fn test_into_params_missing_field() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Params {
+            name: String,
+            count: i64,
+        }
+
+        let args = Arguments::new().insert("name", "test");
+        // Missing 'count' field
+
+        let err = args.into_params::<Params>().unwrap_err();
+        assert!(matches!(err, Error::InvalidParams(_)));
+        assert!(err.to_string().contains("count"));
     }
 }

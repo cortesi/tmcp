@@ -1,161 +1,191 @@
-# tmcp Ergonomics Execution Plan
+# API Ergonomics Execution Plan
 
-This is the staged execution plan for the tmcp ergonomics and correctness review. Each stage
-contains related changes and leaves the system in a consistent, testable state.
+This plan implements ergonomic improvements to the tmcp API in stages. Each stage leaves the
+system in a consistent state with all tests passing. Items are ordered to minimize churn and
+maximize incremental value.
 
-**Breaking changes are allowed** - we prioritize the cleanest API over backwards compatibility.
+---
 
-Source: [./ergo.md](./ergo.md)
+# Stage 1: Quick Wins - Convenience Methods ✓ COMPLETE
 
+Add convenience methods to existing types. These are additive changes with no breaking changes,
+providing immediate ergonomic value.
 
-## 1. Stage One: Critical Correctness Fixes ✓
+1. [x] Add `text()`, `all_text()`, and `json<T>()` convenience methods to `CallToolResult` in
+       `crates/tmcp/src/schema/tools.rs`. The `text()` method returns `Option<&str>` for the first
+       text content block. The `all_text()` method concatenates all text blocks. The `json<T>()`
+       method deserializes the first text block as JSON. Add unit tests.
 
-These items fix bugs or incorrect behavior that could cause runtime failures or protocol
-violations. Must be fixed before other changes.
+2. [x] Add `require_string()`, `require_i64()`, `require_bool()`, and `require<T>()` methods to
+       `Arguments` in `crates/tmcp/src/arguments.rs`. These return `Result<T>` with proper
+       `Error::InvalidParams` messages when the parameter is missing. Add unit tests.
 
-1. [x] **Fix `#[mcp_server]` default capabilities** (ergo.md item 3)
-   - Location: `crates/tmcp-macros/src/lib.rs:382-383`
-   - Problem: Macro always emits `.with_tools(false)` regardless of whether `#[tool]` methods exist
-   - Fix: Count `#[tool]` methods during macro expansion; emit `.with_tools(true)` when count > 0
-   - Also: Fixed macro to use `env!("CARGO_PKG_VERSION")` for version instead of hardcoded "0.1.0"
-   - Test: Create server with tools, verify `initialize` response has `capabilities.tools = Some(...)`
+3. [x] Add `into_params<T: DeserializeOwned>(self) -> Result<T>` to `Arguments` that wraps
+       `deserialize()` with a proper `Error::InvalidParams` error message. Add unit tests.
 
-2. [x] **Standardize tool-not-found errors** (ergo.md item 6)
-   - Locations: `crates/tmcp-macros/src/lib.rs:317`, `crates/tmcp/src/connection.rs:167-171`
-   - Problem: Macro returns `Error::MethodNotFound`, ServerHandler default returns
-     `Error::ToolExecutionFailed` for the same condition
-   - Fix: Updated both locations to use existing `Error::ToolNotFound(String)` variant
-   - Test: Call unknown tool, verify consistent error type and JSON-RPC error code
+4. [x] Update `examples/server_client_calls.rs` to use the new `require_string()` method instead
+       of the verbose `ok_or_else` chains. Verify the example still compiles and runs.
 
-3. [x] **Require handler in Server constructor** (ergo.md item 7)
-   - Location: `crates/tmcp/src/server.rs:25-38, 297-299`
-   - Problem: `Server::default()` compiles but fails at runtime with confusing error when client
-     connects
-   - Fix: Added `Server::new(handler)` constructor; removed `Default` impl and `with_handler()`
-   - Added `Server::from_factory()` (crate-internal) for pre-boxed handler factories
-   - Test: Verify `Server::new(MyHandler::default)` is the only way to construct; old patterns
-     fail to compile
+5. [x] Update `examples/basic_client.rs` to use `result.text()` instead of pattern matching on
+       `ContentBlock::Text`. Verify the example still compiles and runs.
 
+6. [x] Update `examples/basic_client_stdio.rs` to use `result.text()`.
 
-## 2. Stage Two: API Naming Consistency ✓
+7. [x] Update `examples/process_spawn.rs` to use `result.text()` and `Arguments::insert()`.
 
-These changes fix confusing naming that makes the API harder to learn and use correctly.
+---
 
-1. [x] **Move API methods to inherent impls** (ergo.md item 1)
-   - Location: `crates/tmcp/src/api.rs:19-109`
-   - Problem: `ServerAPI` contains methods clients call on servers, but users import it to use the
-     `Client` struct - naming is backwards from user's perspective
-   - Fix: Moved all methods from `ServerAPI` trait to inherent impl on `Client`; moved all methods
-     from `ClientAPI` trait to inherent impl on `ServerCtx`; deleted both traits and api.rs
-   - Also: Removed unused `request_handler` field and `request` method from `ClientCtx` since it was
-     only used by the deleted `impl ServerAPI for ClientCtx`
-   - Result: `use tmcp::Client` is all users need - no confusing trait imports
-   - Updated all examples, tests, and mcptool
-   - Test: All examples compile with just `use tmcp::Client`
+# Stage 2: API Cleanup
 
-2. [x] **Unify notification method names to `notify`** (ergo.md item 4)
-   - Location: `crates/tmcp/src/context.rs` (ClientCtx and ServerCtx)
-   - Problem: `ClientCtx::send_notification` vs `ServerCtx::notify` - inconsistent naming
-   - Fix: Renamed `ClientCtx::send_notification` to `notify`
-   - Updated all usages in examples, tests, and mcptool
-   - Test: Notification sending works from both contexts
+Remove redundant API surface and fix naming issues. These are small breaking changes that should
+be done early.
 
+1. [ ] Remove the standalone `new_server()` function from `crates/tmcp/src/server.rs`. It
+       duplicates `Server::new()`. Update any internal callers to use `Server::new()`. Ensure
+       `new_server` is not re-exported from `lib.rs`.
 
-## 3. Stage Three: Capabilities & Configuration Alignment ✓
+2. [ ] Rename `call_tool_typed` to `call_tool_json` in `crates/tmcp/src/client.rs` to better
+       reflect that it deserializes JSON from the first text content block. Update documentation
+       to clarify this behavior.
 
-These changes ensure configuration is consistent and doesn't require duplication.
+3. [ ] Verify `Cursor` implements `From<&str>`. If not, add the implementation in
+       `crates/tmcp/src/schema/mod.rs` or the appropriate location. This allows `"cursor".into()`
+       to work directly.
 
-1. [x] **Remove `Server::with_capabilities`, make handler authoritative** (ergo.md item 5)
-   - Locations: `crates/tmcp/src/server.rs:76-79`, macro-generated initialize
-   - Problem: `Server::with_capabilities` only affects `ServerHandle` notification gating, but
-     handshake capabilities come from `ServerHandler::initialize` - can be inconsistent
-   - Fix: Remove `Server::with_capabilities` entirely; `ServerHandle` should read capabilities from
-     the initialize response that was already sent; handler is single source of truth
-   - Implementation: Added `Arc<RwLock<ServerCapabilities>>` to `ServerHandle`, captured from
-     handler's initialize response via new `handle_initialize_request` function. Removed
-     `capabilities` field and `with_capabilities()` method from `Server` struct.
-   - Test: Verify ServerHandle uses capabilities from initialize handshake
+---
 
-2. [x] **Use crate version in `#[mcp_server]` generated code** (ergo.md item 8)
-   - Location: `crates/tmcp-macros/src/lib.rs:381`
-   - Problem: Macro hard-codes `.with_version("0.1.0")` instead of using actual crate version
-   - Fix: Generate `.with_version(env!("CARGO_PKG_VERSION"))` in macro output
-   - Note: Already fixed in Stage 1 (item 1 noted the version fix)
-   - Test: Build server, verify version matches Cargo.toml
+# Stage 3: Builder Improvements for Schema Types
 
-3. [x] **Deduplicate protocol version constant** (ergo.md item 9)
-   - Locations: `crates/tmcp/src/http.rs:42`, `crates/tmcp/src/schema/jsonrpc.rs:15`
-   - Problem: `MCP_PROTOCOL_VERSION` duplicated, could drift
-   - Fix: Remove `http.rs` constant; use `schema::LATEST_PROTOCOL_VERSION` everywhere
-   - Test: Verify HTTP headers use correct protocol version
+Add ergonomic builders for commonly constructed types that currently require verbose nesting.
 
+1. [ ] Add `SamplingMessage::user_text(text: impl Into<String>) -> Self` constructor in
+       `crates/tmcp/src/schema/sampling.rs`. It creates a user role message with text content.
 
-## 4. Stage Four: Ergonomics Improvements ✓
+2. [ ] Add `SamplingMessage::assistant_text(text: impl Into<String>) -> Self` constructor in the
+       same file. It creates an assistant role message with text content.
 
-These changes reduce boilerplate and make common operations easier.
+3. [ ] Add `CreateMessageParams::user_message(text: impl Into<String>) -> Self` convenience
+       constructor that creates a params struct with a single user text message and reasonable
+       defaults (max_tokens: 1024).
 
-1. [x] **Accept `impl Serialize` in `call_tool`** (ergo.md item 2)
-   - Location: `crates/tmcp/src/client.rs` (now inherent impl after Stage 2)
-   - Problem: Every call_tool requires `Arguments::from_struct(params)?` boilerplate
-   - Fix: Changed `call_tool` to accept `impl Serialize + Send`; conversion done internally
-   - Added `call_tool_with_task` for passing task metadata
-   - Added `call_tool_typed<R: DeserializeOwned>` for typed responses
-   - Test: Call tool with struct directly, verify serialization works
+4. [ ] Add `with_max_tokens(mut self, tokens: i64) -> Self` builder method to `CreateMessageParams`.
 
-2. [x] **Store full JSON Schema in ToolSchema** (ergo.md item 10)
-   - Location: `crates/tmcp/src/schema/tools.rs`
-   - Problem: `ToolSchema::from_json_schema` dropped description, enum, format, constraints, etc.
-   - Fix: Changed `ToolSchema` to transparent wrapper around `serde_json::Value`; added getter
-     methods `schema_type()`, `properties()`, `required()` for backwards compatibility
-   - `from_json_schema<T>()` now preserves full schema including descriptions
-   - Updated all usages to builder pattern: `ToolSchema::default().with_property(...).with_required(...)`
-   - Test: Derive JsonSchema with field descriptions, verify they appear in tool listing
+5. [ ] Update `examples/server_client_calls.rs` to use the new `CreateMessageParams::user_message()`
+       builder instead of the verbose struct construction. Verify the example works.
 
-3. [x] **Remove Clone requirement from ClientHandler** (ergo.md item 11)
-   - Location: `crates/tmcp/src/connection.rs:22`, `crates/tmcp/src/client.rs`
-   - Problem: `ClientHandler: Clone` forces users to Arc-wrap all state
-   - Fix: Store handler in `Arc<C>` internally; removed Clone from trait bounds
-   - Removed now-unnecessary manual Clone implementations from test handlers
-   - Test: Create stateful handler without Clone, verify it compiles and works
+---
 
+# Stage 4: OneOrMany Ergonomics
 
-## 5. Stage Five: Quality of Life Additions
+Add iterator and accessor methods to the `OneOrMany<T>` type to eliminate verbose pattern matching.
 
-These are additive changes that improve developer experience.
+1. [ ] Locate `OneOrMany<T>` definition (likely in `crates/tmcp/src/schema/mod.rs` or a content
+       module). Add `fn iter(&self) -> impl Iterator<Item = &T>` method.
 
-1. [x] **Add typed tool-call helper** (ergo.md item 12)
-   - Location: `crates/tmcp/src/client.rs`
-   - Note: Already implemented as part of Stage 4 item 1
-   - Added: `client.call_tool_typed::<R>(name, params).await?` returning deserialized `R`
-   - Handles: Serialization, Arguments construction, result parsing, error mapping
-   - Test: Call echo tool with typed params and response
+2. [ ] Add `fn first(&self) -> Option<&T>` method to `OneOrMany<T>`.
 
-2. [x] **Add `serve_tcp` shutdown handle** (ergo.md item 14)
-   - Location: `crates/tmcp/src/server.rs`
-   - Problem: `serve_tcp` blocked forever with no graceful shutdown
-   - Fix: Added `TcpServerHandle` struct with `stop()` method; `serve_tcp` now returns handle
-   - Uses `CancellationToken` and `tokio::select!` to check for shutdown in accept loop
-   - Updated `basic_server.rs` and `timeout_server.rs` examples to use graceful shutdown
-   - Test: Start server, shut down via handle, verify clean exit
+3. [ ] Add `fn into_vec(self) -> Vec<T>` method to `OneOrMany<T>`.
 
-3. [x] **Add server-initiated client API example** (ergo.md item 15)
-   - Location: `examples/server_client_calls.rs`
-   - Added example demonstrating `ServerCtx` methods: `ping()`, `list_roots()`,
-     `create_message()`, `elicit()`
-   - Each capability exposed as a callable tool
-   - Includes comments explaining when/why server would call client
+4. [ ] Add `fn len(&self) -> usize` and `fn is_empty(&self) -> bool` methods to `OneOrMany<T>`.
 
-4. [ ] **Add `tmcp::prelude` module** (ergo.md item 16)
-   - Location: New `crates/tmcp/src/prelude.rs`
-   - Include: `Client`, `Server`, `ServerHandle`, `Result`, `Error`, common schema types, `schemars`
-   - Update examples to use `use tmcp::prelude::*`
-   - Test: Verify examples compile with prelude import only
+5. [ ] Update `examples/client_with_connection.rs` to use the new iterator methods instead of
+       manual pattern matching on `OneOrMany`. Verify the example works.
 
+---
 
-## Notes
+# Stage 5: Tool Construction Ergonomics
 
-- Run `cargo clippy` and `cargo test` after each stage
-- Run `cargo +nightly fmt` before any commits
-- Update examples and README as APIs change
-- Items 17-18 from ergo.md are already completed (marked in source)
-- Builder pattern (ergo.md item 13) skipped - current `with_*` chaining is already idiomatic Rust
+Add type-safe tool construction from schemars types, bridging the gap between macro-based and
+trait-based server implementations.
+
+1. [ ] Add `Tool::from_schema<T: schemars::JsonSchema>(name: impl Into<String>) -> Self` constructor
+       in `crates/tmcp/src/schema/tools.rs`. It uses `ToolSchema::from_json_schema::<T>()` and sets
+       the tool name. The description can be extracted from the schema's title/description if present.
+
+2. [ ] Add `Tool::with_schema<T: schemars::JsonSchema>(mut self) -> Self` method that replaces the
+       input_schema using the type's JSON schema.
+
+3. [ ] Create a simple example or test demonstrating `Tool::from_schema::<MyParams>("tool_name")`
+       as an alternative to manual `ToolSchema::default().with_property(...)` construction.
+
+4. [ ] Consider adding `ToolSchema::empty()` as an alias for `ToolSchema::default()` for clarity
+       when a tool takes no arguments (the default is `{"type": "object"}`).
+
+---
+
+# Stage 6: Documentation and Naming Clarity
+
+Improve documentation and fix remaining naming issues.
+
+1. [ ] Add documentation to `ServerHandler` trait in `crates/tmcp/src/connection.rs` explaining
+       the default behavior philosophy: methods for optional features (list_tools, list_resources)
+       return empty results, while dispatch methods (call_tool, read_resource) return errors.
+
+2. [ ] Document the `#[mcp_server]` macro vs `ServerHandler` trait trade-offs in
+       `crates/tmcp/src/lib.rs` module documentation. Explain when to use each approach:
+       - Macro: simple servers, automatic tool registration, less boilerplate
+       - Trait: custom initialization, per-connection state, complex capability negotiation
+
+3. [ ] Document `Client::with_handler()` type state pattern. Explain that it changes the client
+       type from `Client<()>` to `Client<H>` and why this is the design choice.
+
+4. [ ] Add a doc comment on `call_tool("tool", ())` explaining that `()` is the idiomatic way to
+       call tools with no arguments (it serializes to an empty JSON object).
+
+---
+
+# Stage 7: ProcessConnection Rename (Breaking)
+
+Rename `ProcessConnection` for clarity. This is a breaking change for users of `connect_process()`.
+
+1. [ ] Rename `ProcessConnection` to `SpawnedServer` in `crates/tmcp/src/client.rs`.
+
+2. [ ] Rename the `child` field to `process` and `init` field to `server_info` for clarity.
+
+3. [ ] Update `crates/tmcp/src/lib.rs` to re-export `SpawnedServer` instead of `ProcessConnection`.
+
+4. [ ] Update `examples/process_spawn.rs` to use the new name and field names.
+
+5. [ ] Add a deprecation note in CHANGELOG or migration guide about this rename.
+
+---
+
+# Stage 8: Capabilities Builder (Optional Enhancement)
+
+Create a fluent capabilities builder for `InitializeResult` to replace boolean parameter confusion.
+
+1. [ ] Create `ServerCapabilitiesBuilder` in `crates/tmcp/src/schema/capabilities.rs` with methods:
+       - `fn new() -> Self`
+       - `fn tools(mut self) -> Self` - enables tools with list_changed
+       - `fn resources(mut self) -> ResourcesBuilder` - returns sub-builder
+       - `fn prompts(mut self) -> Self` - enables prompts with list_changed
+       - `fn logging(mut self) -> Self` - enables logging
+       - `fn build(self) -> ServerCapabilities`
+
+2. [ ] Create `ResourcesBuilder` with `with_subscribe(mut self) -> Self` and
+       `with_list_changed(mut self) -> Self` methods, returning to parent builder on build.
+
+3. [ ] Add `InitializeResult::with_capabilities_builder(builder: ServerCapabilitiesBuilder) -> Self`
+       method as an alternative to the current `with_tools(bool)`, `with_resources(bool, bool)` etc.
+
+4. [ ] Keep existing `with_*` methods for backwards compatibility but consider deprecating them
+       in favor of the builder pattern in a future major version.
+
+---
+
+# Future Considerations (Not in this plan)
+
+The following items are noted for future consideration but require more design work or are
+larger breaking changes:
+
+- **Transport enum for Client::connect()** - Would unify 8 connect methods but requires careful
+  API design for the raw variants and OAuth integration.
+
+- **ToolRegistry helper** - Would eliminate list_tools/call_tool sync issues but adds complexity.
+  Consider whether the macro approach is sufficient for most use cases first.
+
+- **Richer error types** - Adding available tools to `ToolNotFound` or structured `InvalidParams`
+  would be helpful but requires careful consideration of error handling patterns across the crate.
+
+- **ServerCtx notification helpers** - The `context.notify()` pattern works but could be made more
+  discoverable. Consider adding examples to documentation first before API changes.

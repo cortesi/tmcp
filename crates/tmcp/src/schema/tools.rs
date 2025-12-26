@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, result::Result as StdResult};
 
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Serialize,
+    de::{DeserializeOwned, Error as DeError},
+};
 use serde_json::Value;
 
 use super::*;
@@ -99,6 +102,47 @@ impl CallToolResult {
     pub fn with_structured_content(mut self, content: Value) -> Self {
         self.structured_content = Some(content);
         self
+    }
+
+    /// Get the first text content block, if any.
+    ///
+    /// This is a convenience method for the common pattern of extracting
+    /// a single text response from a tool call.
+    pub fn text(&self) -> Option<&str> {
+        self.content.iter().find_map(|block| match block {
+            ContentBlock::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Get all text content concatenated together.
+    ///
+    /// Multiple text blocks are joined with newlines. Returns an empty
+    /// string if there are no text content blocks.
+    pub fn all_text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Parse the first text content block as JSON.
+    ///
+    /// This is useful when tools return structured JSON data in their
+    /// text response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is no text content or if JSON parsing fails.
+    pub fn json<T: DeserializeOwned>(&self) -> StdResult<T, serde_json::Error> {
+        let text = self
+            .text()
+            .ok_or_else(|| DeError::custom("no text content in tool result"))?;
+        serde_json::from_str(text)
     }
 }
 
@@ -387,5 +431,70 @@ impl ToolSchema {
         self.required()
             .map(|req| req.contains(&name))
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_call_tool_result_text() {
+        // Empty result returns None
+        let result = CallToolResult::new();
+        assert!(result.text().is_none());
+
+        // Single text content
+        let result = CallToolResult::new().with_text_content("hello world");
+        assert_eq!(result.text(), Some("hello world"));
+
+        // Multiple text blocks returns first
+        let result = CallToolResult::new()
+            .with_text_content("first")
+            .with_text_content("second");
+        assert_eq!(result.text(), Some("first"));
+    }
+
+    #[test]
+    fn test_call_tool_result_all_text() {
+        // Empty result returns empty string
+        let result = CallToolResult::new();
+        assert_eq!(result.all_text(), "");
+
+        // Single text content
+        let result = CallToolResult::new().with_text_content("hello world");
+        assert_eq!(result.all_text(), "hello world");
+
+        // Multiple text blocks joined with newlines
+        let result = CallToolResult::new()
+            .with_text_content("line one")
+            .with_text_content("line two")
+            .with_text_content("line three");
+        assert_eq!(result.all_text(), "line one\nline two\nline three");
+    }
+
+    #[test]
+    fn test_call_tool_result_json() {
+        #[derive(Debug, PartialEq, serde::Deserialize)]
+        struct Response {
+            value: i32,
+            message: String,
+        }
+
+        // Valid JSON
+        let result =
+            CallToolResult::new().with_text_content(r#"{"value": 42, "message": "hello"}"#);
+        let parsed: Response = result.json().unwrap();
+        assert_eq!(parsed.value, 42);
+        assert_eq!(parsed.message, "hello");
+
+        // No text content
+        let result = CallToolResult::new();
+        let err = result.json::<Response>().unwrap_err();
+        assert!(err.to_string().contains("no text content"));
+
+        // Invalid JSON
+        let result = CallToolResult::new().with_text_content("not json");
+        assert!(result.json::<Response>().is_err());
     }
 }

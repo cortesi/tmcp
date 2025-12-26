@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use tmcp::{Client, Result, schema, schemars};
+use tmcp::{Client, Result, schemars};
 use tracing::info;
 use tracing_subscriber::fmt;
 
@@ -99,9 +99,9 @@ async fn main() -> Result<()> {
     // call_tool now accepts any Serialize type directly
     let result = client.call_tool("echo", params).await?;
 
-    // Assume text response
-    if let Some(schema::ContentBlock::Text(text_content)) = result.content.first() {
-        info!("Response: {}", text_content.text);
+    // Extract text using the convenience method
+    if let Some(text) = result.text() {
+        info!("Response: {}", text);
     }
 
     Ok(())

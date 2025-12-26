@@ -8,7 +8,7 @@
 //!   cargo run --example basic_client_stdio
 
 use serde::{Deserialize, Serialize};
-use tmcp::{Client, Result, schema::ContentBlock, schemars};
+use tmcp::{Client, Result, schemars};
 use tokio::process::Command;
 use tracing::info;
 use tracing_subscriber::fmt;
@@ -66,8 +66,9 @@ async fn main() -> Result<()> {
     // call_tool now accepts any Serialize type directly
     let result = client.call_tool("echo", params).await?;
 
-    if let Some(ContentBlock::Text(text_content)) = result.content.first() {
-        info!("Echo response: {}", text_content.text);
+    // Extract text using the convenience method
+    if let Some(text) = result.text() {
+        info!("Echo response: {}", text);
     }
 
     // Clean shutdown

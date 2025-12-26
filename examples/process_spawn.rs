@@ -65,11 +65,14 @@ async fn main() -> Result<()> {
     }
 
     // Call a tool if available
-    let args = Arguments::new().set("message", "Hello from spawned process!")?;
+    let args = Arguments::new().insert("message", "Hello from spawned process!");
 
     match client.call_tool("echo", args).await {
         Ok(result) => {
-            info!("Tool response: {:?}", result.content);
+            // Use the ergonomic text() method to extract the response
+            if let Some(text) = result.text() {
+                info!("Tool response: {}", text);
+            }
         }
         Err(e) => {
             error!("Failed to call tool: {}", e);

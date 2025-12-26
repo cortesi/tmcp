@@ -25,7 +25,7 @@ use std::env;
 use async_trait::async_trait;
 use serde_json::json;
 use tmcp::{
-    Arguments, Error, Result, Server, ServerCtx, ServerHandler,
+    Arguments, Result, Server, ServerCtx, ServerHandler,
     schema::{
         self, CallToolResult, ClientCapabilities, CreateMessageParams, ElicitRequestParams,
         Implementation, InitializeResult, ListToolsResult, Role, SamplingMessage, Tool,
@@ -163,11 +163,8 @@ impl ServerHandler for ClientCallsServer {
 
             "ask_llm" => {
                 // Request the client to generate an LLM response
-                let args = arguments
-                    .ok_or_else(|| Error::InvalidParams("Missing arguments".to_string()))?;
-                let prompt = args
-                    .get_string("prompt")
-                    .ok_or_else(|| Error::InvalidParams("Missing prompt parameter".to_string()))?;
+                let args = arguments.unwrap_or_default();
+                let prompt = args.require_string("prompt")?;
 
                 info!("Requesting LLM sampling from client: {}", prompt);
 
@@ -211,11 +208,8 @@ impl ServerHandler for ClientCallsServer {
 
             "ask_user" => {
                 // Ask the client to get input from the user
-                let args = arguments
-                    .ok_or_else(|| Error::InvalidParams("Missing arguments".to_string()))?;
-                let question = args
-                    .get_string("question")
-                    .ok_or_else(|| Error::InvalidParams("Missing question parameter".to_string()))?;
+                let args = arguments.unwrap_or_default();
+                let question = args.require_string("question")?;
 
                 info!("Requesting user input from client: {}", question);
 
