@@ -518,13 +518,14 @@ where
         self.request(request).await
     }
 
-    /// Call a tool and deserialize the text response into a typed result.
+    /// Call a tool and deserialize the JSON text response into a typed result.
     ///
-    /// This is a convenience method that:
+    /// This is a convenience method for tools that return JSON in their text content.
+    /// It:
     /// 1. Serializes the arguments
     /// 2. Calls the tool
     /// 3. Extracts the first text content block
-    /// 4. Deserializes it as JSON into type `R`
+    /// 4. Parses it as JSON and deserializes into type `R`
     ///
     /// # Example
     ///
@@ -535,23 +536,17 @@ where
     /// #[derive(Deserialize)]
     /// struct CalcResult { sum: i32 }
     ///
-    /// let result: CalcResult = client.call_tool_typed("add", CalcArgs { a: 1, b: 2 }).await?;
+    /// let result: CalcResult = client.call_tool_json("add", CalcArgs { a: 1, b: 2 }).await?;
     /// ```
-    pub async fn call_tool_typed<R: DeserializeOwned>(
+    pub async fn call_tool_json<R: DeserializeOwned>(
         &mut self,
         name: impl Into<String> + Send,
         arguments: impl Serialize + Send,
     ) -> Result<R> {
         let result = self.call_tool(name, arguments).await?;
 
-        // Find the first text content block
         let text = result
-            .content
-            .iter()
-            .find_map(|block| match block {
-                ContentBlock::Text(t) => Some(&t.text),
-                _ => None,
-            })
+            .text()
             .ok_or_else(|| Error::Protocol("Tool returned no text content".into()))?;
 
         serde_json::from_str(text).map_err(|e| Error::JsonParse {

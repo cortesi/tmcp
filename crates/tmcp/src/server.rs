@@ -31,26 +31,6 @@ pub struct Server<F> {
     connection_factory: F,
 }
 
-/// Create a new server with a handler factory.
-///
-/// The factory function is called once for each incoming connection,
-/// allowing each connection to have its own handler instance with
-/// independent state.
-///
-/// Server capabilities are specified by returning them from the handler's
-/// [`ServerHandler::initialize`] method. See [`Server::new`] for a complete example.
-pub fn new_server<C, G>(
-    factory: G,
-) -> Server<impl Fn() -> Box<dyn ServerHandler> + Clone + Send + Sync + 'static>
-where
-    C: ServerHandler + 'static,
-    G: Fn() -> C + Clone + Send + Sync + 'static,
-{
-    Server {
-        connection_factory: move || Box::new(factory()) as Box<dyn ServerHandler>,
-    }
-}
-
 impl Server<()> {
     /// Create a new server with a handler factory.
     ///
@@ -100,7 +80,9 @@ impl Server<()> {
         C: ServerHandler + 'static,
         G: Fn() -> C + Clone + Send + Sync + 'static,
     {
-        new_server(factory)
+        Server {
+            connection_factory: move || Box::new(factory()) as Box<dyn ServerHandler>,
+        }
     }
 }
 

@@ -25,11 +25,10 @@ use std::env;
 use async_trait::async_trait;
 use serde_json::json;
 use tmcp::{
-    Arguments, Result, Server, ServerCtx, ServerHandler,
+    Arguments, Error, Result, Server, ServerCtx, ServerHandler,
     schema::{
         self, CallToolResult, ClientCapabilities, CreateMessageParams, ElicitRequestParams,
-        Implementation, InitializeResult, ListToolsResult, Role, SamplingMessage, Tool,
-        ToolSchema,
+        Implementation, InitializeResult, ListToolsResult, Tool, ToolSchema,
     },
 };
 use tokio::signal::ctrl_c;
@@ -168,18 +167,7 @@ impl ServerHandler for ClientCallsServer {
 
                 info!("Requesting LLM sampling from client: {}", prompt);
 
-                let params = CreateMessageParams {
-                    messages: vec![SamplingMessage {
-                        role: Role::User,
-                        content: schema::MessageContent::Text(schema::TextContent {
-                            text: prompt,
-                            annotations: None,
-                            _meta: None,
-                        }),
-                    }],
-                    max_tokens: 500,
-                    ..Default::default()
-                };
+                let params = CreateMessageParams::user_message(prompt).with_max_tokens(500);
 
                 match context.create_message(params).await {
                     Ok(result) => {

@@ -35,43 +35,42 @@ providing immediate ergonomic value.
 
 ---
 
-# Stage 2: API Cleanup
+# Stage 2: API Cleanup ✓ COMPLETE
 
 Remove redundant API surface and fix naming issues. These are small breaking changes that should
 be done early.
 
-1. [ ] Remove the standalone `new_server()` function from `crates/tmcp/src/server.rs`. It
-       duplicates `Server::new()`. Update any internal callers to use `Server::new()`. Ensure
-       `new_server` is not re-exported from `lib.rs`.
+1. [x] Remove the standalone `new_server()` function from `crates/tmcp/src/server.rs`. It
+       duplicated `Server::new()`. Inlined its implementation directly into `Server::new()`.
 
-2. [ ] Rename `call_tool_typed` to `call_tool_json` in `crates/tmcp/src/client.rs` to better
-       reflect that it deserializes JSON from the first text content block. Update documentation
-       to clarify this behavior.
+2. [x] Rename `call_tool_typed` to `call_tool_json` in `crates/tmcp/src/client.rs` to better
+       reflect that it deserializes JSON from the first text content block. Updated documentation
+       to clarify this behavior. Also refactored to use `result.text()` from Stage 1.
 
-3. [ ] Verify `Cursor` implements `From<&str>`. If not, add the implementation in
-       `crates/tmcp/src/schema/mod.rs` or the appropriate location. This allows `"cursor".into()`
-       to work directly.
+3. [x] Verified `Cursor` already implements `From<&str>` at `schema/jsonrpc.rs:43`. No changes
+       needed.
 
 ---
 
-# Stage 3: Builder Improvements for Schema Types
+# Stage 3: Builder Improvements for Schema Types ✓ COMPLETE
 
 Add ergonomic builders for commonly constructed types that currently require verbose nesting.
 
-1. [ ] Add `SamplingMessage::user_text(text: impl Into<String>) -> Self` constructor in
+1. [x] Add `SamplingMessage::user_text(text: impl Into<String>) -> Self` constructor in
        `crates/tmcp/src/schema/sampling.rs`. It creates a user role message with text content.
 
-2. [ ] Add `SamplingMessage::assistant_text(text: impl Into<String>) -> Self` constructor in the
+2. [x] Add `SamplingMessage::assistant_text(text: impl Into<String>) -> Self` constructor in the
        same file. It creates an assistant role message with text content.
 
-3. [ ] Add `CreateMessageParams::user_message(text: impl Into<String>) -> Self` convenience
+3. [x] Add `CreateMessageParams::user_message(text: impl Into<String>) -> Self` convenience
        constructor that creates a params struct with a single user text message and reasonable
        defaults (max_tokens: 1024).
 
-4. [ ] Add `with_max_tokens(mut self, tokens: i64) -> Self` builder method to `CreateMessageParams`.
+4. [x] Add `with_max_tokens(mut self, tokens: i64) -> Self` builder method to `CreateMessageParams`.
+       Also added bonus builders: `with_system_prompt()` and `with_temperature()`.
 
-5. [ ] Update `examples/server_client_calls.rs` to use the new `CreateMessageParams::user_message()`
-       builder instead of the verbose struct construction. Verify the example works.
+5. [x] Update `examples/server_client_calls.rs` to use the new `CreateMessageParams::user_message()`
+       builder instead of the verbose struct construction. Verified the example works.
 
 ---
 

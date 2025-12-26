@@ -33,6 +33,55 @@ pub struct CreateMessageParams {
     pub _meta: Option<RequestMeta>,
 }
 
+impl CreateMessageParams {
+    /// Create a simple user message request.
+    ///
+    /// This is a convenience method for the common case of sending a single
+    /// user text message with reasonable defaults (max_tokens: 1024).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let params = CreateMessageParams::user_message("What is the weather today?");
+    /// // Or with a custom max_tokens:
+    /// let params = CreateMessageParams::user_message("Tell me a story").with_max_tokens(2048);
+    /// ```
+    pub fn user_message(text: impl Into<String>) -> Self {
+        Self {
+            messages: vec![SamplingMessage::user_text(text)],
+            model_preferences: None,
+            system_prompt: None,
+            include_context: None,
+            temperature: None,
+            max_tokens: 1024,
+            stop_sequences: None,
+            metadata: None,
+            tools: None,
+            tool_choice: None,
+            task: None,
+            _meta: None,
+        }
+    }
+
+    /// Set the maximum number of tokens for the response.
+    pub fn with_max_tokens(mut self, max_tokens: i64) -> Self {
+        self.max_tokens = max_tokens;
+        self
+    }
+
+    /// Set the system prompt.
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
+    }
+
+    /// Set the temperature for sampling.
+    pub fn with_temperature(mut self, temperature: f64) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum IncludeContext {
@@ -80,6 +129,42 @@ pub enum StopReason {
 pub struct SamplingMessage {
     pub role: Role,
     pub content: OneOrMany<SamplingMessageContentBlock>,
+}
+
+impl SamplingMessage {
+    /// Create a user message with text content.
+    ///
+    /// This is a convenience method for creating simple user messages.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let msg = SamplingMessage::user_text("Hello, world!");
+    /// ```
+    pub fn user_text(text: impl Into<String>) -> Self {
+        Self {
+            role: Role::User,
+            content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent::new(text))),
+            _meta: None,
+        }
+    }
+
+    /// Create an assistant message with text content.
+    ///
+    /// This is a convenience method for creating simple assistant messages.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let msg = SamplingMessage::assistant_text("I can help with that.");
+    /// ```
+    pub fn assistant_text(text: impl Into<String>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent::new(text))),
+            _meta: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
