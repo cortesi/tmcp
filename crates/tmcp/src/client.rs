@@ -52,12 +52,20 @@ where
     on_connect_called: bool,
 }
 
-/// Result of connecting to an MCP server via a spawned process.
-pub struct ProcessConnection {
-    /// Spawned child process handle.
-    pub child: Child,
-    /// Initialization handshake result.
-    pub init: InitializeResult,
+/// Handle to an MCP server spawned as a subprocess.
+///
+/// Returned by [`Client::connect_process`] after successfully spawning and
+/// initializing an MCP server. Contains the process handle for lifecycle
+/// management and the server's initialization response.
+pub struct SpawnedServer {
+    /// The spawned server process.
+    ///
+    /// Use this to manage the process lifecycle (wait, kill, check status).
+    pub process: Child,
+    /// Server initialization result.
+    ///
+    /// Contains the server's name, version, and advertised capabilities.
+    pub server_info: InitializeResult,
 }
 
 impl Client<()> {
@@ -76,8 +84,20 @@ impl Client<()> {
 
     /// Set a custom handler for server-initiated requests.
     ///
-    /// The handler receives callbacks for server requests like `ping`,
-    /// `create_message`, and `list_roots`.
+    /// This method uses a **type state pattern**: it transforms `Client<()>` into
+    /// `Client<C>` where `C` implements [`ClientHandler`]. This compile-time change
+    /// ensures the handler is set before connecting, rather than allowing runtime
+    /// failures from missing handlers.
+    ///
+    /// The handler receives callbacks when the server initiates requests:
+    /// - [`ClientHandler::ping`] - Server health checks
+    /// - [`ClientHandler::create_message`] - LLM sampling requests (if capability enabled)
+    /// - [`ClientHandler::list_roots`] - Filesystem root discovery
+    /// - [`ClientHandler::elicit`] - User input requests
+    ///
+    /// Without a custom handler, the default `()` handler returns errors for
+    /// server-initiated requests, which is appropriate for clients that don't
+    /// need to respond to server callbacks.
     pub fn with_handler<C: ClientHandler>(self, handler: C) -> Client<C> {
         Client {
             request_handler: self.request_handler,
@@ -233,13 +253,16 @@ where
     /// * `command` - A configured tokio::process::Command ready to be spawned
     ///
     /// # Returns
-    /// Returns the spawned Child process handle and the initialization result.
-    pub async fn connect_process(&mut self, command: Command) -> Result<ProcessConnection> {
-        let mut child = self.connect_process_raw(command).await?;
+    /// Returns a [`SpawnedServer`] containing the process handle and server info.
+    pub async fn connect_process(&mut self, command: Command) -> Result<SpawnedServer> {
+        let mut process = self.connect_process_raw(command).await?;
         match self.init().await {
-            Ok(init) => Ok(ProcessConnection { child, init }),
+            Ok(server_info) => Ok(SpawnedServer {
+                process,
+                server_info,
+            }),
             Err(err) => {
-                if let Err(kill_err) = child.kill().await {
+                if let Err(kill_err) = process.kill().await {
                     warn!("Failed to kill process after init error: {}", kill_err);
                 }
                 Err(err)
@@ -481,7 +504,9 @@ where
 
     /// Call a tool with the given name and arguments.
     ///
-    /// Arguments can be any serializable type. Pass `()` for tools that take no arguments.
+    /// Arguments can be any serializable type. For tools that take no arguments, pass `()`
+    /// which serializes to an empty JSON object `{}`. This is the idiomatic way to call
+    /// parameter-less tools.
     ///
     /// # Example
     ///
@@ -491,8 +516,13 @@ where
     /// struct EchoArgs { message: String }
     /// let result = client.call_tool("echo", EchoArgs { message: "hello".into() }).await?;
     ///
-    /// // With no arguments
+    /// // With no arguments - () serializes to {}
     /// let result = client.call_tool("ping", ()).await?;
+    ///
+    /// // HashMap also works for dynamic arguments
+    /// let mut args = HashMap::new();
+    /// args.insert("key", "value");
+    /// let result = client.call_tool("dynamic", args).await?;
     /// ```
     pub async fn call_tool(
         &mut self,

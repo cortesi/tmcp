@@ -125,40 +125,43 @@ metadata from JSON schemas.
 
 ---
 
-# Stage 6: Documentation and Naming Clarity
+# Stage 6: Documentation and Naming Clarity ✓ COMPLETE
 
 Improve documentation and fix remaining naming issues.
 
-1. [ ] Add documentation to `ServerHandler` trait in `crates/tmcp/src/connection.rs` explaining
-       the default behavior philosophy: methods for optional features (list_tools, list_resources)
-       return empty results, while dispatch methods (call_tool, read_resource) return errors.
+1. [x] Added comprehensive documentation to `ServerHandler` trait in `crates/tmcp/src/connection.rs`
+       explaining the default behavior philosophy:
+       - Listing methods (list_tools, list_resources, list_prompts) return empty results
+       - Dispatch methods (call_tool, read_resource, get_prompt) return errors
+       - Lifecycle methods (on_connect, on_shutdown, notification) are no-ops
 
-2. [ ] Document the `#[mcp_server]` macro vs `ServerHandler` trait trade-offs in
-       `crates/tmcp/src/lib.rs` module documentation. Explain when to use each approach:
-       - Macro: simple servers, automatic tool registration, less boilerplate
-       - Trait: custom initialization, per-connection state, complex capability negotiation
+2. [x] Documented the `#[mcp_server]` macro vs `ServerHandler` trait trade-offs in
+       `crates/tmcp/src/lib.rs` module documentation with code examples for each approach.
 
-3. [ ] Document `Client::with_handler()` type state pattern. Explain that it changes the client
-       type from `Client<()>` to `Client<H>` and why this is the design choice.
+3. [x] Documented `Client::with_handler()` type state pattern in `crates/tmcp/src/client.rs`.
+       Explains how it transforms `Client<()>` to `Client<C>` at compile time.
 
-4. [ ] Add a doc comment on `call_tool("tool", ())` explaining that `()` is the idiomatic way to
-       call tools with no arguments (it serializes to an empty JSON object).
+4. [x] Enhanced `call_tool()` documentation in `crates/tmcp/src/client.rs` explaining that `()`
+       serializes to an empty JSON object `{}` and is the idiomatic way to call parameter-less tools.
 
 ---
 
-# Stage 7: ProcessConnection Rename (Breaking)
+# Stage 7: ProcessConnection Rename (Breaking) ✓ COMPLETE
 
 Rename `ProcessConnection` for clarity. This is a breaking change for users of `connect_process()`.
 
-1. [ ] Rename `ProcessConnection` to `SpawnedServer` in `crates/tmcp/src/client.rs`.
+1. [x] Renamed `ProcessConnection` to `SpawnedServer` in `crates/tmcp/src/client.rs` with improved
+       documentation explaining its purpose.
 
-2. [ ] Rename the `child` field to `process` and `init` field to `server_info` for clarity.
+2. [x] Renamed the `child` field to `process` and `init` field to `server_info` for clarity.
+       Added documentation to both fields.
 
-3. [ ] Update `crates/tmcp/src/lib.rs` to re-export `SpawnedServer` instead of `ProcessConnection`.
+3. [x] Updated `crates/tmcp/src/lib.rs` to re-export `SpawnedServer` instead of `ProcessConnection`.
 
-4. [ ] Update `examples/process_spawn.rs` to use the new name and field names.
+4. [x] Updated `examples/process_spawn.rs` and `examples/basic_client_stdio.rs` to use the new
+       struct name and field names.
 
-5. [ ] Add a deprecation note in CHANGELOG or migration guide about this rename.
+5. [x] No CHANGELOG file exists in the project. Breaking change is documented in commit message.
 
 ---
 

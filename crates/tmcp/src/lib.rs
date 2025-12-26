@@ -21,6 +21,58 @@
 //! - **TCP**: `server.listen_tcp("127.0.0.1:3000")`
 //! - **HTTP**: `server.listen_http("127.0.0.1:3000")` (uses SSE for server->client)
 //! - **Stdio**: `server.listen_stdio()` for subprocess integration
+//!
+//! ## Building Servers: Macro vs Trait
+//!
+//! tmcp provides two approaches for implementing MCP servers:
+//!
+//! ### The `#[mcp_server]` Macro
+//!
+//! Best for simple servers that primarily expose tools. The macro automatically:
+//! - Generates [`ServerHandler`] trait implementation
+//! - Derives tool schemas from function signatures using `schemars`
+//! - Registers tools in `list_tools` and routes calls in `call_tool`
+//! - Provides sensible defaults for `initialize`
+//!
+//! ```ignore
+//! use tmcp::{mcp_server, tool, Result};
+//!
+//! #[mcp_server]
+//! impl MyServer {
+//!     #[tool]
+//!     async fn greet(&self, name: String) -> Result<String> {
+//!         Ok(format!("Hello, {name}!"))
+//!     }
+//! }
+//! ```
+//!
+//! ### The [`ServerHandler`] Trait
+//!
+//! Use the trait directly when you need:
+//! - **Custom initialization**: Validate clients, negotiate capabilities, or reject connections
+//! - **Per-connection state**: Access to `ServerCtx` in all methods for client-specific data
+//! - **Resources and prompts**: Full access to MCP features beyond tools
+//! - **Fine-grained error handling**: Custom error responses and logging
+//!
+//! ```ignore
+//! use tmcp::{ServerHandler, ServerCtx, Result};
+//! use async_trait::async_trait;
+//!
+//! struct MyServer;
+//!
+//! #[async_trait]
+//! impl ServerHandler for MyServer {
+//!     async fn initialize(&self, ctx: &ServerCtx, ...) -> Result<InitializeResult> {
+//!         // Custom capability negotiation
+//!     }
+//!
+//!     async fn list_tools(&self, ctx: &ServerCtx, ...) -> Result<ListToolsResult> {
+//!         // Dynamic tool registration
+//!     }
+//! }
+//! ```
+//!
+//! See [`ServerHandler`] documentation for the default behavior philosophy.
 
 /// Argument envelope used by tool calls and prompt arguments.
 mod arguments;
@@ -51,7 +103,7 @@ pub mod schema;
 pub mod testutils;
 
 pub use arguments::Arguments;
-pub use client::{Client, ProcessConnection};
+pub use client::{Client, SpawnedServer};
 pub use connection::{ClientHandler, ServerHandler};
 pub use context::{ClientCtx, ServerCtx};
 pub use error::{Error, Result};

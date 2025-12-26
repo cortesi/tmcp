@@ -112,12 +112,46 @@ pub trait ClientHandler: Send + Sync {
     }
 }
 
-/// Handler trait that server implementers must implement.
+/// Handler trait for implementing MCP servers.
 ///
-/// Each client connection will have its own instance of the implementation.
-/// All methods take `&self` to allow concurrent request handling.
-/// Implementations should use interior mutability (`Arc<Mutex<_>>`, `RwLock`, etc.)
-/// for any mutable state.
+/// This trait defines how a server responds to client requests. Each client connection
+/// gets its own handler instance, created by the factory function passed to [`Server::new`].
+///
+/// # Default Behavior Philosophy
+///
+/// Methods follow a consistent default behavior pattern based on their purpose:
+///
+/// **Listing methods** return empty results by default. This means a minimal server
+/// implementation automatically advertises no capabilities until you override these:
+/// - [`list_tools`](Self::list_tools) → empty tool list
+/// - [`list_resources`](Self::list_resources) → empty resource list
+/// - [`list_prompts`](Self::list_prompts) → empty prompt list
+///
+/// **Dispatch methods** return errors by default. If a client requests something you
+/// haven't implemented, they get a clear error rather than silent failure:
+/// - [`call_tool`](Self::call_tool) → `Error::ToolNotFound`
+/// - [`read_resource`](Self::read_resource) → `Error::ResourceNotFound`
+/// - [`get_prompt`](Self::get_prompt) → handler error
+///
+/// **Lifecycle methods** are no-ops by default, allowing you to hook into events
+/// only when needed:
+/// - [`on_connect`](Self::on_connect), [`on_shutdown`](Self::on_shutdown)
+/// - [`notification`](Self::notification)
+///
+/// # Concurrency
+///
+/// All methods take `&self` to allow concurrent request handling from the same client.
+/// For mutable state, use interior mutability patterns like `Arc<Mutex<_>>` or `RwLock`.
+///
+/// # Choosing Between Trait and Macro
+///
+/// For simple servers with just tools, consider the [`#[mcp_server]`](crate::mcp_server)
+/// macro which generates the trait implementation automatically. Use this trait directly
+/// when you need:
+/// - Custom [`initialize`](Self::initialize) logic (capability negotiation, client validation)
+/// - Per-connection state beyond what the macro provides
+/// - Resources, prompts, or other MCP features beyond tools
+/// - Fine-grained control over error handling
 #[async_trait]
 pub trait ServerHandler: Send + Sync {
     /// Called after the client has completed the initialize handshake.

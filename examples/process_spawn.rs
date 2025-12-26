@@ -37,13 +37,16 @@ async fn main() -> Result<()> {
         }
     };
 
-    let tmcp::ProcessConnection { mut child, init } = connection;
+    let tmcp::SpawnedServer {
+        mut process,
+        server_info,
+    } = connection;
     info!(
         "Connected to server: {} v{}",
-        init.server_info.name, init.server_info.version
+        server_info.server_info.name, server_info.server_info.version
     );
 
-    if let Some(instructions) = init.instructions {
+    if let Some(instructions) = server_info.instructions {
         info!("Server instructions: {}", instructions);
     }
 
@@ -88,15 +91,14 @@ async fn main() -> Result<()> {
     // Clean shutdown
     info!("Shutting down...");
 
-    // The process will be terminated when child is dropped
-    // But we can also explicitly kill it if needed
-    match child.kill().await {
+    // The process will be terminated when dropped, but we can also explicitly kill it
+    match process.kill().await {
         Ok(_) => info!("Process terminated"),
         Err(e) => error!("Failed to kill process: {}", e),
     }
 
     // Alternatively, you could wait for the process to exit naturally:
-    // match child.wait().await {
+    // match process.wait().await {
     //     Ok(status) => info!("Process exited with status: {}", status),
     //     Err(e) => error!("Failed to wait for process: {}", e),
     // }

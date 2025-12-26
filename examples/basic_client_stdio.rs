@@ -34,8 +34,10 @@ async fn main() -> Result<()> {
 
     // Spawn the process and connect to it
     info!("Spawning basic_server in stdio mode...");
-    let tmcp::ProcessConnection { mut child, init } = client.connect_process(cmd).await?;
-    let init_result = init;
+    let tmcp::SpawnedServer {
+        mut process,
+        server_info: init_result,
+    } = client.connect_process(cmd).await?;
 
     // Get server info from initialization result
     let server_info = &init_result.server_info;
@@ -75,7 +77,7 @@ async fn main() -> Result<()> {
     info!("Shutting down...");
 
     // Kill the server process
-    child.kill().await.expect("Failed to kill server process");
+    process.kill().await.expect("Failed to kill server process");
 
     Ok(())
 }
