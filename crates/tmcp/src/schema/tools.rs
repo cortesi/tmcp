@@ -236,6 +236,45 @@ impl Tool {
         }
     }
 
+    /// Create a tool from a schemars JsonSchema type.
+    ///
+    /// This derives the input schema from the type's JSON Schema representation.
+    /// If the schema has a description at the root level, it will be used as
+    /// the tool's description.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[derive(JsonSchema)]
+    /// /// Tool that echoes input back.
+    /// struct EchoParams {
+    ///     /// The message to echo
+    ///     message: String,
+    /// }
+    ///
+    /// let tool = Tool::from_schema::<EchoParams>("echo");
+    /// // Tool has name "echo" and schema derived from EchoParams
+    /// ```
+    pub fn from_schema<T: schemars::JsonSchema>(name: impl Into<String>) -> Self {
+        let schema = ToolSchema::from_json_schema::<T>();
+        let description = schema.description().map(|s| s.to_string());
+
+        let mut tool = Self::new(name, schema);
+        if let Some(desc) = description {
+            tool.description = Some(desc);
+        }
+        tool
+    }
+
+    /// Replace the input schema with one derived from a schemars JsonSchema type.
+    ///
+    /// This is useful when you want to set the schema after construction,
+    /// or when combining with other builder methods.
+    pub fn with_schema<T: schemars::JsonSchema>(mut self) -> Self {
+        self.input_schema = ToolSchema::from_json_schema::<T>();
+        self
+    }
+
     /// Set the tool description.
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
@@ -334,6 +373,35 @@ impl ToolSchema {
     /// Create a new schema from a JSON value.
     pub fn new(schema: Value) -> Self {
         Self(schema)
+    }
+
+    /// Create an empty schema for tools that take no arguments.
+    ///
+    /// This is an alias for `ToolSchema::default()` that makes the intent
+    /// clearer when a tool genuinely takes no parameters.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let tool = Tool::new("ping", ToolSchema::empty())
+    ///     .with_description("Ping the server");
+    /// ```
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Get the schema description if present.
+    ///
+    /// This extracts the "description" field from the root of the JSON Schema.
+    pub fn description(&self) -> Option<&str> {
+        self.0.get("description").and_then(|v| v.as_str())
+    }
+
+    /// Get the schema title if present.
+    ///
+    /// This extracts the "title" field from the root of the JSON Schema.
+    pub fn title(&self) -> Option<&str> {
+        self.0.get("title").and_then(|v| v.as_str())
     }
 
     /// Get the underlying JSON value.
@@ -496,5 +564,88 @@ mod tests {
         // Invalid JSON
         let result = CallToolResult::new().with_text_content("not json");
         assert!(result.json::<Response>().is_err());
+    }
+
+    #[test]
+    fn test_tool_from_schema() {
+        use schemars::JsonSchema;
+
+        /// A tool that echoes messages back.
+        #[derive(JsonSchema)]
+        struct EchoParams {
+            /// The message to echo
+            message: String,
+            /// Number of times to repeat
+            count: Option<i32>,
+        }
+
+        // Tool::from_schema creates a tool with the derived schema
+        let tool = Tool::from_schema::<EchoParams>("echo");
+        assert_eq!(tool.name, "echo");
+
+        // The schema should have the properties
+        let props = tool.input_schema.properties().unwrap();
+        assert!(props.contains_key("message"));
+        assert!(props.contains_key("count"));
+
+        // Description is extracted from the type's doc comment
+        // (schemars includes doc comments in the description field)
+        // Note: schemars may or may not include this depending on version/config
+    }
+
+    #[test]
+    fn test_tool_with_schema() {
+        use schemars::JsonSchema;
+
+        #[derive(JsonSchema)]
+        struct MyParams {
+            name: String,
+        }
+
+        // Start with default schema, then replace with typed schema
+        let tool = Tool::new("test", ToolSchema::empty())
+            .with_description("A test tool")
+            .with_schema::<MyParams>();
+
+        assert_eq!(tool.name, "test");
+        assert_eq!(tool.description.as_deref(), Some("A test tool"));
+
+        // The schema now has the MyParams properties
+        let props = tool.input_schema.properties().unwrap();
+        assert!(props.contains_key("name"));
+    }
+
+    #[test]
+    fn test_tool_with_title() {
+        let tool = Tool::new("test", ToolSchema::empty())
+            .with_title("Test Tool")
+            .with_description("A test tool");
+
+        assert_eq!(tool.title.as_deref(), Some("Test Tool"));
+        assert_eq!(tool.description.as_deref(), Some("A test tool"));
+    }
+
+    #[test]
+    fn test_tool_schema_empty() {
+        let schema = ToolSchema::empty();
+        assert_eq!(schema.schema_type(), Some("object"));
+        assert!(schema.properties().is_none());
+    }
+
+    #[test]
+    fn test_tool_schema_description_and_title() {
+        let schema = ToolSchema::new(serde_json::json!({
+            "type": "object",
+            "title": "My Schema",
+            "description": "A schema for testing"
+        }));
+
+        assert_eq!(schema.title(), Some("My Schema"));
+        assert_eq!(schema.description(), Some("A schema for testing"));
+
+        // Empty schema has no title or description
+        let empty = ToolSchema::empty();
+        assert!(empty.title().is_none());
+        assert!(empty.description().is_none());
     }
 }

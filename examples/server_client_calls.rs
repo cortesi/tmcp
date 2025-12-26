@@ -23,7 +23,8 @@
 use std::env;
 
 use async_trait::async_trait;
-use serde_json::json;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use tmcp::{
     Arguments, Error, Result, Server, ServerCtx, ServerHandler,
     schema::{
@@ -34,6 +35,20 @@ use tmcp::{
 use tokio::signal::ctrl_c;
 use tracing::{error, info};
 use tracing_subscriber::fmt;
+
+/// Parameters for the ask_llm tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AskLlmParams {
+    /// The prompt to send to the LLM.
+    prompt: String,
+}
+
+/// Parameters for the ask_user tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AskUserParams {
+    /// The question to ask the user.
+    question: String,
+}
 
 /// Server that demonstrates calling back to the client
 struct ClientCallsServer;
@@ -73,44 +88,24 @@ impl ServerHandler for ClientCallsServer {
         _context: &ServerCtx,
         _cursor: Option<schema::Cursor>,
     ) -> Result<ListToolsResult> {
+        // Tools with no parameters use ToolSchema::empty() for clarity
+        // Tools with parameters use Tool::from_schema<T>() for type-safe schema generation
         Ok(ListToolsResult::new()
             .with_tool(
-                Tool::new("ping_client", ToolSchema::default())
+                Tool::new("ping_client", ToolSchema::empty())
                     .with_description("Ping the connected client to verify the connection"),
             )
             .with_tool(
-                Tool::new("list_roots", ToolSchema::default())
+                Tool::new("list_roots", ToolSchema::empty())
                     .with_description("List filesystem roots exposed by the client"),
             )
             .with_tool(
-                Tool::new(
-                    "ask_llm",
-                    ToolSchema::default()
-                        .with_property(
-                            "prompt",
-                            json!({
-                                "type": "string",
-                                "description": "The prompt to send to the LLM"
-                            }),
-                        )
-                        .with_required("prompt"),
-                )
-                .with_description("Request the client to generate an LLM response (sampling)"),
+                Tool::from_schema::<AskLlmParams>("ask_llm")
+                    .with_description("Request the client to generate an LLM response (sampling)"),
             )
             .with_tool(
-                Tool::new(
-                    "ask_user",
-                    ToolSchema::default()
-                        .with_property(
-                            "question",
-                            json!({
-                                "type": "string",
-                                "description": "The question to ask the user"
-                            }),
-                        )
-                        .with_required("question"),
-                )
-                .with_description("Ask the client to get input from the user (elicitation)"),
+                Tool::from_schema::<AskUserParams>("ask_user")
+                    .with_description("Ask the client to get input from the user (elicitation)"),
             ))
     }
 
@@ -162,14 +157,15 @@ impl ServerHandler for ClientCallsServer {
 
             "ask_llm" => {
                 // Request the client to generate an LLM response
-                let args = arguments.unwrap_or_default();
-                let prompt = args.require_string("prompt")?;
+                // Use into_params() for type-safe deserialization matching from_schema
+                let params: AskLlmParams = arguments.unwrap_or_default().into_params()?;
 
-                info!("Requesting LLM sampling from client: {}", prompt);
+                info!("Requesting LLM sampling from client: {}", params.prompt);
 
-                let params = CreateMessageParams::user_message(prompt).with_max_tokens(500);
+                let msg_params =
+                    CreateMessageParams::user_message(&params.prompt).with_max_tokens(500);
 
-                match context.create_message(params).await {
+                match context.create_message(msg_params).await {
                     Ok(result) => {
                         info!("Received LLM response");
                         let response = match &result.content {
@@ -196,18 +192,18 @@ impl ServerHandler for ClientCallsServer {
 
             "ask_user" => {
                 // Ask the client to get input from the user
-                let args = arguments.unwrap_or_default();
-                let question = args.require_string("question")?;
+                // Use into_params() for type-safe deserialization matching from_schema
+                let params: AskUserParams = arguments.unwrap_or_default().into_params()?;
 
-                info!("Requesting user input from client: {}", question);
+                info!("Requesting user input from client: {}", params.question);
 
-                let params = ElicitRequestParams {
-                    message: question,
+                let elicit_params = ElicitRequestParams {
+                    message: params.question,
                     requested_schema: None,
                     _meta: None,
                 };
 
-                match context.elicit(params).await {
+                match context.elicit(elicit_params).await {
                     Ok(result) => {
                         info!("Received user response: {:?}", result.action);
                         let response = match result.content {

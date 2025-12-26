@@ -95,23 +95,33 @@ Bonus: Implemented `IntoIterator` for `OneOrMany<T>` and `&OneOrMany<T>` for use
 
 ---
 
-# Stage 5: Tool Construction Ergonomics
+# Stage 5: Tool Construction Ergonomics ✓ COMPLETE
 
 Add type-safe tool construction from schemars types, bridging the gap between macro-based and
 trait-based server implementations.
 
-1. [ ] Add `Tool::from_schema<T: schemars::JsonSchema>(name: impl Into<String>) -> Self` constructor
-       in `crates/tmcp/src/schema/tools.rs`. It uses `ToolSchema::from_json_schema::<T>()` and sets
-       the tool name. The description can be extracted from the schema's title/description if present.
+1. [x] Add `Tool::from_schema<T: schemars::JsonSchema>(name: impl Into<String>) -> Self` constructor
+       in `crates/tmcp/src/schema/tools.rs`. Extracts description from schema if present.
 
-2. [ ] Add `Tool::with_schema<T: schemars::JsonSchema>(mut self) -> Self` method that replaces the
+2. [x] Add `Tool::with_schema<T: schemars::JsonSchema>(mut self) -> Self` method that replaces the
        input_schema using the type's JSON schema.
 
-3. [ ] Create a simple example or test demonstrating `Tool::from_schema::<MyParams>("tool_name")`
-       as an alternative to manual `ToolSchema::default().with_property(...)` construction.
+3. [x] Created unit tests demonstrating `Tool::from_schema::<MyParams>("tool_name")` usage and
+       verifying schema properties are correctly derived.
 
-4. [ ] Consider adding `ToolSchema::empty()` as an alias for `ToolSchema::default()` for clarity
-       when a tool takes no arguments (the default is `{"type": "object"}`).
+4. [x] Add `ToolSchema::empty()` as an alias for `ToolSchema::default()` for clarity when a tool
+       takes no arguments.
+
+5. [x] Updated `examples/server_client_calls.rs` to demonstrate `Tool::from_schema<T>()` with typed
+       parameter structs (`AskLlmParams`, `AskUserParams`) and `into_params::<T>()` for type-safe
+       deserialization. Used `ToolSchema::empty()` for tools with no parameters.
+
+6. [x] Updated mcptool's `testserver.rs` to use `Tool::from_schema::<EchoParams>("echo")` instead of
+       verbose `ToolSchema::default().with_property().with_required()` construction. Also uses
+       `into_params::<EchoParams>()` in the handler for type-safe deserialization.
+
+Bonus: Added `ToolSchema::description()` and `ToolSchema::title()` accessor methods for extracting
+metadata from JSON schemas.
 
 ---
 
