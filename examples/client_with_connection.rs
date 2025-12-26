@@ -44,39 +44,24 @@ impl ClientHandler for MyClientHandler {
             method, params
         );
 
-        // Return a simple response
-        // Extract the last message text
+        // Extract the last message text using iter() on OneOrMany
         let last_message_text = params
             .messages
             .last()
-            .and_then(|m| match &m.content {
-                schema::OneOrMany::One(block) => match block {
+            .and_then(|m| {
+                m.content.iter().find_map(|block| match block {
                     schema::SamplingMessageContentBlock::Text(text_content) => {
                         Some(text_content.text.as_str())
                     }
                     _ => None,
-                },
-                schema::OneOrMany::Many(blocks) => blocks.iter().find_map(|block| match block {
-                    schema::SamplingMessageContentBlock::Text(text_content) => {
-                        Some(text_content.text.as_str())
-                    }
-                    _ => None,
-                }),
+                })
             })
             .unwrap_or("(no message)");
 
         Ok(schema::CreateMessageResult {
-            message: schema::SamplingMessage {
-                role: schema::Role::Assistant,
-                content: schema::OneOrMany::One(schema::SamplingMessageContentBlock::Text(
-                    schema::TextContent {
-                        text: format!("Response to: {last_message_text}"),
-                        annotations: None,
-                        _meta: None,
-                    },
-                )),
-                _meta: None,
-            },
+            message: schema::SamplingMessage::assistant_text(format!(
+                "Response to: {last_message_text}"
+            )),
             model: "example-model".to_string(),
             stop_reason: None,
         })

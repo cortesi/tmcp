@@ -71,28 +71,18 @@ mod tests {
             let request_text = params
                 .messages
                 .first()
-                .and_then(|msg| match &msg.content {
-                    OneOrMany::One(block) => match block {
+                .and_then(|msg| {
+                    msg.content.iter().find_map(|block| match block {
                         SamplingMessageContentBlock::Text(t) => Some(t.text.as_str()),
                         _ => None,
-                    },
-                    OneOrMany::Many(blocks) => blocks.iter().find_map(|block| match block {
-                        SamplingMessageContentBlock::Text(t) => Some(t.text.as_str()),
-                        _ => None,
-                    }),
+                    })
                 })
                 .unwrap_or("no message");
 
             Ok(CreateMessageResult {
-                message: SamplingMessage {
-                    role: Role::Assistant,
-                    content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent {
-                        text: format!("Client received: {request_text}"),
-                        annotations: None,
-                        _meta: None,
-                    })),
-                    _meta: None,
-                },
+                message: SamplingMessage::assistant_text(format!(
+                    "Client received: {request_text}"
+                )),
                 model: "test-model".to_string(),
                 stop_reason: None,
             })
@@ -162,44 +152,20 @@ mod tests {
                 }
 
                 "ask_client_to_generate" => {
-                    let params = CreateMessageParams {
-                        messages: vec![SamplingMessage {
-                            role: Role::User,
-                            content: OneOrMany::One(SamplingMessageContentBlock::Text(
-                                TextContent {
-                                    text: "Server request".to_string(),
-                                    annotations: None,
-                                    _meta: None,
-                                },
-                            )),
-                            _meta: None,
-                        }],
-                        system_prompt: None,
-                        include_context: None,
-                        temperature: None,
-                        max_tokens: 100,
-                        metadata: None,
-                        stop_sequences: None,
-                        model_preferences: None,
-                        tools: None,
-                        tool_choice: None,
-                        task: None,
-                        _meta: None,
-                    };
+                    let params =
+                        CreateMessageParams::user_message("Server request").with_max_tokens(100);
 
                     let ctx = context.clone();
                     let result = ctx.create_message(params).await?;
-                    let text = match result.message.content {
-                        OneOrMany::One(SamplingMessageContentBlock::Text(text)) => text.text,
-                        OneOrMany::Many(blocks) => blocks
-                            .into_iter()
-                            .find_map(|block| match block {
-                                SamplingMessageContentBlock::Text(text) => Some(text.text),
-                                _ => None,
-                            })
-                            .unwrap_or_else(|| "Non-text response".to_string()),
-                        _ => "Non-text response".to_string(),
-                    };
+                    let text = result
+                        .message
+                        .content
+                        .into_iter()
+                        .find_map(|block| match block {
+                            SamplingMessageContentBlock::Text(text) => Some(text.text),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "Non-text response".to_string());
                     Ok(CallToolResult::new().with_text_content(text))
                 }
 

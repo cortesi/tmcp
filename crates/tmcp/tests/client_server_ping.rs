@@ -45,15 +45,7 @@ mod tests {
         ) -> Result<CreateMessageResult> {
             self.calls.lock().unwrap().push("create_message".into());
             Ok(CreateMessageResult {
-                message: SamplingMessage {
-                    role: Role::Assistant,
-                    content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent {
-                        text: "Test response".into(),
-                        annotations: None,
-                        _meta: None,
-                    })),
-                    _meta: None,
-                },
+                message: SamplingMessage::assistant_text("Test response"),
                 model: "test-model".into(),
                 stop_reason: None,
             })
@@ -100,28 +92,7 @@ mod tests {
 
         connection.pong(&ctx).await.expect("Ping failed");
 
-        let params = CreateMessageParams {
-            messages: vec![SamplingMessage {
-                role: Role::User,
-                content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent {
-                    text: "Hello".into(),
-                    annotations: None,
-                    _meta: None,
-                })),
-                _meta: None,
-            }],
-            system_prompt: None,
-            include_context: None,
-            temperature: None,
-            max_tokens: 1000,
-            metadata: None,
-            stop_sequences: None,
-            model_preferences: None,
-            tools: None,
-            tool_choice: None,
-            task: None,
-            _meta: None,
-        };
+        let params = CreateMessageParams::user_message("Hello").with_max_tokens(1000);
 
         let result = connection
             .create_message(&ctx, "test", params)

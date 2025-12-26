@@ -74,21 +74,24 @@ Add ergonomic builders for commonly constructed types that currently require ver
 
 ---
 
-# Stage 4: OneOrMany Ergonomics
+# Stage 4: OneOrMany Ergonomics ✓ COMPLETE
 
 Add iterator and accessor methods to the `OneOrMany<T>` type to eliminate verbose pattern matching.
 
-1. [ ] Locate `OneOrMany<T>` definition (likely in `crates/tmcp/src/schema/mod.rs` or a content
-       module). Add `fn iter(&self) -> impl Iterator<Item = &T>` method.
+1. [x] Locate `OneOrMany<T>` definition in `crates/tmcp/src/schema/content.rs`. Added
+       `fn iter(&self) -> impl Iterator<Item = &T>` and `iter_mut()` methods.
 
-2. [ ] Add `fn first(&self) -> Option<&T>` method to `OneOrMany<T>`.
+2. [x] Add `fn first(&self) -> Option<&T>` method to `OneOrMany<T>`.
 
-3. [ ] Add `fn into_vec(self) -> Vec<T>` method to `OneOrMany<T>`.
+3. [x] `into_vec(self) -> Vec<T>` already existed. Added documentation.
 
-4. [ ] Add `fn len(&self) -> usize` and `fn is_empty(&self) -> bool` methods to `OneOrMany<T>`.
+4. [x] Add `fn len(&self) -> usize` and `fn is_empty(&self) -> bool` methods to `OneOrMany<T>`.
 
-5. [ ] Update `examples/client_with_connection.rs` to use the new iterator methods instead of
-       manual pattern matching on `OneOrMany`. Verify the example works.
+5. [x] Update `examples/client_with_connection.rs` to use the new `iter()` method and
+       `SamplingMessage::assistant_text()` builder. Updated tests in `bidi.rs` and
+       `client_server_ping.rs` to also use the new ergonomic APIs.
+
+Bonus: Implemented `IntoIterator` for `OneOrMany<T>` and `&OneOrMany<T>` for use in for loops.
 
 ---
 

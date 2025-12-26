@@ -1,3 +1,5 @@
+use std::{slice, vec};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -52,10 +54,74 @@ pub enum OneOrMany<T> {
 }
 
 impl<T> OneOrMany<T> {
+    /// Returns an iterator over the contained values.
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        let s: &[T] = match self {
+            Self::One(value) => slice::from_ref(value),
+            Self::Many(values) => values.as_slice(),
+        };
+        s.iter()
+    }
+
+    /// Returns a mutable iterator over the contained values.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        let s: &mut [T] = match self {
+            Self::One(value) => slice::from_mut(value),
+            Self::Many(values) => values.as_mut_slice(),
+        };
+        s.iter_mut()
+    }
+
+    /// Returns a reference to the first element.
+    pub fn first(&self) -> Option<&T> {
+        match self {
+            Self::One(value) => Some(value),
+            Self::Many(values) => values.first(),
+        }
+    }
+
+    /// Returns the number of elements.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(values) => values.len(),
+        }
+    }
+
+    /// Returns true if there are no elements.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::One(_) => false,
+            Self::Many(values) => values.is_empty(),
+        }
+    }
+
+    /// Converts into a Vec, consuming self.
     pub fn into_vec(self) -> Vec<T> {
         match self {
             Self::One(value) => vec![value],
             Self::Many(values) => values,
+        }
+    }
+}
+
+impl<T> IntoIterator for OneOrMany<T> {
+    type Item = T;
+    type IntoIter = vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_vec().into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a OneOrMany<T> {
+    type Item = &'a T;
+    type IntoIter = slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            OneOrMany::One(value) => slice::from_ref(value).iter(),
+            OneOrMany::Many(values) => values.iter(),
         }
     }
 }
