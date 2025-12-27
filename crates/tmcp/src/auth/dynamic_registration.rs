@@ -204,9 +204,10 @@ impl DynamicRegistrationClient {
             request = request.header("Authorization", format!("Bearer {token}"));
         }
 
-        let response = request.send().await.map_err(|e| {
-            Error::TransportError(format!("Failed to send registration request: {e}"))
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| Error::Transport(format!("Failed to send registration request: {e}")))?;
 
         let status = response.status();
 
@@ -253,7 +254,7 @@ impl DynamicRegistrationClient {
             .get(&metadata_url)
             .send()
             .await
-            .map_err(|e| Error::TransportError(format!("Failed to fetch OAuth metadata: {e}")))?;
+            .map_err(|e| Error::Transport(format!("Failed to fetch OAuth metadata: {e}")))?;
 
         let status = response.status();
         if !status.is_success() {

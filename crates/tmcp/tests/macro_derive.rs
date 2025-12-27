@@ -4,18 +4,19 @@
 mod tests {
     use std::collections::HashMap;
 
+    use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use tmcp::{
-        Error, Result, ServerCtx, ServerHandler, mcp_server, schema::*, schemars,
+        Error, Result, ServerCtx, ServerHandler, mcp_server, schema::*,
         testutils::TestServerContext, tool,
     };
 
-    #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
     struct EchoParams {
         message: String,
     }
 
-    #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
     struct AddParams {
         a: f64,
         b: f64,

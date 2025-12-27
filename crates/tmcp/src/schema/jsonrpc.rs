@@ -14,7 +14,7 @@ use crate::macros::with_meta;
 pub const PREVIOUS_PROTOCOL_VERSION: &str = "2025-06-18";
 pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 /// JSON-RPC protocol version string.
-pub(crate) const JSONRPC_VERSION: &str = "2.0";
+pub const JSONRPC_VERSION: &str = "2.0";
 
 /// Refers to any valid JSON-RPC object that can be decoded off the wire, or
 /// encoded to be sent.
@@ -208,15 +208,15 @@ pub enum JSONRPCResponse {
 
 // Standard JSON-RPC error codes
 /// JSON-RPC parse error code.
-pub(crate) const PARSE_ERROR: i32 = -32700;
+pub const PARSE_ERROR: i32 = -32700;
 /// JSON-RPC invalid request error code.
-pub(crate) const INVALID_REQUEST: i32 = -32600;
+pub const INVALID_REQUEST: i32 = -32600;
 /// JSON-RPC method not found error code.
-pub(crate) const METHOD_NOT_FOUND: i32 = -32601;
+pub const METHOD_NOT_FOUND: i32 = -32601;
 /// JSON-RPC invalid params error code.
-pub(crate) const INVALID_PARAMS: i32 = -32602;
+pub const INVALID_PARAMS: i32 = -32602;
 /// JSON-RPC internal error code.
-pub(crate) const INTERNAL_ERROR: i32 = -32603;
+pub const INTERNAL_ERROR: i32 = -32603;
 
 /// Implementation-specific JSON-RPC error code indicating URL elicitation is required.
 pub const URL_ELICITATION_REQUIRED: i32 = -32042;
@@ -261,4 +261,4 @@ pub struct URLElicitationRequiredData {
 
 // Empty result
 /// A response that indicates success but carries no data.
-pub(crate) type EmptyResult = Result;
+pub type EmptyResult = Result;

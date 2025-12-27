@@ -220,6 +220,7 @@ mod tests {
 
     #[test]
     fn test_into_params_missing_field() {
+        #[allow(dead_code)] // Fields are read via serde deserialization
         #[derive(Debug, serde::Deserialize)]
         struct Params {
             name: String,

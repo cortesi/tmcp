@@ -12,7 +12,7 @@ use crate::{Arguments, macros::with_meta, request_handler::RequestMethod};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method")]
 /// Requests issued by the client.
-pub(crate) enum ClientRequest {
+pub enum ClientRequest {
     #[serde(rename = "ping")]
     /// Ping the server.
     Ping {

@@ -100,10 +100,6 @@ pub enum Error {
     #[error("Authorization failed: {0}")]
     AuthorizationFailed(String),
 
-    /// Transport error.
-    #[error("Transport error: {0}")]
-    TransportError(String),
-
     /// Request timed out.
     #[error("Request timed out after {timeout_ms}ms: {request_id}")]
     Timeout {

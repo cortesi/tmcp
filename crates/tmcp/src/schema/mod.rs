@@ -1,7 +1,17 @@
+//! MCP protocol schema types.
+//!
+//! This module contains the data structures defined by the Model Context Protocol (MCP)
+//! specification. These types represent the protocol's message formats, capabilities,
+//! and data payloads.
+//!
+//! For detailed semantics of each type, refer to the
+//! [MCP specification](https://spec.modelcontextprotocol.io/).
 #![allow(missing_docs)]
 
-pub mod jsonrpc;
-pub mod requests;
+/// JSON-RPC 2.0 message types and constants for the MCP protocol.
+mod jsonrpc;
+/// Request and notification types for client-server communication.
+mod requests;
 
 /// Capability types and helpers.
 mod capabilities;

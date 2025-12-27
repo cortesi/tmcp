@@ -372,7 +372,7 @@ impl OAuth2CallbackServer {
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = TcpListener::bind(&addr)
             .await
-            .map_err(|e| Error::TransportError(format!("Failed to bind to {addr}: {e}")))?;
+            .map_err(|e| Error::Transport(format!("Failed to bind to {addr}: {e}")))?;
 
         let server = axum::serve(listener, app);
 

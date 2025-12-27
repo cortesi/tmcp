@@ -15,7 +15,7 @@
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use tmcp::{Result, Server, ServerCtx, mcp_server, schema::*, schemars, tool};
+use tmcp::{Result, Server, ServerCtx, mcp_server, schema::*, tool};
 use tokio::signal::ctrl_c;
 use tracing::info;
 use tracing_subscriber::fmt;

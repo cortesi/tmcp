@@ -43,3 +43,4 @@ base64 = "0.22"
 
 [dev-dependencies]
 rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", branch = "main", features = ["client", "server", "transport-worker", "transport-streamable-http-server"] }
+schemars = "1.1"

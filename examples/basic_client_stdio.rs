@@ -8,7 +8,7 @@
 //!   cargo run --example basic_client_stdio
 
 use serde::{Deserialize, Serialize};
-use tmcp::{Client, Result, schemars};
+use tmcp::{Client, Result};
 use tokio::process::Command;
 use tracing::info;
 use tracing_subscriber::fmt;

@@ -142,21 +142,18 @@ pub fn test_client_ctx(notification_tx: broadcast::Sender<ClientNotification>) -
 /// Provides a [`ServerCtx`] and channels for testing.
 pub struct TestServerContext {
     /// Server context for tests.
-    pub ctx: ServerCtx,
-    /// Sender for server notifications.
-    pub notification_tx: broadcast::Sender<ServerNotification>,
+    ctx: ServerCtx,
     /// Receiver for server notifications.
-    pub notification_rx: broadcast::Receiver<ServerNotification>,
+    notification_rx: broadcast::Receiver<ServerNotification>,
 }
 
 impl TestServerContext {
     /// Create a new test server context with notification channels
     pub fn new() -> Self {
         let (notification_tx, notification_rx) = broadcast::channel(100);
-        let ctx = test_server_ctx(notification_tx.clone());
+        let ctx = test_server_ctx(notification_tx);
         Self {
             ctx,
-            notification_tx,
             notification_rx,
         }
     }
@@ -187,21 +184,18 @@ impl Default for TestServerContext {
 /// Provides a [`ClientCtx`] and channels for testing.
 pub struct TestClientContext {
     /// Client context for tests.
-    pub ctx: ClientCtx,
-    /// Sender for client notifications.
-    pub notification_tx: broadcast::Sender<ClientNotification>,
+    ctx: ClientCtx,
     /// Receiver for client notifications.
-    pub notification_rx: broadcast::Receiver<ClientNotification>,
+    notification_rx: broadcast::Receiver<ClientNotification>,
 }
 
 impl TestClientContext {
     /// Create a new test client context with notification channels
     pub fn new() -> Self {
         let (notification_tx, notification_rx) = broadcast::channel(100);
-        let ctx = test_client_ctx(notification_tx.clone());
+        let ctx = test_client_ctx(notification_tx);
         Self {
             ctx,
-            notification_tx,
             notification_rx,
         }
     }

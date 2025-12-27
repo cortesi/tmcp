@@ -117,9 +117,6 @@ mod macros {
     pub use ::tmcp_macros::*;
 }
 
-// Re-export schemars for users
-pub use schemars;
-
 #[cfg(test)]
 mod tests {
     use super::schema::*;

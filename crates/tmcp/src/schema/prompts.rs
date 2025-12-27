@@ -144,7 +144,7 @@ impl PromptArgument {
         self
     }
 
-    pub fn required(mut self, required: bool) -> Self {
+    pub fn with_required(mut self, required: bool) -> Self {
         self.required = Some(required);
         self
     }

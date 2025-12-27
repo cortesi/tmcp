@@ -571,6 +571,7 @@ mod tests {
         use schemars::JsonSchema;
 
         /// A tool that echoes messages back.
+        #[allow(dead_code)] // Fields are read via JsonSchema derivation
         #[derive(JsonSchema)]
         struct EchoParams {
             /// The message to echo
@@ -597,6 +598,7 @@ mod tests {
     fn test_tool_with_schema() {
         use schemars::JsonSchema;
 
+        #[allow(dead_code)] // Fields are read via JsonSchema derivation
         #[derive(JsonSchema)]
         struct MyParams {
             name: String,

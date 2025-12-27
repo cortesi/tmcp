@@ -50,7 +50,7 @@ From `./examples/weather_server.rs`
 //! Minimal weather server example.
 
 use serde::{Deserialize, Serialize};
-use tmcp::{Result, Server, ServerCtx, mcp_server, schema::*, schemars, tool};
+use tmcp::{Result, Server, ServerCtx, mcp_server, schema::*, tool};
 
 /// Example server.
 #[derive(Default)]
