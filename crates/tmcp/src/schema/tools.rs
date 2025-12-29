@@ -1,5 +1,6 @@
-use std::{collections::HashMap, result::Result as StdResult};
+use std::{collections::HashMap, mem, result::Result as StdResult};
 
+use schemars::generate::SchemaSettings;
 use serde::{
     Deserialize, Serialize,
     de::{DeserializeOwned, Error as DeError},
@@ -490,8 +491,20 @@ impl ToolSchema {
     /// This preserves the complete schema including descriptions, enums,
     /// formats, and all other JSON Schema features.
     pub fn from_json_schema<T: schemars::JsonSchema>() -> Self {
-        let schema = schemars::schema_for!(T);
-        Self(schema.as_value().clone())
+        let mut settings = SchemaSettings::draft07();
+        settings.inline_subschemas = true;
+        let generator = settings.into_generator();
+        let schema = generator.into_root_schema_for::<T>();
+        let mut value =
+            serde_json::to_value(&schema).unwrap_or_else(|_| Value::Object(Default::default()));
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("$schema");
+            obj.remove("$defs");
+            obj.remove("definitions");
+        }
+        simplify_schema_value(&mut value);
+        force_object_schema(&mut value);
+        Self(value)
     }
 
     /// Checks if a given property name is required in this schema.
@@ -499,6 +512,237 @@ impl ToolSchema {
         self.required()
             .map(|req| req.contains(&name))
             .unwrap_or(false)
+    }
+}
+
+/// Normalize generated schemas for stricter JSON-schema consumers.
+fn simplify_schema_value(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if let Some(replacement) = simplify_nullable_anyof(map) {
+                *value = replacement;
+                simplify_schema_value(value);
+                return;
+            }
+            simplify_oneof_enum(map);
+            for v in map.values_mut() {
+                simplify_schema_value(v);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                simplify_schema_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collapse `anyOf` nullability into a nullable type when possible.
+fn simplify_nullable_anyof(map: &serde_json::Map<String, Value>) -> Option<Value> {
+    let any_of = map.get("anyOf")?.as_array()?;
+    if any_of.len() != 2 {
+        return None;
+    }
+
+    let (_null_idx, other_idx) = if is_null_schema(&any_of[0]) {
+        (0, 1)
+    } else if is_null_schema(&any_of[1]) {
+        (1, 0)
+    } else {
+        return None;
+    };
+
+    let mut replacement = any_of[other_idx].clone();
+    if let Value::Object(obj) = &mut replacement {
+        for key in ["description", "title", "default", "examples"] {
+            if let Some(value) = map.get(key) {
+                obj.entry(key.to_string()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+    add_null_type(&mut replacement);
+    if let Value::Object(obj) = &mut replacement {
+        obj.remove("anyOf");
+    }
+    Some(replacement)
+}
+
+/// Collapse `oneOf` const enums into a plain `enum`.
+fn simplify_oneof_enum(map: &mut serde_json::Map<String, Value>) {
+    let Some(Value::Array(one_of)) = map.get("oneOf") else {
+        return;
+    };
+    if one_of.is_empty() || !one_of.iter().all(is_const_variant) {
+        return;
+    }
+
+    let mut enums = Vec::with_capacity(one_of.len());
+    let mut types = Vec::new();
+    for entry in one_of {
+        let Value::Object(obj) = entry else { continue };
+        if let Some(const_val) = obj.get("const") {
+            enums.push(const_val.clone());
+        }
+        if let Some(Value::String(ty)) = obj.get("type")
+            && !types.iter().any(|t| t == ty)
+        {
+            types.push(ty.clone());
+        }
+    }
+    if enums.is_empty() {
+        return;
+    }
+    map.remove("oneOf");
+    map.insert("enum".to_string(), Value::Array(enums));
+    if !types.is_empty() {
+        match map.get_mut("type") {
+            Some(Value::String(existing)) => {
+                let mut values = Vec::with_capacity(types.len() + 1);
+                values.push(Value::String(mem::take(existing)));
+                for ty in types {
+                    if !values
+                        .iter()
+                        .any(|v| matches!(v, Value::String(s) if s == &ty))
+                    {
+                        values.push(Value::String(ty));
+                    }
+                }
+                *map.get_mut("type").unwrap() = Value::Array(values);
+            }
+            Some(Value::Array(existing)) => {
+                for ty in types {
+                    if !existing
+                        .iter()
+                        .any(|v| matches!(v, Value::String(s) if s == &ty))
+                    {
+                        existing.push(Value::String(ty));
+                    }
+                }
+            }
+            Some(_) => {}
+            None => {
+                if types.len() == 1 {
+                    map.insert("type".to_string(), Value::String(types.remove(0)));
+                } else {
+                    map.insert(
+                        "type".to_string(),
+                        Value::Array(types.into_iter().map(Value::String).collect()),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Check whether a schema entry looks like a simple const enum variant.
+fn is_const_variant(value: &Value) -> bool {
+    let Value::Object(obj) = value else {
+        return false;
+    };
+    if !obj.contains_key("const") {
+        return false;
+    }
+    obj.keys().all(|key| {
+        matches!(
+            key.as_str(),
+            "const" | "description" | "type" | "title" | "deprecated"
+        )
+    })
+}
+
+/// Check whether a schema entry represents null.
+fn is_null_schema(value: &Value) -> bool {
+    match value {
+        Value::Object(obj) => {
+            if let Some(Value::String(ty)) = obj.get("type") {
+                ty == "null"
+            } else if let Some(Value::Array(types)) = obj.get("type") {
+                types
+                    .iter()
+                    .any(|t| matches!(t, Value::String(s) if s == "null"))
+            } else if let Some(Value::Null) = obj.get("const") {
+                true
+            } else if let Some(Value::Array(values)) = obj.get("enum") {
+                values.iter().any(|v| v.is_null())
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Add nullability to a schema by widening the `type` field.
+fn add_null_type(value: &mut Value) {
+    let Value::Object(obj) = value else {
+        return;
+    };
+    if let Some(ty) = obj.get_mut("type") {
+        match ty {
+            Value::String(s) => {
+                if s != "null" {
+                    let current = mem::take(s);
+                    *ty = Value::Array(vec![Value::String(current), Value::String("null".into())]);
+                }
+            }
+            Value::Array(arr) => {
+                if !arr
+                    .iter()
+                    .any(|v| matches!(v, Value::String(s) if s == "null"))
+                {
+                    arr.push(Value::String("null".into()));
+                }
+            }
+            _ => {}
+        }
+    } else {
+        obj.insert(
+            "type".to_string(),
+            Value::Array(vec![Value::String("null".into())]),
+        );
+    }
+}
+
+/// Ensure the root schema for tool inputs is an object schema.
+fn force_object_schema(value: &mut Value) {
+    let Value::Object(map) = value else {
+        return;
+    };
+
+    let has_object_shape = map.contains_key("properties")
+        || map.contains_key("required")
+        || map.contains_key("additionalProperties");
+
+    match map.get_mut("type") {
+        Some(Value::String(ty)) => {
+            if ty != "object" && has_object_shape {
+                *ty = "object".to_string();
+            }
+        }
+        Some(Value::Array(types)) => {
+            let has_object = types
+                .iter()
+                .any(|v| matches!(v, Value::String(s) if s == "object"));
+            if has_object || has_object_shape {
+                map.insert("type".to_string(), Value::String("object".to_string()));
+            }
+        }
+        Some(_) => {
+            if has_object_shape {
+                map.insert("type".to_string(), Value::String("object".to_string()));
+            }
+        }
+        None => {
+            if has_object_shape {
+                map.insert("type".to_string(), Value::String("object".to_string()));
+            }
+        }
+    }
+
+    if matches!(map.get("type"), Some(Value::String(s)) if s == "object") {
+        map.entry("properties")
+            .or_insert_with(|| Value::Object(Default::default()));
     }
 }
 
