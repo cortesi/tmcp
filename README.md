@@ -65,6 +65,7 @@ struct WeatherParams {
 }
 
 #[derive(Debug, Serialize, ToolResponse)]
+/// Structured response for the weather tool.
 struct WeatherResponse {
     /// City name queried.
     city: String,
@@ -74,6 +75,7 @@ struct WeatherResponse {
     conditions: String,
 }
 
+/// Structured response for the ping tool.
 #[derive(Debug, Serialize, ToolResponse)]
 struct PingResponse {
     /// Ping response message.
@@ -113,8 +115,7 @@ impl WeatherServer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let server = Server::default().with_handler(WeatherServer::default);
-    server.serve_stdio().await?;
+    Server::new(WeatherServer::default).serve_stdio().await?;
     Ok(())
 }
 
