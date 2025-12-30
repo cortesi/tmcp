@@ -158,6 +158,19 @@ impl CallToolResult {
             .ok_or_else(|| DeError::custom("no text content in tool result"))?;
         serde_json::from_str(text)
     }
+
+    /// Deserialize the structured content into a typed value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is no structured content or deserialization fails.
+    pub fn structured_as<T: DeserializeOwned>(&self) -> StdResult<T, serde_json::Error> {
+        let value = self
+            .structured_content
+            .as_ref()
+            .ok_or_else(|| DeError::custom("no structured content in tool result"))?;
+        serde_json::from_value(value.clone())
+    }
 }
 
 /// Convert a response type into a tool result with structured content.

@@ -22,7 +22,7 @@ mod tests {
         b: f64,
     }
 
-    #[derive(Debug, Serialize, ToolResponse)]
+    #[derive(Debug, Serialize, ToolResponse, JsonSchema)]
     struct PingResponse {
         message: String,
     }

@@ -9,6 +9,7 @@ use serde::Serialize;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, ToSocketAddrs},
+    runtime::Builder,
     sync::{Mutex, broadcast, mpsc},
     task::JoinHandle,
 };
@@ -114,6 +115,14 @@ where
     pub async fn serve_stdio(self) -> Result<()> {
         let transport = Box::new(StdioTransport::new());
         self.serve(transport).await
+    }
+
+    /// Serve connections from stdin/stdout using an internal Tokio runtime.
+    ///
+    /// This is a convenience for binaries that aren't already running within a Tokio runtime.
+    pub fn serve_stdio_blocking(self) -> Result<()> {
+        let rt = Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(self.serve_stdio())
     }
 
     /// Serve using generic AsyncRead and AsyncWrite streams

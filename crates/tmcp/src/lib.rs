@@ -123,7 +123,7 @@ pub use error::{
 pub use schema::ToolResponse;
 pub use server::{Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root
-pub use tmcp_macros::{ToolResponse, mcp_server, tool};
+pub use tmcp_macros::{ToolResponse, mcp_server, tool, tool_params, tool_result};
 
 // Keep the full macros module available for internal use
 /// Re-exported macros module for internal use.

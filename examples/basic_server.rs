@@ -14,28 +14,30 @@
 //!   cargo run --example basic_server                    # Default to TCP mode on 127.0.0.1:3000
 
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
-use tmcp::{Result, Server, ServerCtx, ToolResponse, ToolResult, mcp_server, tool};
+use tmcp::{Result, Server, ToolResult, mcp_server, tool, tool_params, tool_result};
 use tokio::signal::ctrl_c;
 use tracing::info;
 use tracing_subscriber::fmt;
 
 /// Echo tool input parameters
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug)]
+#[tool_params]
 struct EchoParams {
     /// The message to echo back
     message: String,
 }
 
 /// Echo tool response payload.
-#[derive(Debug, Serialize, ToolResponse)]
+#[derive(Debug)]
+#[tool_result]
 struct EchoResponse {
     /// The echoed message.
     message: String,
 }
 
 /// Ping tool response payload.
-#[derive(Debug, Serialize, ToolResponse)]
+#[derive(Debug)]
+#[tool_result]
 struct PingResponse {
     /// Ping result message.
     message: String,
@@ -50,7 +52,7 @@ struct BasicServer {}
 impl BasicServer {
     #[tool]
     /// Echoes back the provided message
-    async fn echo(&self, _context: &ServerCtx, params: EchoParams) -> ToolResult<EchoResponse> {
+    async fn echo(&self, params: EchoParams) -> ToolResult<EchoResponse> {
         Ok(EchoResponse {
             message: params.message,
         })
@@ -58,7 +60,7 @@ impl BasicServer {
 
     #[tool]
     /// Respond with a simple pong
-    async fn ping(&self, _context: &ServerCtx) -> ToolResult<PingResponse> {
+    async fn ping(&self) -> ToolResult<PingResponse> {
         Ok(PingResponse {
             message: "pong".to_string(),
         })

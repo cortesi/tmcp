@@ -584,6 +584,22 @@ where
         })
     }
 
+    /// Call a tool and deserialize the structured content into a typed result.
+    ///
+    /// This is a convenience method for tools that return structured content.
+    pub async fn call_tool_structured<R: DeserializeOwned>(
+        &mut self,
+        name: impl Into<String> + Send,
+        arguments: impl Serialize + Send,
+    ) -> Result<R> {
+        let result = self.call_tool(name, arguments).await?;
+        result
+            .structured_as()
+            .map_err(|e| Error::JsonParse {
+                message: format!("Failed to parse tool structured content: {e}"),
+            })
+    }
+
     /// List available resources with optional pagination
     pub async fn list_resources(
         &mut self,
