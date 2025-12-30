@@ -130,6 +130,15 @@ pub struct ToolError {
     pub structured: Option<Value>,
 }
 
+/// Standard error code for invalid input parameters.
+pub const TOOL_ERROR_INVALID_INPUT: &str = "INVALID_INPUT";
+/// Standard error code for resource not found.
+pub const TOOL_ERROR_NOT_FOUND: &str = "NOT_FOUND";
+/// Standard error code for operation timeout.
+pub const TOOL_ERROR_TIMEOUT: &str = "TIMEOUT";
+/// Standard error code for internal errors.
+pub const TOOL_ERROR_INTERNAL: &str = "INTERNAL";
+
 impl ToolError {
     /// Build a new tool error with a code and message.
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
@@ -144,6 +153,26 @@ impl ToolError {
     pub fn with_structured(mut self, structured: Value) -> Self {
         self.structured = Some(structured);
         self
+    }
+
+    /// Create an invalid input error for validation failures.
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::new(TOOL_ERROR_INVALID_INPUT, message)
+    }
+
+    /// Create a not found error when a resource or target cannot be located.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(TOOL_ERROR_NOT_FOUND, message)
+    }
+
+    /// Create a timeout error when an operation exceeds its time limit.
+    pub fn timeout(message: impl Into<String>) -> Self {
+        Self::new(TOOL_ERROR_TIMEOUT, message)
+    }
+
+    /// Create an internal error for unexpected failures.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(TOOL_ERROR_INTERNAL, message)
     }
 }
 

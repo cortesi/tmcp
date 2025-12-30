@@ -116,7 +116,10 @@ pub use arguments::Arguments;
 pub use client::{Client, SpawnedServer};
 pub use connection::{ClientHandler, ServerHandler};
 pub use context::{ClientCtx, ServerCtx};
-pub use error::{Error, Result, ToolError, ToolResult};
+pub use error::{
+    Error, Result, TOOL_ERROR_INTERNAL, TOOL_ERROR_INVALID_INPUT, TOOL_ERROR_NOT_FOUND,
+    TOOL_ERROR_TIMEOUT, ToolError, ToolResult,
+};
 pub use schema::ToolResponse;
 pub use server::{Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root
