@@ -7,7 +7,7 @@ mod tests {
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use tmcp::{
-        Error, Result, ServerCtx, ServerHandler, mcp_server, schema::*,
+        Error, Result, ServerCtx, ServerHandler, ToolResponse, ToolResult, mcp_server, schema::*,
         testutils::TestServerContext, tool,
     };
 
@@ -20,6 +20,11 @@ mod tests {
     struct AddParams {
         a: f64,
         b: f64,
+    }
+
+    #[derive(Debug, Serialize, ToolResponse)]
+    struct PingResponse {
+        message: String,
     }
 
     #[derive(Debug, Default)]
@@ -38,6 +43,14 @@ mod tests {
         /// Add two numbers
         async fn add(&self, _ctx: &tmcp::ServerCtx, params: AddParams) -> Result<CallToolResult> {
             Ok(CallToolResult::new().with_text_content(format!("{}", params.a + params.b)))
+        }
+
+        #[tool]
+        /// Ping the server
+        async fn ping(&self, _ctx: &tmcp::ServerCtx) -> ToolResult<PingResponse> {
+            Ok(PingResponse {
+                message: "pong".to_string(),
+            })
         }
     }
 
@@ -70,7 +83,7 @@ mod tests {
 
         let result = server.list_tools(ctx.ctx(), None).await.unwrap();
 
-        assert_eq!(result.tools.len(), 2);
+        assert_eq!(result.tools.len(), 3);
         assert!(
             result
                 .tools
@@ -82,6 +95,12 @@ mod tests {
                 .tools
                 .iter()
                 .any(|t| t.name == "add" && t.description == Some("Add two numbers".to_string()))
+        );
+        assert!(
+            result
+                .tools
+                .iter()
+                .any(|t| t.name == "ping" && t.description == Some("Ping the server".to_string()))
         );
     }
 
@@ -116,6 +135,15 @@ mod tests {
             ContentBlock::Text(text) => assert_eq!(text.text, "6"),
             _ => panic!("Expected text content"),
         }
+
+        let result = server
+            .call_tool(ctx.ctx(), "ping".to_string(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({ "message": "pong" }))
+        );
     }
 
     #[tokio::test]

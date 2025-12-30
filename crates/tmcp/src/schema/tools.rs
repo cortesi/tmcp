@@ -5,7 +5,7 @@ use serde::{
     Deserialize, Serialize,
     de::{DeserializeOwned, Error as DeError},
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::*;
 use crate::macros::{with_basename, with_meta};
@@ -71,6 +71,19 @@ impl CallToolResult {
             structured_content: None,
             _meta: None,
         }
+    }
+
+    /// Create a tool result with structured content.
+    pub fn structured(content: impl Serialize) -> StdResult<Self, serde_json::Error> {
+        Ok(Self::new().with_structured_content(serde_json::to_value(content)?))
+    }
+
+    /// Create a tool error result with a structured error payload.
+    pub fn error(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new().mark_as_error().with_structured_content(json!({
+            "code": code,
+            "message": message.into(),
+        }))
     }
 
     /// Append a content item to the result.
@@ -144,6 +157,24 @@ impl CallToolResult {
             .text()
             .ok_or_else(|| DeError::custom("no text content in tool result"))?;
         serde_json::from_str(text)
+    }
+}
+
+/// Convert a response type into a tool result with structured content.
+pub trait ToolResponse {
+    /// Convert this response into a tool result.
+    fn into_call_tool_result(self) -> CallToolResult;
+}
+
+impl<T: ToolResponse> From<T> for CallToolResult {
+    fn from(value: T) -> Self {
+        value.into_call_tool_result()
+    }
+}
+
+impl ToolResponse for Value {
+    fn into_call_tool_result(self) -> CallToolResult {
+        CallToolResult::new().with_structured_content(self)
     }
 }
 
@@ -808,6 +839,28 @@ mod tests {
         // Invalid JSON
         let result = CallToolResult::new().with_text_content("not json");
         assert!(result.json::<Response>().is_err());
+    }
+
+    #[test]
+    fn test_call_tool_result_structured() {
+        #[derive(serde::Serialize)]
+        struct Payload {
+            value: i32,
+        }
+
+        let result = CallToolResult::structured(Payload { value: 42 }).unwrap();
+        assert_eq!(result.structured_content, Some(json!({ "value": 42 })));
+        assert_eq!(result.is_error, None);
+    }
+
+    #[test]
+    fn test_call_tool_result_error() {
+        let result = CallToolResult::error("BAD_INPUT", "oops");
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content,
+            Some(json!({ "code": "BAD_INPUT", "message": "oops" }))
+        );
     }
 
     #[test]

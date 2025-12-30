@@ -5,7 +5,7 @@
 //! 2. HTTP mode: listens on HTTP port 8080 (by default)
 //! 3. Stdio mode: communicates via stdin/stdout
 //!
-//! All modes provide a simple echo tool that can be called by clients.
+//! All modes provide a simple echo and ping tool that can be called by clients.
 //!
 //! Usage:
 //!   cargo run --example basic_server tcp [host] [port]  # TCP mode
@@ -15,7 +15,7 @@
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use tmcp::{Result, Server, ServerCtx, mcp_server, schema::*, tool};
+use tmcp::{Result, Server, ServerCtx, ToolResponse, ToolResult, mcp_server, tool};
 use tokio::signal::ctrl_c;
 use tracing::info;
 use tracing_subscriber::fmt;
@@ -27,17 +27,41 @@ struct EchoParams {
     message: String,
 }
 
-/// Basic server connection that provides an echo tool
+/// Echo tool response payload.
+#[derive(Debug, Serialize, ToolResponse)]
+struct EchoResponse {
+    /// The echoed message.
+    message: String,
+}
+
+/// Ping tool response payload.
+#[derive(Debug, Serialize, ToolResponse)]
+struct PingResponse {
+    /// Ping result message.
+    message: String,
+}
+
+/// Basic server connection that provides echo and ping tools
 #[derive(Debug, Default)]
 struct BasicServer {}
 
 #[mcp_server]
-/// Basic MCP server that provides an echo tool
+/// Basic MCP server that provides echo and ping tools
 impl BasicServer {
     #[tool]
     /// Echoes back the provided message
-    async fn echo(&self, _context: &ServerCtx, params: EchoParams) -> Result<CallToolResult> {
-        Ok(CallToolResult::new().with_text_content(params.message))
+    async fn echo(&self, _context: &ServerCtx, params: EchoParams) -> ToolResult<EchoResponse> {
+        Ok(EchoResponse {
+            message: params.message,
+        })
+    }
+
+    #[tool]
+    /// Respond with a simple pong
+    async fn ping(&self, _context: &ServerCtx) -> ToolResult<PingResponse> {
+        Ok(PingResponse {
+            message: "pong".to_string(),
+        })
     }
 }
 

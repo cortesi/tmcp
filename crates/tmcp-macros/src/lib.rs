@@ -9,10 +9,12 @@
 //! The macro supports customization through attributes:
 //! - `initialize_fn`: Specify a custom initialize function instead of using the default
 //!
-//! All tool methods have the following exact signature:  
+//! All tool methods must be async and have one of the following signatures:
 //!
 //! ```ignore
 //! async fn tool_name(&self, context: &ServerCtx, params: ToolParams) -> Result<schema::CallToolResult>
+//! async fn tool_name(&self, context: &ServerCtx, params: ToolParams) -> ToolResult
+//! async fn tool_name(&self, context: &ServerCtx) -> ToolResult
 //! ```
 //!
 //! The parameter struct (ToolParams in this example) must implement `schemars::JsonSchema` and
@@ -100,8 +102,30 @@ struct ToolMethod {
     name: String,
     /// Collected doc comments for the tool.
     docs: String,
-    /// Parameter type of the tool method.
-    params_type: syn::Type,
+    /// Parameter type metadata for the tool method.
+    params_kind: ParamsKind,
+    /// Tool return type kind for call routing.
+    return_kind: ToolReturnKind,
+}
+
+#[derive(Debug, Clone)]
+/// Parameter shape for a tool method.
+enum ParamsKind {
+    /// Tool takes no parameters.
+    None,
+    /// Tool takes unit parameters (`()`).
+    Unit,
+    /// Tool takes a typed parameter struct.
+    Typed(Box<syn::Type>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Return type shape for a tool method.
+enum ToolReturnKind {
+    /// Tool returns `Result<CallToolResult>` (tmcp::Result).
+    Result,
+    /// Tool returns `ToolResult`.
+    ToolResult,
 }
 
 #[derive(Debug)]
@@ -169,6 +193,47 @@ fn extract_doc_comment(attrs: &[syn::Attribute]) -> String {
     docs.join("\n")
 }
 
+/// Determine if the type is the unit `()`.
+fn is_unit_type(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Tuple(tuple) if tuple.elems.is_empty())
+}
+
+/// Determine the tool return type kind.
+fn parse_tool_return(output: &syn::ReturnType) -> Result<ToolReturnKind> {
+    let ty = match output {
+        syn::ReturnType::Type(_, ty) => ty.as_ref(),
+        _ => {
+            return Err(syn::Error::new(
+                output.span(),
+                "tool methods must return Result<schema::CallToolResult> or ToolResult",
+            ));
+        }
+    };
+
+    let syn::Type::Path(type_path) = ty else {
+        return Err(syn::Error::new(
+            ty.span(),
+            "tool methods must return Result<schema::CallToolResult> or ToolResult",
+        ));
+    };
+
+    let Some(segment) = type_path.path.segments.last() else {
+        return Err(syn::Error::new(
+            ty.span(),
+            "tool methods must return Result<schema::CallToolResult> or ToolResult",
+        ));
+    };
+
+    match segment.ident.to_string().as_str() {
+        "Result" => Ok(ToolReturnKind::Result),
+        "ToolResult" => Ok(ToolReturnKind::ToolResult),
+        _ => Err(syn::Error::new(
+            segment.ident.span(),
+            "tool methods must return Result<schema::CallToolResult> or ToolResult",
+        )),
+    }
+}
+
 /// Parse a tool method from an impl item if it has a #[tool] attribute.
 fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
     let has_tool_attr = method.attrs.iter().any(|attr| attr.path().is_ident("tool"));
@@ -190,10 +255,10 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
 
     // Check parameters
     let params: Vec<_> = method.sig.inputs.iter().collect();
-    if params.len() != 3 {
+    if params.len() != 2 && params.len() != 3 {
         return Err(syn::Error::new(
             method.sig.inputs.span(),
-            "tool methods must have exactly 3 parameters: &self, context: &ServerCtx, params: ParamsType",
+            "tool methods must have 2 or 3 parameters: &self, context: &ServerCtx, params: ParamsType",
         ));
     }
 
@@ -210,34 +275,33 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
         }
     }
 
-    // Extract params type (third parameter)
-    let params_type = match params[2] {
-        syn::FnArg::Typed(pat_type) => (*pat_type.ty).clone(),
-        _ => {
-            return Err(syn::Error::new(
-                params[2].span(),
-                "third parameter must be a typed parameter",
-            ));
+    let params_kind = if params.len() == 2 {
+        ParamsKind::None
+    } else {
+        // Extract params type (third parameter)
+        let params_type = match params[2] {
+            syn::FnArg::Typed(pat_type) => (*pat_type.ty).clone(),
+            _ => {
+                return Err(syn::Error::new(
+                    params[2].span(),
+                    "third parameter must be a typed parameter",
+                ));
+            }
+        };
+        if is_unit_type(&params_type) {
+            ParamsKind::Unit
+        } else {
+            ParamsKind::Typed(Box::new(params_type))
         }
     };
 
-    // Validate return type
-    match &method.sig.output {
-        syn::ReturnType::Type(_, _ty) => {
-            // We just check it exists, actual validation would be more complex
-        }
-        _ => {
-            return Err(syn::Error::new(
-                method.sig.output.span(),
-                "tool methods must return Result<schema::CallToolResult>",
-            ));
-        }
-    }
+    let return_kind = parse_tool_return(&method.sig.output)?;
 
     Ok(Some(ToolMethod {
         name,
         docs,
-        params_type,
+        params_kind,
+        return_kind,
     }))
 }
 
@@ -290,16 +354,48 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
     let tool_matches = info.tools.iter().map(|tool| {
         let name = &tool.name;
         let method = syn::Ident::new(name, proc_macro2::Span::call_site());
-        let params_type = &tool.params_type;
+        let (args_prelude, call_expr) = match &tool.params_kind {
+            ParamsKind::None => (
+                quote! { let _ = arguments; },
+                quote! { self.#method(context).await },
+            ),
+            ParamsKind::Unit => (
+                quote! { let _ = arguments; },
+                quote! { self.#method(context, ()).await },
+            ),
+            ParamsKind::Typed(params_type) => {
+                let params_type = params_type.as_ref();
+                (
+                    quote! {
+                        let args = arguments.ok_or_else(||
+                            tmcp::Error::InvalidParams("Missing arguments".to_string())
+                        )?;
+                        let params: #params_type = args.deserialize()
+                            .map_err(|e| tmcp::Error::InvalidParams(e.to_string()))?;
+                    },
+                    quote! { self.#method(context, params).await },
+                )
+            }
+        };
+
+        let call = match tool.return_kind {
+            ToolReturnKind::Result => quote! {
+                #args_prelude
+                #call_expr
+            },
+            ToolReturnKind::ToolResult => quote! {
+                #args_prelude
+                let result = #call_expr;
+                Ok(match result {
+                    Ok(value) => value.into(),
+                    Err(err) => err.into(),
+                })
+            },
+        };
 
         quote! {
             #name => {
-                let args = arguments.ok_or_else(||
-                    tmcp::Error::InvalidParams("Missing arguments".to_string())
-                )?;
-                let params: #params_type = args.deserialize()
-                    .map_err(|e| tmcp::Error::InvalidParams(e.to_string()))?;
-                self.#method(context, params).await
+                #call
             }
         }
     });
@@ -325,11 +421,19 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
     let tools = info.tools.iter().map(|tool| {
         let name = &tool.name;
         let description = &tool.docs;
-        let params_type = &tool.params_type;
+        let schema = match tool.params_kind {
+            ParamsKind::None | ParamsKind::Unit => {
+                quote! { tmcp::schema::ToolSchema::empty() }
+            }
+            ParamsKind::Typed(ref params_type) => {
+                let params_type = params_type.as_ref();
+                quote! { tmcp::schema::ToolSchema::from_json_schema::<#params_type>() }
+            }
+        };
 
         quote! {
             {
-                tmcp::schema::Tool::new(#name, tmcp::schema::ToolSchema::from_json_schema::<#params_type>())
+                tmcp::schema::Tool::new(#name, #schema)
                     .with_description(#description)
             }
         }
@@ -532,6 +636,34 @@ pub fn tool(
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     input
+}
+
+/// Derive `ToolResponse` by encoding the type as structured content.
+#[proc_macro_derive(ToolResponse)]
+pub fn derive_tool_response(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    let ident = &input.ident;
+    let mut generics = input.generics.clone();
+    {
+        let where_clause = generics.make_where_clause();
+        where_clause
+            .predicates
+            .push(syn::parse_quote! { Self: ::serde::Serialize });
+    }
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let expanded = quote! {
+        impl #impl_generics ::tmcp::ToolResponse for #ident #ty_generics #where_clause {
+            fn into_call_tool_result(self) -> ::tmcp::schema::CallToolResult {
+                match ::tmcp::schema::CallToolResult::structured(self) {
+                    Ok(result) => result,
+                    Err(err) => ::tmcp::schema::CallToolResult::error("INTERNAL", err.to_string()),
+                }
+            }
+        }
+    };
+
+    expanded.into()
 }
 
 /// Adds a _meta field to a struct with proper serde attributes and builder methods.
@@ -765,7 +897,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("exactly 3 parameters")
+                .contains("2 or 3 parameters")
         );
     }
 
@@ -822,6 +954,34 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_tool_method_no_params() {
+        let method: syn::ImplItemFn = syn::parse_quote! {
+            #[tool]
+            async fn test_tool(&self, _context: &ServerCtx) -> ToolResult {
+                Ok(schema::CallToolResult::new())
+            }
+        };
+
+        let tool = parse_tool_method(&method).unwrap().unwrap();
+        assert!(matches!(tool.params_kind, ParamsKind::None));
+        assert_eq!(tool.return_kind, ToolReturnKind::ToolResult);
+    }
+
+    #[test]
+    fn test_parse_tool_method_unit_params() {
+        let method: syn::ImplItemFn = syn::parse_quote! {
+            #[tool]
+            async fn test_tool(&self, _context: &ServerCtx, _params: ()) -> ToolResult {
+                Ok(schema::CallToolResult::new())
+            }
+        };
+
+        let tool = parse_tool_method(&method).unwrap().unwrap();
+        assert!(matches!(tool.params_kind, ParamsKind::Unit));
+        assert_eq!(tool.return_kind, ToolReturnKind::ToolResult);
+    }
+
+    #[test]
     fn test_generate_call_tool() {
         let info = ServerInfo {
             struct_name: "TestServer".to_string(),
@@ -830,12 +990,14 @@ mod tests {
                 ToolMethod {
                     name: "echo".to_string(),
                     docs: "Echo tool".to_string(),
-                    params_type: syn::parse_quote! { EchoParams },
+                    params_kind: ParamsKind::Typed(Box::new(syn::parse_quote! { EchoParams })),
+                    return_kind: ToolReturnKind::Result,
                 },
                 ToolMethod {
                     name: "ping".to_string(),
                     docs: "Ping tool".to_string(),
-                    params_type: syn::parse_quote! { PingParams },
+                    params_kind: ParamsKind::Typed(Box::new(syn::parse_quote! { PingParams })),
+                    return_kind: ToolReturnKind::Result,
                 },
             ],
         };
@@ -859,7 +1021,8 @@ mod tests {
             tools: vec![ToolMethod {
                 name: "echo".to_string(),
                 docs: "Echo tool".to_string(),
-                params_type: syn::parse_quote! { EchoParams },
+                params_kind: ParamsKind::Typed(Box::new(syn::parse_quote! { EchoParams })),
+                return_kind: ToolReturnKind::Result,
             }],
         };
 

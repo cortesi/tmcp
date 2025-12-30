@@ -35,13 +35,23 @@
 //! - Provides sensible defaults for `initialize`
 //!
 //! ```ignore
-//! use tmcp::{mcp_server, tool, Result};
+//! use schemars::JsonSchema;
+//! use serde::Deserialize;
+//! use tmcp::{mcp_server, schema::CallToolResult, tool, ServerCtx, ToolResult};
+//!
+//! #[derive(Debug, Deserialize, JsonSchema)]
+//! struct GreetParams {
+//!     name: String,
+//! }
 //!
 //! #[mcp_server]
 //! impl MyServer {
 //!     #[tool]
-//!     async fn greet(&self, name: String) -> Result<String> {
-//!         Ok(format!("Hello, {name}!"))
+//!     async fn greet(&self, _ctx: &ServerCtx, params: GreetParams) -> ToolResult {
+//!         Ok(CallToolResult::new().with_text_content(format!(
+//!             "Hello, {}!",
+//!             params.name
+//!         )))
 //!     }
 //! }
 //! ```
@@ -106,10 +116,11 @@ pub use arguments::Arguments;
 pub use client::{Client, SpawnedServer};
 pub use connection::{ClientHandler, ServerHandler};
 pub use context::{ClientCtx, ServerCtx};
-pub use error::{Error, Result};
+pub use error::{Error, Result, ToolError, ToolResult};
+pub use schema::ToolResponse;
 pub use server::{Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root
-pub use tmcp_macros::{mcp_server, tool};
+pub use tmcp_macros::{ToolResponse, mcp_server, tool};
 
 // Keep the full macros module available for internal use
 /// Re-exported macros module for internal use.

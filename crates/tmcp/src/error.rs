@@ -1,10 +1,11 @@
 use std::{io, result::Result as StdResult};
 
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::schema::{
-    ErrorObject, INVALID_PARAMS, INVALID_REQUEST, JSONRPC_VERSION, JSONRPCErrorResponse,
-    METHOD_NOT_FOUND, PARSE_ERROR, RequestId,
+    CallToolResult, ErrorObject, INVALID_PARAMS, INVALID_REQUEST, JSONRPC_VERSION,
+    JSONRPCErrorResponse, METHOD_NOT_FOUND, PARSE_ERROR, RequestId,
 };
 
 #[derive(Error, Debug, Clone)]
@@ -117,6 +118,45 @@ pub enum Error {
     },
 }
 
+#[derive(Debug, Clone, Error)]
+/// Error type for tool calls that should be surfaced as tool results.
+#[error("{code}: {message}")]
+pub struct ToolError {
+    /// Error code identifier for the tool failure.
+    pub code: &'static str,
+    /// Human-readable error message.
+    pub message: String,
+    /// Optional structured payload to return with the error.
+    pub structured: Option<Value>,
+}
+
+impl ToolError {
+    /// Build a new tool error with a code and message.
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            structured: None,
+        }
+    }
+
+    /// Attach structured content to the tool error.
+    pub fn with_structured(mut self, structured: Value) -> Self {
+        self.structured = Some(structured);
+        self
+    }
+}
+
+impl From<ToolError> for CallToolResult {
+    fn from(err: ToolError) -> Self {
+        let mut result = Self::error(err.code, err.message);
+        if let Some(structured) = err.structured {
+            result = result.with_structured_content(structured);
+        }
+        result
+    }
+}
+
 impl Error {
     /// Create a HandlerError with type context
     pub fn handler_error(handler_type: impl Into<String>, message: impl Into<String>) -> Self {
@@ -190,3 +230,6 @@ impl From<serde_json::Error> for Error {
 
 /// Result alias using the crate error type.
 pub type Result<T> = StdResult<T, Error>;
+
+/// Result alias for tool calls that return structured tool errors.
+pub type ToolResult<T = CallToolResult> = StdResult<T, ToolError>;
