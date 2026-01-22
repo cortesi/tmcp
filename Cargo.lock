@@ -2101,7 +2101,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tmcp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2136,7 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "tmcp-examples"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "tmcp-macros"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "heck",
  "pretty_assertions",

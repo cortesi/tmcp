@@ -543,8 +543,6 @@ impl ToolSchema {
             serde_json::to_value(&schema).unwrap_or_else(|_| Value::Object(Default::default()));
         if let Some(obj) = value.as_object_mut() {
             obj.remove("$schema");
-            obj.remove("$defs");
-            obj.remove("definitions");
         }
         simplify_schema_value(&mut value);
         force_object_schema(&mut value);
@@ -794,6 +792,35 @@ fn force_object_schema(value: &mut Value) {
 mod tests {
     use super::*;
 
+    fn collect_refs(value: &Value, refs: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(Value::String(reference)) = map.get("$ref") {
+                    refs.push(reference.clone());
+                }
+                for entry in map.values() {
+                    collect_refs(entry, refs);
+                }
+            }
+            Value::Array(items) => {
+                for entry in items {
+                    collect_refs(entry, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn ref_target_exists(schema: &Value, reference: &str) -> bool {
+        let Some(pointer) = reference.strip_prefix('#') else {
+            return true;
+        };
+        if pointer.is_empty() {
+            return true;
+        }
+        schema.pointer(pointer).is_some()
+    }
+
     #[test]
     fn test_call_tool_result_text() {
         // Empty result returns None
@@ -902,6 +929,36 @@ mod tests {
         // Description is extracted from the type's doc comment
         // (schemars includes doc comments in the description field)
         // Note: schemars may or may not include this depending on version/config
+    }
+
+    #[test]
+    fn test_tool_schema_keeps_ref_definitions() {
+        use schemars::JsonSchema;
+
+        #[derive(JsonSchema)]
+        struct Node {
+            value: i32,
+            next: Option<Box<Self>>,
+        }
+
+        let schema = ToolSchema::from_json_schema::<Node>();
+        let value = schema.as_value();
+        let mut refs = Vec::new();
+        collect_refs(value, &mut refs);
+        assert!(!refs.is_empty(), "expected schema to contain $ref entries");
+        for reference in refs {
+            assert!(
+                ref_target_exists(value, &reference),
+                "missing schema definition for {reference}"
+            );
+        }
+
+        let node = Node {
+            value: 1,
+            next: None,
+        };
+        let _ = node.value;
+        let _ = node.next;
     }
 
     #[test]
