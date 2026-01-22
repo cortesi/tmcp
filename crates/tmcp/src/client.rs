@@ -593,11 +593,9 @@ where
         arguments: impl Serialize + Send,
     ) -> Result<R> {
         let result = self.call_tool(name, arguments).await?;
-        result
-            .structured_as()
-            .map_err(|e| Error::JsonParse {
-                message: format!("Failed to parse tool structured content: {e}"),
-            })
+        result.structured_as().map_err(|e| Error::JsonParse {
+            message: format!("Failed to parse tool structured content: {e}"),
+        })
     }
 
     /// List available resources with optional pagination

@@ -9,6 +9,7 @@ use oauth2::{
         BasicClient, BasicErrorResponse, BasicRevocationErrorResponse,
         BasicTokenIntrospectionResponse, BasicTokenResponse,
     },
+    reqwest::Client,
 };
 use serde::Deserialize;
 use tokio::{
@@ -223,7 +224,7 @@ impl OAuth2Client {
         }
 
         let token_result = token_request
-            .request_async(&reqwest::Client::new())
+            .request_async(&Client::new())
             .await
             .map_err(|e| {
                 // Try to extract OAuth error details from the response
@@ -302,7 +303,7 @@ impl OAuth2Client {
         }
 
         let token_result = refresh_request
-            .request_async(&reqwest::Client::new())
+            .request_async(&Client::new())
             .await
             .map_err(|e| Error::AuthorizationFailed(format!("Token refresh failed: {e}")))?;
 

@@ -9,7 +9,7 @@ mod tests {
 
     use async_trait::async_trait;
     use rmcp::{ServiceExt, model as rmcp_model};
-    use rmcp_model::{CallToolRequestParam, PaginatedRequestParam};
+    use rmcp_model::{CallToolRequestParams, InitializeRequestParams, PaginatedRequestParams};
     use serde_json::json;
     use tmcp::{
         Arguments, Client, Error, Result, Server, ServerCtx, ServerHandler, schema::*,
@@ -127,9 +127,11 @@ mod tests {
         args.insert("message".to_string(), json!("Hello from rmcp!"));
 
         let result = client
-            .call_tool(rmcp_model::CallToolRequestParam {
+            .call_tool(rmcp_model::CallToolRequestParams {
+                meta: None,
                 name: "echo".into(),
                 arguments: Some(args),
+                task: None,
             })
             .await
             .unwrap();
@@ -171,7 +173,7 @@ mod tests {
         impl ServerHandler for TestRmcpServer {
             async fn initialize(
                 &self,
-                _request: rmcp_model::InitializeRequestParam,
+                _request: InitializeRequestParams,
                 _ctx: RequestContext<RoleServer>,
             ) -> StdResult<rmcp_model::InitializeResult, rmcp::ErrorData> {
                 Ok(rmcp_model::InitializeResult {
@@ -190,7 +192,7 @@ mod tests {
 
             async fn list_tools(
                 &self,
-                _params: Option<PaginatedRequestParam>,
+                _params: Option<PaginatedRequestParams>,
                 _ctx: RequestContext<RoleServer>,
             ) -> StdResult<rmcp_model::ListToolsResult, rmcp::ErrorData> {
                 Ok(rmcp_model::ListToolsResult {
@@ -226,7 +228,7 @@ mod tests {
 
             async fn call_tool(
                 &self,
-                params: CallToolRequestParam,
+                params: CallToolRequestParams,
                 _ctx: RequestContext<RoleServer>,
             ) -> StdResult<rmcp_model::CallToolResult, rmcp::ErrorData> {
                 if params.name == "reverse" {

@@ -3,7 +3,9 @@
 use serde_json::json;
 use tmcp::{
     Result, Server, ServerCtx, ToolError, ToolResult, mcp_server,
-    schema::{ClientCapabilities, Implementation, InitializeResult, LoggingLevel, ServerNotification},
+    schema::{
+        ClientCapabilities, Implementation, InitializeResult, LoggingLevel, ServerNotification,
+    },
     tool, tool_params, tool_result,
 };
 
@@ -81,10 +83,7 @@ impl WeatherServer {
     // The doc comment becomes the tool's description in the MCP schema.
     #[tool]
     /// Get current weather for a city
-    async fn get_weather(
-        &self,
-        params: WeatherParams,
-    ) -> ToolResult<WeatherResponse> {
+    async fn get_weather(&self, params: WeatherParams) -> ToolResult<WeatherResponse> {
         // Simulate weather API call
         let temperature = 22.5;
         let conditions = "Partly cloudy";

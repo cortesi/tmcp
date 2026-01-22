@@ -108,7 +108,10 @@ use std::result::Result as StdResult;
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Expr, ExprLit, ImplItem, ItemImpl, Lit, Meta, parse::Parse, spanned::Spanned};
+use syn::{
+    Expr, ExprLit, ImplItem, ItemImpl, Lit, Meta, parse::Parse, punctuated::Punctuated,
+    spanned::Spanned,
+};
 
 /// Internal result type for macro parsing.
 type Result<T> = StdResult<T, syn::Error>;
@@ -149,28 +152,41 @@ enum ToolReturnKind {
     /// Tool returns `ToolResult`.
     ToolResult {
         /// Optional output type for `ToolResult<T>`.
-        output: Option<syn::Type>,
+        output: Box<Option<syn::Type>>,
     },
 }
 
 #[derive(Debug, Default, Clone)]
 /// Metadata parsed from a #[tool(...)] attribute.
 struct ToolAttrs {
+    /// Optional display title for the tool.
     title: Option<String>,
+    /// Whether the tool should be treated as read-only.
     read_only: Option<bool>,
+    /// Whether the tool is destructive.
     destructive: Option<bool>,
+    /// Whether the tool is idempotent.
     idempotent: Option<bool>,
+    /// Whether the tool can access open-world resources.
     open_world: Option<bool>,
+    /// Task support requirements for the tool.
     task_support: Option<ToolTaskSupport>,
+    /// Optional output schema override.
     output_schema: Option<syn::Type>,
+    /// Icon URLs for the tool.
     icons: Vec<String>,
+    /// Whether to apply default argument handling.
     defaults: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Whether task support is forbidden, optional, or required.
 enum ToolTaskSupport {
+    /// Task metadata must not be provided.
     Forbidden,
+    /// Task metadata may be provided.
     Optional,
+    /// Task metadata must be provided.
     Required,
 }
 
@@ -240,14 +256,20 @@ impl Parse for ServerMacroArgs {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Strategy for selecting the protocol version to use.
 enum ProtocolVersionStrategy {
+    /// Always use the latest supported protocol version.
     Latest,
+    /// Use the client's requested protocol version.
     Client,
 }
 
+/// Parse the protocol version strategy from a literal or identifier.
 fn parse_protocol_version_strategy(expr: &Expr) -> Result<ProtocolVersionStrategy> {
     let value = match expr {
-        Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) => s.value(),
+        Expr::Lit(ExprLit {
+            lit: Lit::Str(s), ..
+        }) => s.value(),
         Expr::Path(path) => path
             .path
             .segments
@@ -310,6 +332,7 @@ fn is_unit_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Tuple(tuple) if tuple.elems.is_empty())
 }
 
+/// Check whether a type is `schema::CallToolResult`.
 fn is_call_tool_result_type(ty: &syn::Type) -> bool {
     match ty {
         syn::Type::Path(type_path) => type_path
@@ -322,25 +345,36 @@ fn is_call_tool_result_type(ty: &syn::Type) -> bool {
     }
 }
 
+/// Parse a boolean literal from an expression.
 fn parse_bool_lit(expr: &Expr) -> Result<bool> {
-    if let Expr::Lit(ExprLit { lit: Lit::Bool(b), .. }) = expr {
+    if let Expr::Lit(ExprLit {
+        lit: Lit::Bool(b), ..
+    }) = expr
+    {
         Ok(b.value())
     } else {
         Err(syn::Error::new(expr.span(), "expected a boolean literal"))
     }
 }
 
+/// Parse a string literal from an expression.
 fn parse_string_lit(expr: &Expr) -> Result<String> {
-    if let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = expr {
+    if let Expr::Lit(ExprLit {
+        lit: Lit::Str(s), ..
+    }) = expr
+    {
         Ok(s.value())
     } else {
         Err(syn::Error::new(expr.span(), "expected a string literal"))
     }
 }
 
+/// Parse task support value from a string literal or identifier.
 fn parse_tool_task_support(expr: &Expr) -> Result<ToolTaskSupport> {
     let value = match expr {
-        Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) => s.value(),
+        Expr::Lit(ExprLit {
+            lit: Lit::Str(s), ..
+        }) => s.value(),
         Expr::Path(path) => path
             .path
             .segments
@@ -365,13 +399,10 @@ fn parse_tool_task_support(expr: &Expr) -> Result<ToolTaskSupport> {
     }
 }
 
+/// Parse icon strings from an attribute expression.
 fn parse_icons_from_expr(expr: &Expr) -> Result<Vec<String>> {
     match expr {
-        Expr::Array(array) => array
-            .elems
-            .iter()
-            .map(parse_string_lit)
-            .collect(),
+        Expr::Array(array) => array.elems.iter().map(parse_string_lit).collect(),
         _ => Err(syn::Error::new(
             expr.span(),
             "icons must be an array of string literals",
@@ -379,6 +410,7 @@ fn parse_icons_from_expr(expr: &Expr) -> Result<Vec<String>> {
     }
 }
 
+/// Parse tool metadata from a #[tool(...)] attribute.
 fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
     let mut tool_attrs = ToolAttrs::default();
     let mut found = false;
@@ -390,10 +422,10 @@ fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
         found = true;
 
         let metas = match &attr.meta {
-            Meta::Path(_) => syn::punctuated::Punctuated::<Meta, syn::Token![,]>::new(),
-            Meta::List(list) => list.parse_args_with(
-                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
-            )?,
+            Meta::Path(_) => Punctuated::<Meta, syn::Token![,]>::new(),
+            Meta::List(list) => {
+                list.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)?
+            }
             Meta::NameValue(meta) => {
                 return Err(syn::Error::new(
                     meta.span(),
@@ -416,7 +448,7 @@ fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
                                 return Err(syn::Error::new(
                                     ident.span(),
                                     format!("Unknown #[tool] flag: {ident}"),
-                                ))
+                                ));
                             }
                         }
                     } else {
@@ -488,16 +520,14 @@ fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
                             return Err(syn::Error::new(
                                 ident.span(),
                                 format!("Unknown #[tool] argument: {ident}"),
-                            ))
+                            ));
                         }
                     }
                 }
                 Meta::List(list) => {
                     if list.path.is_ident("icons") {
                         let entries = list
-                            .parse_args_with(
-                                syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated,
-                            )
+                            .parse_args_with(Punctuated::<Expr, syn::Token![,]>::parse_terminated)
                             .map_err(|_| {
                                 syn::Error::new(
                                     list.span(),
@@ -564,7 +594,9 @@ fn parse_tool_return(output: &syn::ReturnType) -> Result<ToolReturnKind> {
                 }),
                 _ => None,
             };
-            Ok(ToolReturnKind::ToolResult { output })
+            Ok(ToolReturnKind::ToolResult {
+                output: Box::new(output),
+            })
         }
         _ => Err(syn::Error::new(
             segment.ident.span(),
@@ -895,7 +927,7 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
             .output_schema
             .clone()
             .or_else(|| match &tool.return_kind {
-                ToolReturnKind::ToolResult { output } => output.clone(),
+                ToolReturnKind::ToolResult { output } => output.as_ref().clone(),
                 _ => None,
             })
             .filter(|ty| !is_call_tool_result_type(ty));
@@ -1161,6 +1193,7 @@ pub fn tool(
     input
 }
 
+/// Collect derive identifiers from attributes.
 fn collect_derive_idents(attrs: &[syn::Attribute]) -> Vec<String> {
     let mut idents = Vec::new();
     for attr in attrs {
@@ -1168,12 +1201,14 @@ fn collect_derive_idents(attrs: &[syn::Attribute]) -> Vec<String> {
             continue;
         }
         let derive_args = attr
-            .parse_args_with(
-                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
-            )
+            .parse_args_with(Punctuated::<syn::Path, syn::Token![,]>::parse_terminated)
             .unwrap_or_default();
         for path in derive_args {
-            if let Some(ident) = path.segments.last().map(|segment| segment.ident.to_string()) {
+            if let Some(ident) = path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+            {
                 idents.push(ident);
             }
         }
@@ -1181,15 +1216,19 @@ fn collect_derive_idents(attrs: &[syn::Attribute]) -> Vec<String> {
     idents
 }
 
+/// Add derive attributes from the provided paths if they are missing.
 fn add_missing_derives(item: &mut syn::DeriveInput, derive_paths: &[syn::Path]) {
     let existing = collect_derive_idents(&item.attrs);
     let mut missing = Vec::new();
 
     for path in derive_paths {
-        if let Some(ident) = path.segments.last().map(|segment| segment.ident.to_string()) {
-            if !existing.iter().any(|e| e == &ident) {
-                missing.push(path.clone());
-            }
+        if let Some(ident) = path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+            && !existing.iter().any(|e| e == &ident)
+        {
+            missing.push(path.clone());
         }
     }
 
@@ -1491,10 +1530,12 @@ mod tests {
 
         let result = parse_tool_method(&method);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("second parameter must be &ServerCtx"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("second parameter must be &ServerCtx")
+        );
     }
 
     #[test]
@@ -1560,7 +1601,10 @@ mod tests {
 
         let tool = parse_tool_method(&method).unwrap().unwrap();
         assert!(matches!(tool.params_kind, ParamsKind::None));
-        assert!(matches!(tool.return_kind, ToolReturnKind::ToolResult { .. }));
+        assert!(matches!(
+            tool.return_kind,
+            ToolReturnKind::ToolResult { .. }
+        ));
     }
 
     #[test]
@@ -1574,7 +1618,10 @@ mod tests {
 
         let tool = parse_tool_method(&method).unwrap().unwrap();
         assert!(matches!(tool.params_kind, ParamsKind::Unit));
-        assert!(matches!(tool.return_kind, ToolReturnKind::ToolResult { .. }));
+        assert!(matches!(
+            tool.return_kind,
+            ToolReturnKind::ToolResult { .. }
+        ));
     }
 
     #[test]
