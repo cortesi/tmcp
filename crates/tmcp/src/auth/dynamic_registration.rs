@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::discovery::AuthorizationDiscoveryClient;
 use crate::error::Error;
 
 /// Client metadata for dynamic registration as per RFC7591
@@ -242,35 +243,11 @@ impl DynamicRegistrationClient {
         &self,
         issuer_url: &str,
     ) -> Result<Option<String>, Error> {
-        // OAuth 2.0 Authorization Server Metadata (RFC8414)
-        let metadata_url = if issuer_url.ends_with('/') {
-            format!("{issuer_url}.well-known/oauth-authorization-server")
-        } else {
-            format!("{issuer_url}/.well-known/oauth-authorization-server")
-        };
-
-        let response = self
-            .http_client
-            .get(&metadata_url)
-            .send()
-            .await
-            .map_err(|e| Error::Transport(format!("Failed to fetch OAuth metadata: {e}")))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            return Err(Error::AuthorizationFailed(format!(
-                "Metadata request failed with status: {status}"
-            )));
-        }
-
-        let metadata: serde_json::Value = response.json().await.map_err(|e| {
-            Error::InvalidConfiguration(format!("Failed to parse OAuth metadata: {e}"))
-        })?;
-
-        Ok(metadata
-            .get("registration_endpoint")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()))
+        let discovery_client = AuthorizationDiscoveryClient::new();
+        let metadata = discovery_client
+            .discover_authorization_server_metadata(issuer_url)
+            .await?;
+        Ok(metadata.registration_endpoint)
     }
 }
 

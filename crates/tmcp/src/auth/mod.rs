@@ -23,6 +23,11 @@
 //! - Support for protected registration endpoints
 //! - Fallback mechanisms for manual registration
 //!
+//! ### Discovery
+//! - Protected resource metadata discovery (RFC 9728) with `WWW-Authenticate` handling
+//! - Authorization server discovery via RFC 8414 and OpenID Connect Discovery
+//! - Client ID metadata documents for HTTPS client identifiers
+//!
 //! ### Browser-based Authentication Flow
 //! - Built-in OAuth callback server for handling browser redirects
 //! - Automatic browser opening for user authorization
@@ -150,13 +155,21 @@
 //! - OAuth 2.0 PKCE (RFC 7636)
 //! - OAuth 2.0 Dynamic Client Registration (RFC 7591)
 //! - OAuth 2.0 Authorization Server Metadata (RFC 8414)
+//! - OAuth 2.0 Protected Resource Metadata (RFC 9728)
+//! - OpenID Connect Discovery
 //! - Model Context Protocol Authorization Specification
 
+/// OAuth 2.0 discovery helpers.
+mod discovery;
 /// OAuth 2.0 Dynamic Client Registration support.
 mod dynamic_registration;
 /// OAuth 2.0 client implementation and callback server.
 mod oauth_client;
 
+pub use discovery::{
+    AuthorizationDiscoveryClient, AuthorizationServerDiscovery, AuthorizationServerMetadata,
+    ClientIdMetadataDocument, ProtectedResourceDiscovery, ProtectedResourceMetadata,
+};
 pub use dynamic_registration::{
     ClientMetadata, ClientRegistrationResponse, DynamicRegistrationClient, RegistrationError,
 };

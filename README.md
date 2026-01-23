@@ -35,9 +35,24 @@ both client and server roles with async/await APIs.
   - Automatic token refresh
   - MCP-specific `resource` parameter support
   - Built-in callback server for browser flows
+  - Protected resource metadata discovery (RFC 9728)
+  - Authorization server discovery (RFC 8414 / OpenID Connect)
+  - Client ID metadata documents for HTTPS client IDs
 - **Async/Await**: Built on Tokio for high-performance async operations
 
 **Note**: Batch operations in the previous protocol version are not supported.
+
+---
+
+## OAuth discovery flow
+
+When a protected resource challenges a request, inspect any `WWW-Authenticate` header for a
+`resource_metadata` value. Fetch protected resource metadata from that URL, or fall back to
+`/.well-known/oauth-protected-resource` (with optional path suffix) when no challenge is provided.
+Use the advertised authorization server issuers to resolve RFC 8414 or OpenID Connect discovery
+documents, then use those endpoints for authorization and registration. If the client identifier
+is an HTTPS URL, fetch the client ID metadata document at that URL to obtain redirect URIs and
+additional client settings.
 
 ---
 
