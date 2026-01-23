@@ -26,7 +26,7 @@ both client and server roles with async/await APIs.
 
 ## Features
 
-- **Full MCP Protocol Support**: Implements the latest MCP specification (2025-06-18)
+- **Full MCP Protocol Support**: Implements the latest MCP specification (2025-11-25)
 - **Client & Server**: Build both MCP clients and servers with ergonomic APIs
 - **Multiple Transports**: TCP/IP and stdio transport layers
 - **OAuth 2.0 Authentication**: Complete OAuth 2.0 support including:
