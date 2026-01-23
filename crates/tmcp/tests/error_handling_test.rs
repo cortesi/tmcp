@@ -7,7 +7,7 @@
 mod tests {
     use std::collections::HashMap;
 
-    use tmcp::{Arguments, Error, Result, ServerCtx, ServerHandler, schema, testutils};
+    use tmcp::{Arguments, Error, Result, ServerCtx, ServerHandler, ToolError, schema, testutils};
     use tokio::sync::broadcast;
 
     fn create_test_context() -> ServerCtx {
@@ -53,7 +53,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_invalid_params() {
+    async fn test_tool_validation_errors() {
         // Test parameter validation in tools_call
         #[derive(Default)]
         struct ConnectionWithValidation;
@@ -105,11 +105,12 @@ mod tests {
                 }
 
                 // Validate arguments
-                let args = arguments
-                    .ok_or_else(|| Error::InvalidParams("Missing arguments".to_string()))?;
+                let Some(args) = arguments else {
+                    return Ok(ToolError::invalid_input("Missing arguments").into());
+                };
 
                 if args.get_value("required_param").is_none() {
-                    return Err(Error::InvalidParams("Missing required_param".to_string()));
+                    return Ok(ToolError::invalid_input("Missing required_param").into());
                 }
 
                 Ok(schema::CallToolResult::new().with_text_content("Success"))
@@ -122,8 +123,17 @@ mod tests {
         let context = create_test_context();
         let result = conn
             .call_tool(&context, "test_tool".to_string(), None, None)
-            .await;
-        assert!(matches!(result, Err(Error::InvalidParams(_))));
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.get("code"))
+                .and_then(|value| value.as_str()),
+            Some("INVALID_INPUT")
+        );
 
         // Test 2: Call with empty object (missing required param)
         let context = create_test_context();
@@ -134,13 +144,18 @@ mod tests {
                 Some(HashMap::<String, serde_json::Value>::new().into()),
                 None,
             )
-            .await;
-        match result {
-            Err(Error::InvalidParams(msg)) => {
-                assert!(msg.contains("required_param"), "Error was: {msg}");
-            }
-            _ => panic!("Expected InvalidParams error"),
-        }
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.get("message"))
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value.contains("required_param")),
+            "Error was: {result:?}"
+        );
 
         // Test 3: Call with correct parameters should succeed
         let context = create_test_context();

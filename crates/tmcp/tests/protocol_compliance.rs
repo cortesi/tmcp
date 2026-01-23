@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use serde_json::json;
-use tmcp::{Arguments, Error, Result, ServerCtx, ServerHandler, schema::*, testutils};
+use tmcp::{Arguments, Error, Result, ServerCtx, ServerHandler, ToolError, schema::*, testutils};
 
 /// Test connection implementation with echo and add tools
 struct TestConnection {
@@ -100,24 +100,30 @@ impl ServerHandler for TestConnection {
     ) -> Result<CallToolResult> {
         match name.as_str() {
             "echo" => {
-                let args = arguments
-                    .ok_or_else(|| Error::InvalidParams("echo: Missing arguments".to_string()))?;
-                let message = args.get_string("message").ok_or_else(|| {
-                    Error::InvalidParams("echo: Missing message parameter".to_string())
-                })?;
+                let Some(args) = arguments else {
+                    return Ok(ToolError::invalid_input("echo: Missing arguments").into());
+                };
+                let Some(message) = args.get_string("message") else {
+                    return Ok(ToolError::invalid_input("echo: Missing message parameter").into());
+                };
 
                 Ok(CallToolResult::new().with_text_content(message))
             }
             "add" => {
-                let args = arguments
-                    .ok_or_else(|| Error::InvalidParams("add: Missing arguments".to_string()))?;
+                let Some(args) = arguments else {
+                    return Ok(ToolError::invalid_input("add: Missing arguments").into());
+                };
 
-                let a: f64 = args.get("a").ok_or_else(|| {
-                    Error::InvalidParams("add: Missing or invalid 'a' parameter".to_string())
-                })?;
-                let b: f64 = args.get("b").ok_or_else(|| {
-                    Error::InvalidParams("add: Missing or invalid 'b' parameter".to_string())
-                })?;
+                let Some(a) = args.get::<f64>("a") else {
+                    return Ok(
+                        ToolError::invalid_input("add: Missing or invalid 'a' parameter").into(),
+                    );
+                };
+                let Some(b) = args.get::<f64>("b") else {
+                    return Ok(
+                        ToolError::invalid_input("add: Missing or invalid 'b' parameter").into(),
+                    );
+                };
 
                 Ok(CallToolResult::new().with_text_content(format!("{}", a + b)))
             }
@@ -175,11 +181,8 @@ mod tests {
         let error = conn
             .call_tool(&context, "echo".to_string(), None, None)
             .await
-            .unwrap_err();
-        match error {
-            Error::InvalidParams(_) => {}
-            _ => panic!("Expected InvalidParams error"),
-        }
+            .unwrap();
+        assert_eq!(error.is_error, Some(true));
 
         // Test error on missing message field
         let context = create_test_context();
@@ -188,11 +191,8 @@ mod tests {
         let error = conn
             .call_tool(&context, "echo".to_string(), Some(args.into()), None)
             .await
-            .unwrap_err();
-        match error {
-            Error::InvalidParams(_) => {}
-            _ => panic!("Expected InvalidParams error"),
-        }
+            .unwrap();
+        assert_eq!(error.is_error, Some(true));
     }
 
     #[tokio::test]
@@ -256,11 +256,8 @@ mod tests {
         let error = conn
             .call_tool(&context, "add".to_string(), None, None)
             .await
-            .unwrap_err();
-        match error {
-            Error::InvalidParams(_) => {}
-            _ => panic!("Expected InvalidParams error"),
-        }
+            .unwrap();
+        assert_eq!(error.is_error, Some(true));
 
         // Test error on missing 'a' field
         let context = create_test_context();
@@ -269,11 +266,8 @@ mod tests {
         let error = conn
             .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap_err();
-        match error {
-            Error::InvalidParams(_) => {}
-            _ => panic!("Expected InvalidParams error"),
-        }
+            .unwrap();
+        assert_eq!(error.is_error, Some(true));
 
         // Test error on missing 'b' field
         let context = create_test_context();
@@ -282,11 +276,8 @@ mod tests {
         let error = conn
             .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap_err();
-        match error {
-            Error::InvalidParams(_) => {}
-            _ => panic!("Expected InvalidParams error"),
-        }
+            .unwrap();
+        assert_eq!(error.is_error, Some(true));
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ mod tests {
     use rmcp_model::{CallToolRequestParams, InitializeRequestParams, PaginatedRequestParams};
     use serde_json::json;
     use tmcp::{
-        Arguments, Client, Error, Result, Server, ServerCtx, ServerHandler, schema::*,
+        Arguments, Client, Error, Result, Server, ServerCtx, ServerHandler, ToolError, schema::*,
         testutils::make_duplex_pair,
     };
     use tokio::{
@@ -68,11 +68,12 @@ mod tests {
                 return Err(Error::ToolNotFound(name));
             }
 
-            let args = arguments
-                .ok_or_else(|| Error::InvalidParams("echo: Missing arguments".to_string()))?;
-            let message = args.get_string("message").ok_or_else(|| {
-                Error::InvalidParams("echo: Missing message parameter".to_string())
-            })?;
+            let Some(args) = arguments else {
+                return Ok(ToolError::invalid_input("echo: Missing arguments").into());
+            };
+            let Some(message) = args.get_string("message") else {
+                return Ok(ToolError::invalid_input("echo: Missing message parameter").into());
+            };
 
             Ok(CallToolResult {
                 content: vec![ContentBlock::Text(TextContent {

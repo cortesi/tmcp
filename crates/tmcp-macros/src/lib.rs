@@ -790,9 +790,12 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
                     }
                 } else {
                     quote! {
-                        let args = arguments.ok_or_else(||
-                            tmcp::Error::InvalidParams("Missing arguments".to_string())
-                        )?;
+                        let args = match arguments {
+                            Some(args) => args,
+                            None => {
+                                return Ok(tmcp::ToolError::invalid_input("Missing arguments").into());
+                            }
+                        };
                     }
                 };
 
@@ -805,8 +808,12 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
                 (
                     quote! {
                         #args_expr
-                        let params: #params_type = args.deserialize()
-                            .map_err(|e| tmcp::Error::InvalidParams(e.to_string()))?;
+                        let params: #params_type = match args.deserialize() {
+                            Ok(params) => params,
+                            Err(err) => {
+                                return Ok(tmcp::ToolError::invalid_input(err.to_string()).into());
+                            }
+                        };
                     },
                     call,
                 )

@@ -159,22 +159,22 @@ mod tests {
         assert!(matches!(err, Error::ToolNotFound(_)));
 
         // Missing arguments
-        let err = server
+        let result = server
             .call_tool(ctx.ctx(), "echo".to_string(), None, None)
             .await
-            .unwrap_err();
-        assert!(matches!(err, Error::InvalidParams(_)));
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
 
         // Invalid arguments
         let mut args = HashMap::new();
         args.insert("a".to_string(), serde_json::json!("not a number"));
         args.insert("b".to_string(), serde_json::json!(2.0));
 
-        let err = server
+        let result = server
             .call_tool(ctx.ctx(), "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap_err();
-        assert!(matches!(err, Error::InvalidParams(_)));
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
     }
 
     // Test for custom initialize function

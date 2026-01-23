@@ -19,7 +19,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     connection::ServerHandler,
     context::ServerCtx,
-    error::{Error, Result},
+    error::{Error, Result, ToolError},
     http::HttpServerTransport,
     jsonrpc::create_jsonrpc_notification,
     schema::{self, *},
@@ -849,7 +849,17 @@ async fn handle_tool_request(
             arguments,
             task,
             _meta: _,
-        } => serialize_result(conn.call_tool(ctx, name, arguments, task).await),
+        } => {
+            let result = conn.call_tool(ctx, name, arguments, task).await;
+            match result {
+                Ok(result) => serialize_result(Ok(result)),
+                Err(Error::InvalidParams(message)) => {
+                    let tool_result: CallToolResult = ToolError::invalid_input(message).into();
+                    serialize_result(Ok(tool_result))
+                }
+                Err(err) => Err(err),
+            }
+        }
         _ => Err(Error::InternalError("Unexpected tool request".to_string())),
     }
 }

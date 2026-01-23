@@ -7,7 +7,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use tmcp::{
-        Arguments, Client, Result, Server, ServerCtx, ServerHandler,
+        Arguments, Client, Result, Server, ServerCtx, ServerHandler, ToolError,
         schema::{self, *},
     };
     use tokio::time::{Duration, sleep};
@@ -49,14 +49,15 @@ mod tests {
             arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
         ) -> Result<CallToolResult> {
-            use tmcp::Error;
             if name != "echo" {
-                return Err(Error::ToolNotFound(name));
+                return Err(tmcp::Error::ToolNotFound(name));
             }
-            let args = arguments.ok_or_else(|| Error::InvalidParams("Missing args".into()))?;
-            let message = args
-                .get_string("message")
-                .ok_or_else(|| Error::InvalidParams("Missing message".into()))?;
+            let Some(args) = arguments else {
+                return Ok(ToolError::invalid_input("Missing args").into());
+            };
+            let Some(message) = args.get_string("message") else {
+                return Ok(ToolError::invalid_input("Missing message").into());
+            };
             Ok(CallToolResult::new().with_text_content(message))
         }
     }
