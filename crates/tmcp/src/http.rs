@@ -61,6 +61,8 @@ pub struct HttpSession {
     pub receiver: Arc<Mutex<mpsc::UnboundedReceiver<JSONRPCMessage>>>,
     /// Monotonic event counter for SSE messages.
     event_counter: Arc<AtomicU64>,
+    /// True while a streaming SSE connection is active.
+    streaming: Arc<AtomicBool>,
 }
 
 impl HttpSession {
@@ -83,6 +85,26 @@ impl HttpSession {
                 Err(next) => current = next,
             }
         }
+    }
+}
+
+/// Guard that marks an SSE stream as active while held.
+struct StreamingGuard {
+    /// Flag tracking whether the SSE stream is active.
+    flag: Arc<AtomicBool>,
+}
+
+impl StreamingGuard {
+    /// Create a guard that marks streaming active until dropped.
+    fn new(flag: Arc<AtomicBool>) -> Self {
+        flag.store(true, Ordering::SeqCst);
+        Self { flag }
+    }
+}
+
+impl Drop for StreamingGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
     }
 }
 
@@ -284,6 +306,13 @@ async fn handle_http_response(
     }
 
     if !expects_response(msg) {
+        return;
+    }
+
+    if matches!(
+        response.status(),
+        StatusCode::ACCEPTED | StatusCode::NO_CONTENT
+    ) {
         return;
     }
 
@@ -794,6 +823,7 @@ impl Transport for HttpServerTransport {
                 sender: tx,
                 receiver: Arc::new(Mutex::new(rx)),
                 event_counter: Arc::new(AtomicU64::new(0)),
+                streaming: Arc::new(AtomicBool::new(false)),
             };
 
             state.sessions.insert(session_id, session);
@@ -990,6 +1020,7 @@ async fn handle_post(
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             event_counter: Arc::new(AtomicU64::new(0)),
+            streaming: Arc::new(AtomicBool::new(false)),
         };
 
         state
@@ -1039,14 +1070,12 @@ async fn handle_post(
         None => return (StatusCode::BAD_REQUEST, "Missing session ID").into_response(),
     };
 
-    if !state.sessions.contains_key(&session_id) {
-        return (StatusCode::NOT_FOUND, "Session not found").into_response();
-    }
-
-    // Update last activity
-    if let Some(session) = state.sessions.get(&session_id) {
+    let session = if let Some(session) = state.sessions.get(&session_id) {
         *session.last_activity.write().await = Instant::now();
-    }
+        session.clone()
+    } else {
+        return (StatusCode::NOT_FOUND, "Session not found").into_response();
+    };
 
     match &message {
         JSONRPCMessage::Request(_) => {
@@ -1055,6 +1084,10 @@ async fn handle_post(
                 .incoming_tx
                 .unbounded_send((message, session_id.clone()))
                 .ok();
+
+            if session.streaming.load(Ordering::SeqCst) {
+                return StatusCode::ACCEPTED.into_response();
+            }
 
             // Check if client accepts SSE
             let accepts_sse = headers
@@ -1065,12 +1098,7 @@ async fn handle_post(
 
             if accepts_sse {
                 // Return SSE stream for response
-                let session = if let Some(session) = state.sessions.get(&session_id) {
-                    apply_last_event_id(&headers, &session);
-                    session.clone()
-                } else {
-                    return (StatusCode::NOT_FOUND, "Session not found").into_response();
-                };
+                apply_last_event_id(&headers, &session);
                 let receiver = session.receiver.clone();
                 let stream = async_stream::stream! {
                     let mut receiver = receiver.lock().await;
@@ -1089,27 +1117,21 @@ async fn handle_post(
                     .into_response()
             } else {
                 // Wait for response and return directly
-                if let Some(session) = state.sessions.get(&session_id) {
-                    let receiver = session.receiver.clone();
+                let receiver = session.receiver.clone();
 
-                    let response = timeout(
-                        Duration::from_secs(30), // 30 second timeout for requests
-                        async move {
-                            let mut receiver = receiver.lock().await;
-                            receiver.next().await
-                        },
-                    )
-                    .await;
+                let response = timeout(
+                    Duration::from_secs(30), // 30 second timeout for requests
+                    async move {
+                        let mut receiver = receiver.lock().await;
+                        receiver.next().await
+                    },
+                )
+                .await;
 
-                    match response {
-                        Ok(Some(response)) => Json::<JSONRPCMessage>(response).into_response(),
-                        Ok(None) => {
-                            (StatusCode::INTERNAL_SERVER_ERROR, "No response").into_response()
-                        }
-                        Err(_) => (StatusCode::REQUEST_TIMEOUT, "Request timeout").into_response(),
-                    }
-                } else {
-                    (StatusCode::NOT_FOUND, "Session not found").into_response()
+                match response {
+                    Ok(Some(response)) => Json::<JSONRPCMessage>(response).into_response(),
+                    Ok(None) => (StatusCode::INTERNAL_SERVER_ERROR, "No response").into_response(),
+                    Err(_) => (StatusCode::REQUEST_TIMEOUT, "Request timeout").into_response(),
                 }
             }
         }
@@ -1152,7 +1174,9 @@ async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) ->
         return (StatusCode::NOT_FOUND, "Session not found").into_response();
     };
     let receiver = session.receiver.clone();
+    let streaming = session.streaming.clone();
     let stream = async_stream::stream! {
+        let _guard = StreamingGuard::new(streaming);
         let mut receiver = receiver.lock().await;
         while let Some(msg) = receiver.next().await {
             yield Ok::<_, Error>(build_sse_event(&session, &msg));
@@ -1228,6 +1252,7 @@ mod tests {
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             event_counter: Arc::new(AtomicU64::new(0)),
+            streaming: Arc::new(AtomicBool::new(false)),
         };
 
         // Test that we can update last activity
@@ -1312,6 +1337,7 @@ mod tests {
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             event_counter: Arc::new(AtomicU64::new(0)),
+            streaming: Arc::new(AtomicBool::new(false)),
         };
 
         let mut headers = HeaderMap::new();

@@ -1,6 +1,12 @@
 use std::{future::Future, sync::Arc, time::Instant};
 
-use axum::{Router, extract::Query, response::Html, routing::get};
+use axum::{
+    Router,
+    extract::RawQuery,
+    http::StatusCode,
+    response::{Html, IntoResponse},
+    routing::get,
+};
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, StandardRevocableToken,
@@ -11,12 +17,11 @@ use oauth2::{
     },
     reqwest::Client,
 };
-use serde::Deserialize;
 use tokio::{
     net::TcpListener,
     sync::{Mutex, RwLock, oneshot},
 };
-use url::Url;
+use url::{Url, form_urlencoded};
 
 use super::dynamic_registration::{ClientMetadata, DynamicRegistrationClient};
 use crate::error::Error;
@@ -329,13 +334,40 @@ impl OAuth2Client {
     }
 }
 
-#[derive(Debug, Deserialize)]
-/// Query parameters provided to the OAuth callback endpoint.
-struct CallbackQuery {
-    /// Authorization code returned by the provider.
-    code: String,
-    /// CSRF state value returned by the provider.
-    state: String,
+/// Maximum length of callback query string accepted by the OAuth callback server.
+const MAX_CALLBACK_QUERY_LEN: usize = 2 * 1024;
+
+/// Parse and validate OAuth callback query parameters.
+fn parse_callback_query(query: Option<String>) -> Result<(String, String), Error> {
+    let query = query.unwrap_or_default();
+    if query.is_empty() {
+        return Err(Error::AuthorizationFailed(
+            "Missing callback query".to_string(),
+        ));
+    }
+
+    if query.len() > MAX_CALLBACK_QUERY_LEN {
+        return Err(Error::AuthorizationFailed(
+            "Callback query is too large".to_string(),
+        ));
+    }
+
+    let mut code = None;
+    let mut state = None;
+
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "code" => code = Some(value.into_owned()),
+            "state" => state = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+
+    let code =
+        code.ok_or_else(|| Error::AuthorizationFailed("Missing authorization code".to_string()))?;
+    let state = state.ok_or_else(|| Error::AuthorizationFailed("Missing state".to_string()))?;
+
+    Ok((code, state))
 }
 
 /// Minimal HTTP callback server for OAuth redirects.
@@ -352,18 +384,22 @@ impl OAuth2CallbackServer {
 
     /// Wait for the OAuth redirect callback and return (code, state).
     pub async fn wait_for_callback(&self) -> Result<(String, String), Error> {
-        let (tx, rx) = oneshot::channel::<(String, String)>();
+        let (tx, rx) = oneshot::channel::<Result<(String, String), Error>>();
         let tx = Arc::new(Mutex::new(Some(tx)));
 
         let callback_handler = {
             let tx = tx.clone();
-            move |Query(params): Query<CallbackQuery>| {
+            move |RawQuery(query): RawQuery| {
                 let tx = tx.clone();
                 async move {
                     if let Some(sender) = tx.lock().await.take() {
-                        sender.send((params.code, params.state)).ok();
+                        let result = parse_callback_query(query);
+                        sender.send(result.clone()).ok();
+                        if let Err(err) = result {
+                            return (StatusCode::BAD_REQUEST, err.to_string()).into_response();
+                        }
                     }
-                    Html(SUCCESS_HTML)
+                    Html(SUCCESS_HTML).into_response()
                 }
             }
         };
@@ -383,7 +419,7 @@ impl OAuth2CallbackServer {
 
         let result = rx.await.map_err(|_| {
             Error::AuthorizationFailed("Callback server closed unexpectedly".into())
-        })?;
+        })??;
 
         server_handle.abort();
 

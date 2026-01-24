@@ -5,7 +5,23 @@ mod tests {
     use std::{sync::Arc, time::Instant};
 
     use tmcp::auth::{OAuth2CallbackServer, OAuth2Client, OAuth2Config, OAuth2Token};
-    use tokio::time::{Duration, sleep, timeout};
+    use tokio::{
+        net::TcpStream,
+        task::yield_now,
+        time::{Duration, sleep, timeout},
+    };
+
+    async fn connect_with_retry(addr: &str) -> TcpStream {
+        for _ in 0..50 {
+            match TcpStream::connect(addr).await {
+                Ok(stream) => return stream,
+                Err(_) => {
+                    yield_now().await;
+                }
+            }
+        }
+        panic!("failed to connect to callback server at {addr}");
+    }
 
     #[tokio::test]
     async fn test_oauth_client_creation() {
@@ -87,14 +103,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_callback_server_oversized_request() {
-        use tokio::{io::AsyncWriteExt, net::TcpStream};
+        use tokio::io::AsyncWriteExt;
 
         let server = OAuth2CallbackServer::new(8766);
 
         let client_task = tokio::spawn(async move {
-            sleep(Duration::from_millis(100)).await;
-            let mut stream = TcpStream::connect("127.0.0.1:8766").await.unwrap();
-            let big_query = "a".repeat(9000);
+            let mut stream = connect_with_retry("127.0.0.1:8766").await;
+            let big_query = "a".repeat(3000);
             let request = format!(
                 "GET /callback?code={big_query}&state=test HTTP/1.1\r\nHost: localhost\r\n\r\n"
             );
@@ -104,32 +119,29 @@ mod tests {
                 .expect("failed to send oversized request");
         });
 
-        let result = timeout(Duration::from_secs(5), server.wait_for_callback()).await;
-        // With axum, oversized requests are rejected at the HTTP layer and cause timeout
-        assert!(matches!(result, Err(_) | Ok(Err(_))));
+        let result = server.wait_for_callback().await;
+        assert!(result.is_err());
 
         client_task.await.expect("oversized request task failed");
     }
 
     #[tokio::test]
     async fn test_callback_server_malformed_request() {
-        use tokio::{io::AsyncWriteExt, net::TcpStream};
+        use tokio::io::AsyncWriteExt;
 
         let server = OAuth2CallbackServer::new(8767);
 
         let client_task = tokio::spawn(async move {
-            sleep(Duration::from_millis(100)).await;
-            let mut stream = TcpStream::connect("127.0.0.1:8767").await.unwrap();
-            let request = "POST /bad HTTP/1.1\r\nHost: localhost\r\n\r\n";
+            let mut stream = connect_with_retry("127.0.0.1:8767").await;
+            let request = "GET /callback?code=test_code HTTP/1.1\r\nHost: localhost\r\n\r\n";
             stream
                 .write_all(request.as_bytes())
                 .await
                 .expect("failed to send malformed request");
         });
 
-        let result = timeout(Duration::from_secs(5), server.wait_for_callback()).await;
-        // With axum, malformed requests are rejected and cause timeout or error
-        assert!(matches!(result, Err(_) | Ok(Err(_))));
+        let result = server.wait_for_callback().await;
+        assert!(result.is_err());
 
         client_task.await.expect("malformed request task failed");
     }
