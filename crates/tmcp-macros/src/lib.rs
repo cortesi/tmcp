@@ -21,10 +21,14 @@
 //! async fn tool_name(&self, context: &ServerCtx) -> ToolResult<T>
 //! async fn tool_name(&self, params: ToolParams) -> ToolResult<T>
 //! async fn tool_name(&self) -> ToolResult<T>
+//! async fn tool_name(&self, context: &ServerCtx, a: Type1, b: Type2) -> ToolResult<T>
+//! async fn tool_name(&self, a: Type1, b: Type2) -> ToolResult<T>
 //! ```
 //!
 //! The `context: &ServerCtx` parameter is optional. Tools may also omit parameters or
 //! accept `()` for parameter-less tools.
+//! Single-argument tools still default to struct-style parameters; use `#[tool(flat)]`
+//! to force flat argument handling for one-argument tools.
 //!
 //! The parameter struct (ToolParams in this example) must implement `schemars::JsonSchema` and
 //! `serde::Deserialize`.
@@ -37,6 +41,7 @@
 //! - `output_schema = TypeName` (explicit output schema)
 //! - `icon = "https://..."` or `icons("a", "b")`
 //! - `defaults` (treat missing arguments as an empty object and rely on serde defaults)
+//! - `flat` (force flat handling for single-argument tools)
 //!
 //! Example usage:
 //!
@@ -107,7 +112,7 @@ use std::result::Result as StdResult;
 
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{
     Expr, ExprLit, ImplItem, ItemImpl, Lit, Meta, parse::Parse, punctuated::Punctuated,
     spanned::Spanned,
@@ -134,6 +139,17 @@ struct ToolMethod {
 }
 
 #[derive(Debug, Clone)]
+/// A single flat parameter in a tool signature.
+struct FlatParam {
+    /// Identifier for the parameter.
+    ident: syn::Ident,
+    /// Type of the parameter.
+    ty: syn::Type,
+    /// Attributes to attach to the generated struct field.
+    attrs: Vec<syn::Attribute>,
+}
+
+#[derive(Debug, Clone)]
 /// Parameter shape for a tool method.
 enum ParamsKind {
     /// Tool takes no parameters.
@@ -142,6 +158,8 @@ enum ParamsKind {
     Unit,
     /// Tool takes a typed parameter struct.
     Typed(Box<syn::Type>),
+    /// Tool takes flat parameters expanded from the signature.
+    Flat(Vec<FlatParam>),
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +195,8 @@ struct ToolAttrs {
     icons: Vec<String>,
     /// Whether to apply default argument handling.
     defaults: bool,
+    /// Whether to force flat handling for single-argument tools.
+    flat: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -345,6 +365,45 @@ fn is_call_tool_result_type(ty: &syn::Type) -> bool {
     }
 }
 
+/// Filter parameter attributes to those relevant for serde/schemars/docs.
+fn filter_flat_param_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
+    attrs
+        .iter()
+        .filter(|attr| {
+            attr.path().is_ident("serde")
+                || attr.path().is_ident("schemars")
+                || attr.path().is_ident("doc")
+        })
+        .cloned()
+        .collect()
+}
+
+/// Parse a flat parameter definition from a typed function argument.
+fn parse_flat_param(param: &syn::PatType) -> Result<FlatParam> {
+    let ident = match param.pat.as_ref() {
+        syn::Pat::Ident(pat_ident) if pat_ident.subpat.is_none() => pat_ident.ident.clone(),
+        _ => {
+            return Err(syn::Error::new(
+                param.pat.span(),
+                "flat tool parameters must be simple identifiers",
+            ));
+        }
+    };
+
+    Ok(FlatParam {
+        ident,
+        ty: (*param.ty).clone(),
+        attrs: filter_flat_param_attrs(&param.attrs),
+    })
+}
+
+/// Generate a unique struct identifier for flat tool arguments.
+fn flat_args_struct_ident(server_name: &str, tool_name: &str) -> syn::Ident {
+    let server = server_name.trim_start_matches("r#");
+    let tool = tool_name.trim_start_matches("r#");
+    format_ident!("__TmcpToolArgs_{}_{}", server, tool)
+}
+
 /// Parse a boolean literal from an expression.
 fn parse_bool_lit(expr: &Expr) -> Result<bool> {
     if let Expr::Lit(ExprLit {
@@ -444,6 +503,7 @@ fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
                             "idempotent" => tool_attrs.idempotent = Some(true),
                             "open_world" => tool_attrs.open_world = Some(true),
                             "defaults" => tool_attrs.defaults = true,
+                            "flat" => tool_attrs.flat = true,
                             _ => {
                                 return Err(syn::Error::new(
                                     ident.span(),
@@ -515,6 +575,9 @@ fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
                         }
                         "defaults" => {
                             tool_attrs.defaults = parse_bool_lit(&meta.value)?;
+                        }
+                        "flat" => {
+                            tool_attrs.flat = parse_bool_lit(&meta.value)?;
                         }
                         _ => {
                             return Err(syn::Error::new(
@@ -624,16 +687,16 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
 
     // Check parameters
     let params: Vec<_> = method.sig.inputs.iter().collect();
-    if params.is_empty() || params.len() > 3 {
+    if params.is_empty() {
         return Err(syn::Error::new(
             method.sig.inputs.span(),
-            "tool methods must have 1-3 parameters: &self, optional &ServerCtx, optional params",
+            "tool methods must include &self or &mut self",
         ));
     }
 
     // Validate &self or &mut self
     match params[0] {
-        syn::FnArg::Receiver(_r) => {
+        syn::FnArg::Receiver(_) => {
             // Accept both &self and &mut self
         }
         _ => {
@@ -645,63 +708,87 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
     }
 
     let mut has_ctx = false;
-    let mut params_kind = ParamsKind::None;
-
-    match params.len() {
-        1 => {
-            // &self only
-        }
-        2 => match params[1] {
+    let mut start_index = 1;
+    if params.len() > 1 {
+        match params[1] {
             syn::FnArg::Typed(pat_type) => {
-                let ty = pat_type.ty.as_ref();
-                if is_server_ctx_type(ty) {
+                if is_server_ctx_type(pat_type.ty.as_ref()) {
                     has_ctx = true;
-                } else if is_unit_type(ty) {
-                    params_kind = ParamsKind::Unit;
-                } else {
-                    params_kind = ParamsKind::Typed(Box::new(ty.clone()));
+                    start_index = 2;
                 }
             }
             _ => {
                 return Err(syn::Error::new(
                     params[1].span(),
-                    "second parameter must be &ServerCtx or a typed params struct",
+                    "second parameter must be &ServerCtx or a typed parameter",
                 ));
-            }
-        },
-        3 => {
-            // &self, &ServerCtx, params
-            let syn::FnArg::Typed(ctx_arg) = params[1] else {
-                return Err(syn::Error::new(
-                    params[1].span(),
-                    "second parameter must be &ServerCtx",
-                ));
-            };
-            if !is_server_ctx_type(ctx_arg.ty.as_ref()) {
-                return Err(syn::Error::new(
-                    ctx_arg.ty.span(),
-                    "second parameter must be &ServerCtx",
-                ));
-            }
-            has_ctx = true;
-
-            let params_type = match params[2] {
-                syn::FnArg::Typed(pat_type) => (*pat_type.ty).clone(),
-                _ => {
-                    return Err(syn::Error::new(
-                        params[2].span(),
-                        "third parameter must be a typed parameter",
-                    ));
-                }
-            };
-            if is_unit_type(&params_type) {
-                params_kind = ParamsKind::Unit;
-            } else {
-                params_kind = ParamsKind::Typed(Box::new(params_type));
             }
         }
-        _ => {}
     }
+
+    let remaining = &params[start_index..];
+    let params_kind = if remaining.is_empty() {
+        if attrs.flat {
+            return Err(syn::Error::new(
+                method.sig.inputs.span(),
+                "#[tool(flat)] requires at least one non-context parameter",
+            ));
+        }
+        ParamsKind::None
+    } else if remaining.len() == 1 {
+        let syn::FnArg::Typed(pat_type) = remaining[0] else {
+            return Err(syn::Error::new(
+                remaining[0].span(),
+                "parameter must be a typed parameter",
+            ));
+        };
+
+        let ty = pat_type.ty.as_ref();
+        if is_server_ctx_type(ty) {
+            return Err(syn::Error::new(
+                pat_type.ty.span(),
+                "only one &ServerCtx parameter is allowed",
+            ));
+        }
+        if is_unit_type(ty) {
+            if attrs.flat {
+                return Err(syn::Error::new(
+                    pat_type.ty.span(),
+                    "#[tool(flat)] cannot be used with unit parameters",
+                ));
+            }
+            ParamsKind::Unit
+        } else if attrs.flat {
+            ParamsKind::Flat(vec![parse_flat_param(pat_type)?])
+        } else {
+            ParamsKind::Typed(Box::new(ty.clone()))
+        }
+    } else {
+        let mut flat_params = Vec::new();
+        for param in remaining {
+            let syn::FnArg::Typed(pat_type) = param else {
+                return Err(syn::Error::new(
+                    param.span(),
+                    "flat tool parameters must be typed",
+                ));
+            };
+            let ty = pat_type.ty.as_ref();
+            if is_server_ctx_type(ty) {
+                return Err(syn::Error::new(
+                    pat_type.ty.span(),
+                    "only one &ServerCtx parameter is allowed",
+                ));
+            }
+            if is_unit_type(ty) {
+                return Err(syn::Error::new(
+                    pat_type.ty.span(),
+                    "unit parameters are not supported in flat tool signatures",
+                ));
+            }
+            flat_params.push(parse_flat_param(pat_type)?);
+        }
+        ParamsKind::Flat(flat_params)
+    };
 
     let return_kind = parse_tool_return(&method.sig.output)?;
 
@@ -784,21 +871,6 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
             ),
             (has_ctx, ParamsKind::Typed(params_type)) => {
                 let params_type = params_type.as_ref();
-                let args_expr = if defaults {
-                    quote! {
-                        let args = arguments.unwrap_or_else(tmcp::Arguments::new);
-                    }
-                } else {
-                    quote! {
-                        let args = match arguments {
-                            Some(args) => args,
-                            None => {
-                                return Ok(tmcp::ToolError::invalid_input("Missing arguments").into());
-                            }
-                        };
-                    }
-                };
-
                 let call = if *has_ctx {
                     quote! { self.#method(context, params).await }
                 } else {
@@ -807,13 +879,41 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
 
                 (
                     quote! {
-                        #args_expr
-                        let params: #params_type = match args.deserialize() {
+                        let params: #params_type = match tmcp::Arguments::into_tool_params(
+                            arguments,
+                            #defaults,
+                        ) {
                             Ok(params) => params,
                             Err(err) => {
-                                return Ok(tmcp::ToolError::invalid_input(err.to_string()).into());
+                                return Ok(err.into());
                             }
                         };
+                    },
+                    call,
+                )
+            }
+            (has_ctx, ParamsKind::Flat(params)) => {
+                let struct_ident = flat_args_struct_ident(&info.struct_name, name);
+                let param_idents: Vec<_> = params.iter().map(|param| &param.ident).collect();
+
+                let call = if *has_ctx {
+                    quote! { self.#method(context, #(#param_idents),*).await }
+                } else {
+                    quote! { self.#method(#(#param_idents),*).await }
+                };
+
+                (
+                    quote! {
+                        let params: #struct_ident = match tmcp::Arguments::into_tool_params(
+                            arguments,
+                            #defaults,
+                        ) {
+                            Ok(params) => params,
+                            Err(err) => {
+                                return Ok(err.into());
+                            }
+                        };
+                        let #struct_ident { #(#param_idents),* } = params;
                     },
                     call,
                 )
@@ -870,6 +970,10 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
             ParamsKind::Typed(ref params_type) => {
                 let params_type = params_type.as_ref();
                 quote! { tmcp::schema::ToolSchema::from_json_schema::<#params_type>() }
+            }
+            ParamsKind::Flat(_) => {
+                let struct_ident = flat_args_struct_ident(&info.struct_name, name);
+                quote! { tmcp::schema::ToolSchema::from_json_schema::<#struct_ident>() }
             }
         };
 
@@ -987,6 +1091,38 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
             })
         }
     }
+}
+
+/// Generate struct definitions for flat tool argument lists.
+fn generate_flat_arg_structs(info: &ServerInfo) -> Vec<TokenStream> {
+    info.tools
+        .iter()
+        .filter_map(|tool| match &tool.params_kind {
+            ParamsKind::Flat(params) => Some((tool, params)),
+            _ => None,
+        })
+        .map(|(tool, params)| {
+            let struct_ident = flat_args_struct_ident(&info.struct_name, &tool.name);
+            let fields = params.iter().map(|param| {
+                let ident = &param.ident;
+                let ty = &param.ty;
+                let attrs = &param.attrs;
+                quote! {
+                    #(#attrs)*
+                    #ident: #ty,
+                }
+            });
+
+            quote! {
+                #[doc(hidden)]
+                #[allow(non_camel_case_types)]
+                #[derive(serde::Deserialize, schemars::JsonSchema)]
+                struct #struct_ident {
+                    #(#fields)*
+                }
+            }
+        })
+        .collect()
 }
 
 /// Generate the ServerHandler::initialize implementation.
@@ -1163,8 +1299,10 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
     let call_tool = generate_call_tool(&info);
     let list_tools = generate_list_tools(&info);
     let initialize = generate_initialize(&info, &args, args.initialize_fn.as_ref());
+    let flat_structs = generate_flat_arg_structs(&info);
 
     Ok(quote! {
+        #(#flat_structs)*
         #impl_block
 
         #[async_trait::async_trait]
@@ -1530,7 +1668,7 @@ mod tests {
     fn test_parse_tool_method_wrong_params() {
         let method: syn::ImplItemFn = syn::parse_quote! {
             #[tool]
-            async fn test_tool(&mut self, not_ctx: i32, params: TestParams) -> Result<schema::CallToolResult> {
+            async fn test_tool(&mut self, context: &ServerCtx, other: &ServerCtx) -> Result<schema::CallToolResult> {
                 Ok(schema::CallToolResult::new())
             }
         };
@@ -1541,7 +1679,52 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("second parameter must be &ServerCtx")
+                .contains("only one &ServerCtx parameter is allowed")
+        );
+    }
+
+    #[test]
+    fn test_parse_tool_method_flat_params() {
+        let method: syn::ImplItemFn = syn::parse_quote! {
+            #[tool]
+            async fn test_tool(&self, _ctx: &ServerCtx, a: i32, b: i32) -> Result<schema::CallToolResult> {
+                Ok(schema::CallToolResult::new())
+            }
+        };
+
+        let tool = parse_tool_method(&method).unwrap().unwrap();
+        assert!(matches!(tool.params_kind, ParamsKind::Flat(_)));
+    }
+
+    #[test]
+    fn test_parse_tool_method_flat_single_arg() {
+        let method: syn::ImplItemFn = syn::parse_quote! {
+            #[tool(flat)]
+            async fn test_tool(&self, value: String) -> Result<schema::CallToolResult> {
+                Ok(schema::CallToolResult::new())
+            }
+        };
+
+        let tool = parse_tool_method(&method).unwrap().unwrap();
+        assert!(matches!(tool.params_kind, ParamsKind::Flat(_)));
+    }
+
+    #[test]
+    fn test_parse_tool_method_flat_pattern_error() {
+        let method: syn::ImplItemFn = syn::parse_quote! {
+            #[tool(flat)]
+            async fn test_tool(&self, _ctx: &ServerCtx, (a, b): (i32, i32)) -> Result<schema::CallToolResult> {
+                Ok(schema::CallToolResult::new())
+            }
+        };
+
+        let result = parse_tool_method(&method);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("flat tool parameters must be simple identifiers")
         );
     }
 
@@ -1720,6 +1903,25 @@ mod tests {
 
         // Check that snake_case conversion is applied
         assert!(result_str.contains(r#"InitializeResult :: new ("test_server")"#));
+    }
+
+    #[test]
+    fn test_full_macro_expansion_flat_args() {
+        let input = quote! {
+            impl TestServer {
+                #[tool]
+                async fn add(&self, a: i32, b: i32) -> Result<schema::CallToolResult> {
+                    Ok(schema::CallToolResult::new())
+                }
+            }
+        };
+
+        let result = inner_mcp_server(TokenStream::new(), &input).unwrap();
+        let result_str = result.to_string();
+
+        assert!(result_str.contains("__TmcpToolArgs_TestServer_add"));
+        assert!(result_str.contains("async fn call_tool"));
+        assert!(result_str.contains("async fn list_tools"));
     }
 
     #[test]

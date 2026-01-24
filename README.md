@@ -189,3 +189,21 @@ async fn main() -> Result<()> {
 }
 
 ```
+
+Flat tool arguments can be declared directly in the tool signature for multi-argument tools:
+
+```rust
+#[tool]
+async fn add(&self, a: f64, b: f64) -> ToolResult<AddResponse> {
+    Ok(AddResponse { sum: a + b })
+}
+```
+
+Single-argument tools remain struct-based by default; opt into flat handling explicitly:
+
+```rust
+#[tool(flat)]
+async fn echo(&self, message: String) -> ToolResult<EchoResponse> {
+    Ok(EchoResponse { message })
+}
+```

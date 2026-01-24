@@ -43,7 +43,15 @@ struct PingResponse {
     message: String,
 }
 
-/// Basic server connection that provides echo and ping tools
+/// Add tool response payload.
+#[derive(Debug)]
+#[tool_result]
+struct AddResponse {
+    /// Sum of the inputs.
+    sum: f64,
+}
+
+/// Basic server connection that provides echo, ping, and add tools
 #[derive(Debug, Default)]
 struct BasicServer {}
 
@@ -64,6 +72,12 @@ impl BasicServer {
         Ok(PingResponse {
             message: "pong".to_string(),
         })
+    }
+
+    #[tool]
+    /// Add two numbers
+    async fn add(&self, a: f64, b: f64) -> ToolResult<AddResponse> {
+        Ok(AddResponse { sum: a + b })
     }
 }
 

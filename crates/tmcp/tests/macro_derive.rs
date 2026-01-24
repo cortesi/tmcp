@@ -46,6 +46,12 @@ mod tests {
         }
 
         #[tool]
+        /// Multiply two numbers
+        async fn multiply(&self, _ctx: &tmcp::ServerCtx, a: f64, b: f64) -> Result<CallToolResult> {
+            Ok(CallToolResult::new().with_text_content(format!("{}", a * b)))
+        }
+
+        #[tool]
         /// Ping the server
         async fn ping(&self, _ctx: &tmcp::ServerCtx) -> ToolResult<PingResponse> {
             Ok(PingResponse {
@@ -83,7 +89,7 @@ mod tests {
 
         let result = server.list_tools(ctx.ctx(), None).await.unwrap();
 
-        assert_eq!(result.tools.len(), 3);
+        assert_eq!(result.tools.len(), 4);
         assert!(
             result
                 .tools
@@ -95,6 +101,10 @@ mod tests {
                 .tools
                 .iter()
                 .any(|t| t.name == "add" && t.description == Some("Add two numbers".to_string()))
+        );
+        assert!(
+            result.tools.iter().any(|t| t.name == "multiply"
+                && t.description == Some("Multiply two numbers".to_string()))
         );
         assert!(
             result
@@ -133,6 +143,20 @@ mod tests {
             .unwrap();
         match &result.content[0] {
             ContentBlock::Text(text) => assert_eq!(text.text, "6"),
+            _ => panic!("Expected text content"),
+        }
+
+        // Test multiply
+        let mut args = HashMap::new();
+        args.insert("a".to_string(), serde_json::json!(3.0));
+        args.insert("b".to_string(), serde_json::json!(4.0));
+
+        let result = server
+            .call_tool(ctx.ctx(), "multiply".to_string(), Some(args.into()), None)
+            .await
+            .unwrap();
+        match &result.content[0] {
+            ContentBlock::Text(text) => assert_eq!(text.text, "12"),
             _ => panic!("Expected text content"),
         }
 
