@@ -1000,6 +1000,9 @@ async fn handle_notification(
     );
 
     if let Some(params) = notification.notification.params {
+        if let Some(meta) = params._meta {
+            object.insert("_meta".to_string(), serde_json::to_value(meta)?);
+        }
         for (k, v) in params.other {
             object.insert(k, v);
         }
