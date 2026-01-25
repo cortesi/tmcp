@@ -1,12 +1,5 @@
-use std::{future::Future, sync::Arc, time::Instant};
+use std::{future::Future, str, sync::Arc, time::Instant};
 
-use axum::{
-    Router,
-    extract::RawQuery,
-    http::StatusCode,
-    response::{Html, IntoResponse},
-    routing::get,
-};
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, StandardRevocableToken,
@@ -18,8 +11,9 @@ use oauth2::{
     reqwest::Client,
 };
 use tokio::{
-    net::TcpListener,
-    sync::{Mutex, RwLock, oneshot},
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::{Mutex, RwLock},
 };
 use url::{Url, form_urlencoded};
 
@@ -336,6 +330,8 @@ impl OAuth2Client {
 
 /// Maximum length of callback query string accepted by the OAuth callback server.
 const MAX_CALLBACK_QUERY_LEN: usize = 2 * 1024;
+/// Maximum length of the callback HTTP request we accept.
+const MAX_CALLBACK_REQUEST_LEN: usize = 8 * 1024;
 
 /// Parse and validate OAuth callback query parameters.
 fn parse_callback_query(query: Option<String>) -> Result<(String, String), Error> {
@@ -370,6 +366,94 @@ fn parse_callback_query(query: Option<String>) -> Result<(String, String), Error
     Ok((code, state))
 }
 
+/// Parse the callback target and extract the optional query string.
+fn parse_callback_target(target: &str) -> Result<Option<String>, Error> {
+    let mut parts = target.splitn(2, '?');
+    let path = parts.next().unwrap_or_default();
+    if path != "/callback" {
+        return Err(Error::AuthorizationFailed(
+            "Invalid callback path".to_string(),
+        ));
+    }
+    Ok(parts.next().map(str::to_string))
+}
+
+/// Parse the HTTP request line and return the request target.
+fn parse_request_line(line: &str) -> Result<&str, Error> {
+    let line = line.trim_end_matches('\r');
+    let mut parts = line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| Error::AuthorizationFailed("Missing HTTP method".to_string()))?;
+    if method != "GET" {
+        return Err(Error::AuthorizationFailed(
+            "Invalid callback method".to_string(),
+        ));
+    }
+    let target = parts
+        .next()
+        .ok_or_else(|| Error::AuthorizationFailed("Missing callback target".to_string()))?;
+    Ok(target)
+}
+
+/// Read the HTTP request headers from the stream.
+async fn read_http_request(stream: &mut TcpStream) -> Result<String, Error> {
+    let mut buffer = Vec::new();
+    let mut scratch = [0u8; 1024];
+    loop {
+        let bytes_read = stream
+            .read(&mut scratch)
+            .await
+            .map_err(|e| Error::Transport(format!("Failed to read callback request: {e}")))?;
+        if bytes_read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&scratch[..bytes_read]);
+        if buffer.len() > MAX_CALLBACK_REQUEST_LEN {
+            return Err(Error::AuthorizationFailed(
+                "Callback request is too large".to_string(),
+            ));
+        }
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    if buffer.is_empty() {
+        return Err(Error::AuthorizationFailed(
+            "Callback request is empty".to_string(),
+        ));
+    }
+
+    let request = str::from_utf8(&buffer).map_err(|_| {
+        Error::AuthorizationFailed("Callback request is not valid UTF-8".to_string())
+    })?;
+
+    Ok(request.to_string())
+}
+
+/// Send a minimal HTTP response with the provided body.
+async fn send_http_response(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &str,
+) -> Result<(), Error> {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|e| Error::Transport(format!("Failed to send callback response: {e}")))?;
+    stream
+        .shutdown()
+        .await
+        .map_err(|e| Error::Transport(format!("Failed to close callback connection: {e}")))?;
+    Ok(())
+}
+
 /// Minimal HTTP callback server for OAuth redirects.
 pub struct OAuth2CallbackServer {
     /// Port to bind the callback server on.
@@ -384,46 +468,48 @@ impl OAuth2CallbackServer {
 
     /// Wait for the OAuth redirect callback and return (code, state).
     pub async fn wait_for_callback(&self) -> Result<(String, String), Error> {
-        let (tx, rx) = oneshot::channel::<Result<(String, String), Error>>();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-
-        let callback_handler = {
-            let tx = tx.clone();
-            move |RawQuery(query): RawQuery| {
-                let tx = tx.clone();
-                async move {
-                    if let Some(sender) = tx.lock().await.take() {
-                        let result = parse_callback_query(query);
-                        sender.send(result.clone()).ok();
-                        if let Err(err) = result {
-                            return (StatusCode::BAD_REQUEST, err.to_string()).into_response();
-                        }
-                    }
-                    Html(SUCCESS_HTML).into_response()
-                }
-            }
-        };
-
-        let app = Router::new().route("/callback", get(callback_handler));
-
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = TcpListener::bind(&addr)
             .await
             .map_err(|e| Error::Transport(format!("Failed to bind to {addr}: {e}")))?;
 
-        let server = axum::serve(listener, app);
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|e| Error::Transport(format!("Failed to accept callback connection: {e}")))?;
 
-        let server_handle = tokio::spawn(async move {
-            server.await.ok();
-        });
+        let request = read_http_request(&mut stream).await?;
+        let request_line = request
+            .lines()
+            .next()
+            .ok_or_else(|| Error::AuthorizationFailed("Missing request line".to_string()))?;
+        let target = parse_request_line(request_line)?;
+        let query = parse_callback_target(target)?;
+        let result = parse_callback_query(query);
 
-        let result = rx.await.map_err(|_| {
-            Error::AuthorizationFailed("Callback server closed unexpectedly".into())
-        })??;
-
-        server_handle.abort();
-
-        Ok(result)
+        match result {
+            Ok((code, state)) => {
+                send_http_response(
+                    &mut stream,
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    SUCCESS_HTML,
+                )
+                .await?;
+                Ok((code, state))
+            }
+            Err(err) => {
+                let message = err.to_string();
+                send_http_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    "text/plain; charset=utf-8",
+                    &message,
+                )
+                .await?;
+                Err(err)
+            }
+        }
     }
 }
 
