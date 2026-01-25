@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use futures::{Sink, Stream};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, BufReader, ReadBuf, Stdin, Stdout, stdin, stdout},
+    io::{AsyncRead, AsyncWrite, ReadBuf, Stdin, Stdout, stdin, stdout},
     net::TcpStream,
 };
 use tokio_util::codec::Framed;
@@ -43,16 +43,16 @@ pub trait TransportStream:
 
 /// A duplex wrapper around stdin/stdout for use with codec framing
 pub struct StdioDuplex {
-    /// Buffered stdin reader.
-    reader: BufReader<Stdin>,
+    /// Stdin reader.
+    reader: Stdin,
     /// Stdout writer.
     writer: Stdout,
 }
 
 /// A generic duplex wrapper for combining separate AsyncRead and AsyncWrite streams
 pub struct GenericDuplex<R, W> {
-    /// Buffered reader half.
-    reader: BufReader<R>,
+    /// Reader half.
+    reader: R,
     /// Writer half.
     writer: W,
 }
@@ -61,7 +61,7 @@ impl StdioDuplex {
     /// Create a duplex wrapper for stdin/stdout.
     pub fn new(stdin: Stdin, stdout: Stdout) -> Self {
         Self {
-            reader: BufReader::new(stdin),
+            reader: stdin,
             writer: stdout,
         }
     }
@@ -102,7 +102,7 @@ where
     /// Create a new duplex wrapper from reader and writer halves.
     pub fn new(reader: R, writer: W) -> Self {
         Self {
-            reader: BufReader::new(reader),
+            reader,
             writer,
         }
     }
