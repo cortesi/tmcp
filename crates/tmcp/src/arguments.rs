@@ -101,26 +101,53 @@ impl Arguments {
     /// This is a convenience method for the common pattern of extracting
     /// a required string parameter with proper error handling.
     pub fn require_string(&self, key: &str) -> crate::Result<String> {
-        self.get_string(key)
-            .ok_or_else(|| Error::InvalidParams(format!("missing required parameter: {}", key)))
+        match self.0.get(key) {
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                Error::InvalidParams(format!("parameter '{}' must be a string", key))
+            }),
+            None => Err(Error::InvalidParams(format!(
+                "missing required parameter: {}",
+                key
+            ))),
+        }
     }
 
     /// Require an i64 parameter, returning an error if missing.
     pub fn require_i64(&self, key: &str) -> crate::Result<i64> {
-        self.get_i64(key)
-            .ok_or_else(|| Error::InvalidParams(format!("missing required parameter: {}", key)))
+        match self.0.get(key) {
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|_| Error::InvalidParams(format!("parameter '{}' must be an i64", key))),
+            None => Err(Error::InvalidParams(format!(
+                "missing required parameter: {}",
+                key
+            ))),
+        }
     }
 
     /// Require a bool parameter, returning an error if missing.
     pub fn require_bool(&self, key: &str) -> crate::Result<bool> {
-        self.get_bool(key)
-            .ok_or_else(|| Error::InvalidParams(format!("missing required parameter: {}", key)))
+        match self.0.get(key) {
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                Error::InvalidParams(format!("parameter '{}' must be a boolean", key))
+            }),
+            None => Err(Error::InvalidParams(format!(
+                "missing required parameter: {}",
+                key
+            ))),
+        }
     }
 
     /// Require a typed parameter, returning an error if missing or wrong type.
     pub fn require<T: DeserializeOwned>(&self, key: &str) -> crate::Result<T> {
-        self.get::<T>(key)
-            .ok_or_else(|| Error::InvalidParams(format!("missing or invalid parameter: {}", key)))
+        match self.0.get(key) {
+            Some(value) => serde_json::from_value(value.clone()).map_err(|e| {
+                Error::InvalidParams(format!("parameter '{}' is invalid: {}", key, e))
+            }),
+            None => Err(Error::InvalidParams(format!(
+                "missing required parameter: {}",
+                key
+            ))),
+        }
     }
 
     /// Deserialize into a typed struct with proper error handling.

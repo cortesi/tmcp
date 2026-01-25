@@ -88,6 +88,12 @@ impl RequestHandler {
         self.transport_tx = Some(transport_tx);
     }
 
+    /// Set the request timeout in milliseconds.
+    pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
     /// Send a request and wait for response with timeout and cancellation support.
     pub async fn request<Req, Res>(&self, request: Req) -> Result<Res>
     where

@@ -16,7 +16,7 @@ use crate::{
 ///
 /// Each client connection will have its own instance of the implementation.
 /// All methods take `&self` to allow concurrent request handling.
-/// Implementations should use interior mutability (`Arc<Mutex<_>>`, `RwLock`, etc.)
+/// Implementations should use interior mutability (`Arc<Mutex<_>>`, `RwLock<_>`, etc.)
 /// for any mutable state.
 #[async_trait]
 pub trait ClientHandler: Send + Sync {
@@ -115,7 +115,7 @@ pub trait ClientHandler: Send + Sync {
 /// Handler trait for implementing MCP servers.
 ///
 /// This trait defines how a server responds to client requests. Each client connection
-/// gets its own handler instance, created by the factory function passed to [`Server::new`].
+/// gets its own handler instance, created by the factory function passed to [`crate::Server::new`].
 ///
 /// # Default Behavior Philosophy
 ///
@@ -141,7 +141,7 @@ pub trait ClientHandler: Send + Sync {
 /// # Concurrency
 ///
 /// All methods take `&self` to allow concurrent request handling from the same client.
-/// For mutable state, use interior mutability patterns like `Arc<Mutex<_>>` or `RwLock`.
+/// For mutable state, use interior mutability patterns like `Arc<Mutex<_>>` or `RwLock<_>`.
 ///
 /// # Choosing Between Trait and Macro
 ///

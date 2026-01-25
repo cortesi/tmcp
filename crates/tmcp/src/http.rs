@@ -328,9 +328,11 @@ type OriginResult = StdResult<(), Box<Response>>;
 
 /// Validate the Origin header against the request Host when present.
 fn validate_origin(headers: &HeaderMap) -> OriginResult {
-    let Some(origin) = headers.get(header::ORIGIN) else {
+    if headers.get(header::ORIGIN).is_none() {
         return Ok(());
-    };
+    }
+
+    let origin = headers.get(header::ORIGIN).unwrap();
 
     let origin_str = origin
         .to_str()

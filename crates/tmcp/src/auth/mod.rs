@@ -36,7 +36,7 @@
 //!
 //! ### Token Management
 //! - Automatic token refresh when tokens expire
-//! - Thread-safe token storage using Arc<RwLock>
+//! - Thread-safe token storage using `Arc<RwLock<_>>`
 //! - Seamless integration with HTTP transport for automatic token injection
 //!
 //! ## Usage Examples

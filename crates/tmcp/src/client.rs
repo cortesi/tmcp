@@ -1,4 +1,4 @@
-use std::{collections::HashMap, process::Stdio, sync::Arc};
+use std::{collections::HashMap, process::Stdio, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
@@ -90,7 +90,7 @@ impl Client<()> {
     /// failures from missing handlers.
     ///
     /// The handler receives callbacks when the server initiates requests:
-    /// - [`ClientHandler::ping`] - Server health checks
+    /// - [`ClientHandler::pong`] - Server health checks
     /// - [`ClientHandler::create_message`] - LLM sampling requests (if capability enabled)
     /// - [`ClientHandler::list_roots`] - Filesystem root discovery
     /// - [`ClientHandler::elicit`] - User input requests
@@ -113,6 +113,12 @@ impl Client<()> {
     /// Set the client capabilities.
     pub fn with_capabilities(mut self, capabilities: ClientCapabilities) -> Self {
         self.client_capabilities = capabilities;
+        self
+    }
+
+    /// Set the request timeout duration.
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_handler = self.request_handler.with_timeout(timeout.as_millis() as u64);
         self
     }
 }
@@ -186,7 +192,7 @@ where
     /// Both HTTP and HTTPS protocols are supported.
     ///
     /// # Arguments
-    /// * `endpoint` - Server URL including protocol and path (e.g., "http://localhost:3000", "https://api.example.com/mcp")
+    /// * `endpoint` - Server URL including protocol and path (e.g., "http://localhost:3000", "<https://api.example.com/mcp>")
     pub async fn connect_http(&mut self, endpoint: impl Into<String>) -> Result<InitializeResult> {
         let transport = Box::new(HttpClientTransport::new(endpoint));
         self.connect(transport).await?;
@@ -1359,5 +1365,26 @@ mod tests {
         // Initialize and test the new connection
         client.init().await.expect("Re-initialize failed");
         client.ping().await.expect("Ping after reconnect failed");
+    }
+
+    #[tokio::test]
+    async fn test_request_timeout() {
+        let (client_transport, _server_transport) = TestTransport::create_pair();
+
+        let mut client = Client::new("test", "1.0")
+            .with_request_timeout(Duration::from_millis(100));
+
+        client.connect(client_transport).await.expect("Failed to connect");
+
+        // init() sends initialize request.
+        // Since server transport is not read, it won't respond.
+        // So it should timeout after 100ms.
+        let result = client.init().await;
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::Timeout { .. }) => {}
+            _ => panic!("Expected timeout error, got {:?}", result),
+        }
     }
 }
