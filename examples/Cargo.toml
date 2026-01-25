@@ -53,6 +53,18 @@ name = "process_spawn"
 path = "process_spawn.rs"
 
 [[example]]
+name = "progressive_server"
+path = "progressive_server.rs"
+
+[[example]]
+name = "progressive_visibility"
+path = "progressive_visibility.rs"
+
+[[example]]
+name = "progressive_manual_activation"
+path = "progressive_manual_activation.rs"
+
+[[example]]
 name = "register_client"
 path = "register_client.rs"
 

@@ -84,6 +84,8 @@
 //!
 //! See [`ServerHandler`] documentation for the default behavior philosophy.
 
+#![warn(missing_docs)]
+
 /// Argument envelope used by tool calls and prompt arguments.
 mod arguments;
 /// Client implementation and transport orchestration.
@@ -104,12 +106,16 @@ mod jsonrpc;
 mod request_handler;
 /// Server implementation and handle types.
 mod server;
+/// Tool registration and progressive discovery support.
+mod toolset;
 /// Transport traits and adapters.
 mod transport;
 
+/// OAuth and authorization helpers.
 pub mod auth;
 /// Public schema types for MCP messages.
 pub mod schema;
+/// Test utilities for building tmcp integration tests.
 pub mod testutils;
 
 pub use arguments::Arguments;
@@ -123,7 +129,12 @@ pub use error::{
 pub use schema::ToolResponse;
 pub use server::{Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root
-pub use tmcp_macros::{ToolResponse, mcp_server, tool, tool_params, tool_result};
+pub use tmcp_macros::{Group, ToolResponse, group, mcp_server, tool, tool_params, tool_result};
+pub use toolset::{
+    ActivationHook, Group, GroupConfig, GroupInfo, ToolSet, ToolSetView, Visibility,
+};
+#[doc(hidden)]
+pub use toolset::{GroupDispatch, GroupRegistration, ToolFuture};
 
 // Keep the full macros module available for internal use
 /// Re-exported macros module for internal use.

@@ -12,6 +12,7 @@
 //! - `version`: Override the server version used in initialization
 //! - `instructions`: Override the server instructions used in initialization
 //! - `protocol_version`: Control protocol version negotiation ("latest" or "client")
+//! - `toolset`: Use a ToolSet field for progressive discovery
 //!
 //! All tool methods must be async and have one of the following signatures:
 //!
@@ -42,6 +43,7 @@
 //! - `icon = "https://..."` or `icons("a", "b")`
 //! - `defaults` (treat missing arguments as an empty object and rely on serde defaults)
 //! - `flat` (force flat handling for single-argument tools)
+//! - `always` (always visible when using ToolSet-backed servers)
 //!
 //! Example usage:
 //!
@@ -108,6 +110,8 @@
 //! }
 //! ```
 
+#![warn(missing_docs)]
+
 use std::result::Result as StdResult;
 
 use heck::ToSnakeCase;
@@ -136,6 +140,15 @@ struct ToolMethod {
     return_kind: ToolReturnKind,
     /// Parsed tool attribute metadata.
     attrs: ToolAttrs,
+}
+
+#[derive(Debug)]
+/// Description of an impl method tagged as a group factory.
+struct GroupMethod {
+    /// Method identifier for constructing the group.
+    ident: syn::Ident,
+    /// Optional segment override for this group edge.
+    segment_override: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +210,23 @@ struct ToolAttrs {
     defaults: bool,
     /// Whether to force flat handling for single-argument tools.
     flat: bool,
+    /// Whether the tool should always be visible when using ToolSet.
+    always: bool,
+}
+
+#[derive(Debug, Default)]
+/// Metadata parsed from a #[group(...)] attribute.
+struct GroupMeta {
+    /// Optional group name override.
+    name: Option<String>,
+    /// Optional description override.
+    description: Option<String>,
+    /// Optional deactivator visibility override.
+    show_deactivator: Option<bool>,
+    /// Optional activation hook method name.
+    on_activate: Option<syn::Ident>,
+    /// Optional deactivation hook method name.
+    on_deactivate: Option<syn::Ident>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -219,6 +249,8 @@ struct ServerInfo {
     description: String,
     /// Tool methods discovered in the impl block.
     tools: Vec<ToolMethod>,
+    /// Group factory methods discovered in the impl block.
+    groups: Vec<GroupMethod>,
 }
 
 #[derive(Debug, Default)]
@@ -234,6 +266,8 @@ struct ServerMacroArgs {
     instructions: Option<Expr>,
     /// Protocol version negotiation strategy.
     protocol_version: Option<ProtocolVersionStrategy>,
+    /// Optional ToolSet field name for progressive discovery.
+    toolset: Option<syn::Ident>,
 }
 
 impl Parse for ServerMacroArgs {
@@ -259,6 +293,9 @@ impl Parse for ServerMacroArgs {
             } else if ident == "protocol_version" {
                 let expr: Expr = input.parse()?;
                 args.protocol_version = Some(parse_protocol_version_strategy(&expr)?);
+            } else if ident == "toolset" {
+                let expr: Expr = input.parse()?;
+                args.toolset = Some(parse_ident_from_expr(&expr)?);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -428,6 +465,26 @@ fn parse_string_lit(expr: &Expr) -> Result<String> {
     }
 }
 
+/// Parse an identifier from a string literal or path expression.
+fn parse_ident_from_expr(expr: &Expr) -> Result<syn::Ident> {
+    match expr {
+        Expr::Lit(ExprLit {
+            lit: Lit::Str(s), ..
+        }) => syn::parse_str::<syn::Ident>(&s.value()).map_err(|_| {
+            syn::Error::new(expr.span(), "expected a valid identifier string literal")
+        }),
+        Expr::Path(path) => path
+            .path
+            .get_ident()
+            .cloned()
+            .ok_or_else(|| syn::Error::new(expr.span(), "expected an identifier")),
+        _ => Err(syn::Error::new(
+            expr.span(),
+            "expected a string literal or identifier",
+        )),
+    }
+}
+
 /// Parse task support value from a string literal or identifier.
 fn parse_tool_task_support(expr: &Expr) -> Result<ToolTaskSupport> {
     let value = match expr {
@@ -502,6 +559,7 @@ fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
                             "destructive" => tool_attrs.destructive = Some(true),
                             "idempotent" => tool_attrs.idempotent = Some(true),
                             "open_world" => tool_attrs.open_world = Some(true),
+                            "always" => tool_attrs.always = true,
                             "defaults" => tool_attrs.defaults = true,
                             "flat" => tool_attrs.flat = true,
                             _ => {
@@ -579,6 +637,9 @@ fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
                         "flat" => {
                             tool_attrs.flat = parse_bool_lit(&meta.value)?;
                         }
+                        "always" => {
+                            tool_attrs.always = parse_bool_lit(&meta.value)?;
+                        }
                         _ => {
                             return Err(syn::Error::new(
                                 ident.span(),
@@ -616,6 +677,74 @@ fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
     } else {
         Ok(None)
     }
+}
+
+/// Parse group metadata from a #[tmcp_group_meta(...)] attribute.
+fn parse_group_meta(attrs: &[syn::Attribute]) -> Result<GroupMeta> {
+    let mut meta = GroupMeta::default();
+
+    for attr in attrs {
+        if !(attr.path().is_ident("tmcp_group_meta") || attr.path().is_ident("group")) {
+            continue;
+        }
+
+        let metas = match &attr.meta {
+            Meta::Path(_) => Punctuated::<Meta, syn::Token![,]>::new(),
+            Meta::List(list) => {
+                list.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)?
+            }
+            Meta::NameValue(meta) => {
+                return Err(syn::Error::new(
+                    meta.span(),
+                    "#[group] does not support name-value syntax",
+                ));
+            }
+        };
+
+        for meta_item in metas {
+            match meta_item {
+                Meta::NameValue(item) => {
+                    let ident = item.path.get_ident().ok_or_else(|| {
+                        syn::Error::new(item.path.span(), "invalid #[group] argument")
+                    })?;
+                    match ident.to_string().as_str() {
+                        "name" => {
+                            meta.name = Some(parse_string_lit(&item.value)?);
+                        }
+                        "description" => {
+                            meta.description = Some(parse_string_lit(&item.value)?);
+                        }
+                        "show_deactivator" => {
+                            meta.show_deactivator = Some(parse_bool_lit(&item.value)?);
+                        }
+                        "on_activate" => {
+                            meta.on_activate = Some(parse_ident_from_expr(&item.value)?);
+                        }
+                        "on_deactivate" => {
+                            meta.on_deactivate = Some(parse_ident_from_expr(&item.value)?);
+                        }
+                        _ => {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                format!("Unknown #[group] argument: {ident}"),
+                            ));
+                        }
+                    }
+                }
+                Meta::Path(path) => {
+                    return Err(syn::Error::new(path.span(), "unsupported #[group] flag"));
+                }
+                Meta::List(list) => {
+                    return Err(syn::Error::new(
+                        list.span(),
+                        "unsupported #[group] list argument",
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(meta)
 }
 
 /// Determine the tool return type kind.
@@ -802,6 +931,110 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
     }))
 }
 
+/// Parse a group factory method from an impl item if it has a #[group] attribute.
+fn parse_group_method(method: &syn::ImplItemFn) -> Result<Option<GroupMethod>> {
+    let mut segment_override = None;
+    let mut found = false;
+
+    for attr in &method.attrs {
+        if !attr.path().is_ident("group") {
+            continue;
+        }
+        found = true;
+
+        let metas = match &attr.meta {
+            Meta::Path(_) => Punctuated::<Meta, syn::Token![,]>::new(),
+            Meta::List(list) => {
+                list.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)?
+            }
+            Meta::NameValue(meta) => {
+                return Err(syn::Error::new(
+                    meta.span(),
+                    "#[group] does not support name-value syntax",
+                ));
+            }
+        };
+
+        for meta in metas {
+            match meta {
+                Meta::NameValue(item) => {
+                    let ident = item.path.get_ident().ok_or_else(|| {
+                        syn::Error::new(item.path.span(), "invalid #[group] argument")
+                    })?;
+                    match ident.to_string().as_str() {
+                        "name" => {
+                            segment_override = Some(parse_string_lit(&item.value)?);
+                        }
+                        _ => {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                format!("Unknown #[group] argument: {ident}"),
+                            ));
+                        }
+                    }
+                }
+                Meta::Path(path) => {
+                    return Err(syn::Error::new(path.span(), "unsupported #[group] flag"));
+                }
+                Meta::List(list) => {
+                    return Err(syn::Error::new(
+                        list.span(),
+                        "unsupported #[group] list argument",
+                    ));
+                }
+            }
+        }
+    }
+
+    if !found {
+        return Ok(None);
+    }
+
+    if method.sig.asyncness.is_some() {
+        return Err(syn::Error::new(
+            method.sig.span(),
+            "group methods must be synchronous",
+        ));
+    }
+
+    let params: Vec<_> = method.sig.inputs.iter().collect();
+    if params.is_empty() {
+        return Err(syn::Error::new(
+            method.sig.inputs.span(),
+            "group methods must include &self or &mut self",
+        ));
+    }
+
+    match params[0] {
+        syn::FnArg::Receiver(_) => {}
+        _ => {
+            return Err(syn::Error::new(
+                params[0].span(),
+                "first parameter must be &self or &mut self",
+            ));
+        }
+    }
+
+    if params.len() > 1 {
+        return Err(syn::Error::new(
+            params[1].span(),
+            "group methods must not take additional parameters",
+        ));
+    }
+
+    if matches!(method.sig.output, syn::ReturnType::Default) {
+        return Err(syn::Error::new(
+            method.sig.output.span(),
+            "group methods must return a group type",
+        ));
+    }
+
+    Ok(Some(GroupMethod {
+        ident: method.sig.ident.clone(),
+        segment_override,
+    }))
+}
+
 /// Parse a server impl block and gather tool metadata.
 fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
     let impl_block = syn::parse2::<ItemImpl>(input.clone())?;
@@ -826,13 +1059,25 @@ fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
     // Extract description from doc comment
     let description = extract_doc_comment(&impl_block.attrs);
 
-    // Extract tool methods
+    // Extract tool and group methods
     let mut tools = Vec::new();
+    let mut groups = Vec::new();
     for item in &impl_block.items {
-        if let ImplItem::Fn(method) = item
-            && let Some(tool) = parse_tool_method(method)?
-        {
+        let ImplItem::Fn(method) = item else {
+            continue;
+        };
+        let tool = parse_tool_method(method)?;
+        let group = parse_group_method(method)?;
+        if tool.is_some() && group.is_some() {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "methods cannot be both #[tool] and #[group]",
+            ));
+        }
+        if let Some(tool) = tool {
             tools.push(tool);
+        } else if let Some(group) = group {
+            groups.push(group);
         }
     }
 
@@ -842,105 +1087,18 @@ fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
             struct_name,
             description,
             tools,
+            groups,
         },
     ))
 }
 
 /// Generate the ServerHandler::call_tool implementation.
 fn generate_call_tool(info: &ServerInfo) -> TokenStream {
-    let tool_matches = info.tools.iter().map(|tool| {
-        let name = &tool.name;
-        let method = syn::Ident::new(name, proc_macro2::Span::call_site());
-        let defaults = tool.attrs.defaults;
-        let (args_prelude, call_expr) = match (&tool.has_ctx, &tool.params_kind) {
-            (false, ParamsKind::None) => (
-                quote! { let _ = arguments; },
-                quote! { self.#method().await },
-            ),
-            (true, ParamsKind::None) => (
-                quote! { let _ = arguments; },
-                quote! { self.#method(context).await },
-            ),
-            (false, ParamsKind::Unit) => (
-                quote! { let _ = arguments; },
-                quote! { self.#method(()).await },
-            ),
-            (true, ParamsKind::Unit) => (
-                quote! { let _ = arguments; },
-                quote! { self.#method(context, ()).await },
-            ),
-            (has_ctx, ParamsKind::Typed(params_type)) => {
-                let params_type = params_type.as_ref();
-                let call = if *has_ctx {
-                    quote! { self.#method(context, params).await }
-                } else {
-                    quote! { self.#method(params).await }
-                };
-
-                (
-                    quote! {
-                        let params: #params_type = match tmcp::Arguments::into_tool_params(
-                            arguments,
-                            #defaults,
-                        ) {
-                            Ok(params) => params,
-                            Err(err) => {
-                                return Ok(err.into());
-                            }
-                        };
-                    },
-                    call,
-                )
-            }
-            (has_ctx, ParamsKind::Flat(params)) => {
-                let struct_ident = flat_args_struct_ident(&info.struct_name, name);
-                let param_idents: Vec<_> = params.iter().map(|param| &param.ident).collect();
-
-                let call = if *has_ctx {
-                    quote! { self.#method(context, #(#param_idents),*).await }
-                } else {
-                    quote! { self.#method(#(#param_idents),*).await }
-                };
-
-                (
-                    quote! {
-                        let params: #struct_ident = match tmcp::Arguments::into_tool_params(
-                            arguments,
-                            #defaults,
-                        ) {
-                            Ok(params) => params,
-                            Err(err) => {
-                                return Ok(err.into());
-                            }
-                        };
-                        let #struct_ident { #(#param_idents),* } = params;
-                    },
-                    call,
-                )
-            }
-        };
-
-        let call = match &tool.return_kind {
-            ToolReturnKind::Result => quote! {
-                #args_prelude
-                #call_expr
-            },
-            ToolReturnKind::ToolResult { .. } => quote! {
-                #args_prelude
-                let result = #call_expr;
-                Ok(match result {
-                    Ok(value) => value.into(),
-                    Err(err) => err.into(),
-                })
-            },
-        };
-
-        quote! {
-            #name => {
-                #call
-            }
-        }
-    });
+    let receiver = quote! { self };
+    let tool_matches = info
+        .tools
+        .iter()
+        .map(|tool| generate_tool_call_arm(tool, &receiver, &info.struct_name));
 
     quote! {
         async fn call_tool(
@@ -958,125 +1116,238 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
     }
 }
 
+/// Generate a tool call match arm for a receiver expression.
+fn generate_tool_call_arm(
+    tool: &ToolMethod,
+    receiver: &TokenStream,
+    owner_name: &str,
+) -> TokenStream {
+    let name = &tool.name;
+    let method = syn::Ident::new(name, proc_macro2::Span::call_site());
+    let defaults = tool.attrs.defaults;
+    let (args_prelude, call_expr) = match (&tool.has_ctx, &tool.params_kind) {
+        (false, ParamsKind::None) => (
+            quote! { let _ = arguments; },
+            quote! { #receiver.#method().await },
+        ),
+        (true, ParamsKind::None) => (
+            quote! { let _ = arguments; },
+            quote! { #receiver.#method(context).await },
+        ),
+        (false, ParamsKind::Unit) => (
+            quote! { let _ = arguments; },
+            quote! { #receiver.#method(()).await },
+        ),
+        (true, ParamsKind::Unit) => (
+            quote! { let _ = arguments; },
+            quote! { #receiver.#method(context, ()).await },
+        ),
+        (has_ctx, ParamsKind::Typed(params_type)) => {
+            let params_type = params_type.as_ref();
+            let call = if *has_ctx {
+                quote! { #receiver.#method(context, params).await }
+            } else {
+                quote! { #receiver.#method(params).await }
+            };
+
+            (
+                quote! {
+                    let params: #params_type = match tmcp::Arguments::into_tool_params(
+                        arguments,
+                        #defaults,
+                    ) {
+                        Ok(params) => params,
+                        Err(err) => {
+                            return Ok(err.into());
+                        }
+                    };
+                },
+                call,
+            )
+        }
+        (has_ctx, ParamsKind::Flat(params)) => {
+            let struct_ident = flat_args_struct_ident(owner_name, name);
+            let param_idents: Vec<_> = params.iter().map(|param| &param.ident).collect();
+
+            let call = if *has_ctx {
+                quote! { #receiver.#method(context, #(#param_idents),*).await }
+            } else {
+                quote! { #receiver.#method(#(#param_idents),*).await }
+            };
+
+            (
+                quote! {
+                    let params: #struct_ident = match tmcp::Arguments::into_tool_params(
+                        arguments,
+                        #defaults,
+                    ) {
+                        Ok(params) => params,
+                        Err(err) => {
+                            return Ok(err.into());
+                        }
+                    };
+                    let #struct_ident { #(#param_idents),* } = params;
+                },
+                call,
+            )
+        }
+    };
+
+    let call = match &tool.return_kind {
+        ToolReturnKind::Result => quote! {
+            #args_prelude
+            #call_expr
+        },
+        ToolReturnKind::ToolResult { .. } => quote! {
+            #args_prelude
+            let result = #call_expr;
+            Ok(match result {
+                Ok(value) => value.into(),
+                Err(err) => err.into(),
+            })
+        },
+    };
+
+    quote! {
+        #name => {
+            #call
+        }
+    }
+}
+
+/// Generate the ServerHandler::list_tools implementation.
+fn tool_schema_expr(tool: &ToolMethod, owner_name: &str) -> TokenStream {
+    match tool.params_kind {
+        ParamsKind::None | ParamsKind::Unit => {
+            quote! { tmcp::schema::ToolSchema::empty() }
+        }
+        ParamsKind::Typed(ref params_type) => {
+            let params_type = params_type.as_ref();
+            quote! { tmcp::schema::ToolSchema::from_json_schema::<#params_type>() }
+        }
+        ParamsKind::Flat(_) => {
+            let struct_ident = flat_args_struct_ident(owner_name, &tool.name);
+            quote! { tmcp::schema::ToolSchema::from_json_schema::<#struct_ident>() }
+        }
+    }
+}
+
+/// Build a Tool expression with metadata annotations applied.
+fn build_tool_expr(
+    tool: &ToolMethod,
+    name_expr: &TokenStream,
+    schema_expr: &TokenStream,
+) -> TokenStream {
+    let description = &tool.docs;
+    let description_setter = if description.is_empty() {
+        quote! {}
+    } else {
+        quote! { tool = tool.with_description(#description); }
+    };
+
+    let title_setter = tool
+        .attrs
+        .title
+        .as_ref()
+        .map(|title| quote! { tool = tool.with_annotation_title(#title); })
+        .unwrap_or_default();
+
+    let read_only_setter = tool
+        .attrs
+        .read_only
+        .map(|value| quote! { tool = tool.with_read_only_hint(#value); })
+        .unwrap_or_default();
+
+    let destructive_setter = tool
+        .attrs
+        .destructive
+        .map(|value| quote! { tool = tool.with_destructive_hint(#value); })
+        .unwrap_or_default();
+
+    let idempotent_setter = tool
+        .attrs
+        .idempotent
+        .map(|value| quote! { tool = tool.with_idempotent_hint(#value); })
+        .unwrap_or_default();
+
+    let open_world_setter = tool
+        .attrs
+        .open_world
+        .map(|value| quote! { tool = tool.with_open_world_hint(#value); })
+        .unwrap_or_default();
+
+    let task_support_setter = tool
+        .attrs
+        .task_support
+        .map(|support| {
+            let support_expr = match support {
+                ToolTaskSupport::Forbidden => {
+                    quote! { tmcp::schema::ToolTaskSupport::Forbidden }
+                }
+                ToolTaskSupport::Optional => {
+                    quote! { tmcp::schema::ToolTaskSupport::Optional }
+                }
+                ToolTaskSupport::Required => {
+                    quote! { tmcp::schema::ToolTaskSupport::Required }
+                }
+            };
+            quote! { tool = tool.with_task_support(#support_expr); }
+        })
+        .unwrap_or_default();
+
+    let output_schema = tool
+        .attrs
+        .output_schema
+        .clone()
+        .or_else(|| match &tool.return_kind {
+            ToolReturnKind::ToolResult { output } => output.as_ref().clone(),
+            _ => None,
+        })
+        .filter(|ty| !is_call_tool_result_type(ty));
+
+    let output_schema_setter = output_schema
+        .map(|ty| {
+            quote! { tool = tool.with_output_schema(tmcp::schema::ToolSchema::from_json_schema::<#ty>()); }
+        })
+        .unwrap_or_default();
+
+    let icons_setter = if tool.attrs.icons.is_empty() {
+        quote! {}
+    } else {
+        let icons = tool
+            .attrs
+            .icons
+            .iter()
+            .map(|icon| quote! { tmcp::schema::Icon::new(#icon) });
+        quote! {
+            tool = tool.with_icons(vec![#(#icons),*]);
+        }
+    };
+
+    quote! {
+        {
+            let mut tool = tmcp::schema::Tool::new(#name_expr, #schema_expr);
+            #description_setter
+            #title_setter
+            #read_only_setter
+            #destructive_setter
+            #idempotent_setter
+            #open_world_setter
+            #task_support_setter
+            #output_schema_setter
+            #icons_setter
+            tool
+        }
+    }
+}
+
 /// Generate the ServerHandler::list_tools implementation.
 fn generate_list_tools(info: &ServerInfo) -> TokenStream {
     let tools = info.tools.iter().map(|tool| {
         let name = &tool.name;
-        let description = &tool.docs;
-        let schema = match tool.params_kind {
-            ParamsKind::None | ParamsKind::Unit => {
-                quote! { tmcp::schema::ToolSchema::empty() }
-            }
-            ParamsKind::Typed(ref params_type) => {
-                let params_type = params_type.as_ref();
-                quote! { tmcp::schema::ToolSchema::from_json_schema::<#params_type>() }
-            }
-            ParamsKind::Flat(_) => {
-                let struct_ident = flat_args_struct_ident(&info.struct_name, name);
-                quote! { tmcp::schema::ToolSchema::from_json_schema::<#struct_ident>() }
-            }
-        };
-
-        let description_setter = if description.is_empty() {
-            quote! {}
-        } else {
-            quote! { tool = tool.with_description(#description); }
-        };
-
-        let title_setter = tool
-            .attrs
-            .title
-            .as_ref()
-            .map(|title| quote! { tool = tool.with_annotation_title(#title); })
-            .unwrap_or_default();
-
-        let read_only_setter = tool
-            .attrs
-            .read_only
-            .map(|value| quote! { tool = tool.with_read_only_hint(#value); })
-            .unwrap_or_default();
-
-        let destructive_setter = tool
-            .attrs
-            .destructive
-            .map(|value| quote! { tool = tool.with_destructive_hint(#value); })
-            .unwrap_or_default();
-
-        let idempotent_setter = tool
-            .attrs
-            .idempotent
-            .map(|value| quote! { tool = tool.with_idempotent_hint(#value); })
-            .unwrap_or_default();
-
-        let open_world_setter = tool
-            .attrs
-            .open_world
-            .map(|value| quote! { tool = tool.with_open_world_hint(#value); })
-            .unwrap_or_default();
-
-        let task_support_setter = tool
-            .attrs
-            .task_support
-            .map(|support| {
-                let support_expr = match support {
-                    ToolTaskSupport::Forbidden => {
-                        quote! { tmcp::schema::ToolTaskSupport::Forbidden }
-                    }
-                    ToolTaskSupport::Optional => {
-                        quote! { tmcp::schema::ToolTaskSupport::Optional }
-                    }
-                    ToolTaskSupport::Required => {
-                        quote! { tmcp::schema::ToolTaskSupport::Required }
-                    }
-                };
-                quote! { tool = tool.with_task_support(#support_expr); }
-            })
-            .unwrap_or_default();
-
-        let output_schema = tool
-            .attrs
-            .output_schema
-            .clone()
-            .or_else(|| match &tool.return_kind {
-                ToolReturnKind::ToolResult { output } => output.as_ref().clone(),
-                _ => None,
-            })
-            .filter(|ty| !is_call_tool_result_type(ty));
-
-        let output_schema_setter = output_schema
-            .map(|ty| {
-                quote! { tool = tool.with_output_schema(tmcp::schema::ToolSchema::from_json_schema::<#ty>()); }
-            })
-            .unwrap_or_default();
-
-        let icons_setter = if tool.attrs.icons.is_empty() {
-            quote! {}
-        } else {
-            let icons = tool
-                .attrs
-                .icons
-                .iter()
-                .map(|icon| quote! { tmcp::schema::Icon::new(#icon) });
-            quote! {
-                tool = tool.with_icons(vec![#(#icons),*]);
-            }
-        };
-
-        quote! {
-            {
-                let mut tool = tmcp::schema::Tool::new(#name, #schema);
-                #description_setter
-                #title_setter
-                #read_only_setter
-                #destructive_setter
-                #idempotent_setter
-                #open_world_setter
-                #task_support_setter
-                #output_schema_setter
-                #icons_setter
-                tool
-            }
-        }
+        let name_expr = quote! { #name };
+        let schema = tool_schema_expr(tool, &info.struct_name);
+        build_tool_expr(tool, &name_expr, &schema)
     });
 
     quote! {
@@ -1094,15 +1365,15 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
 }
 
 /// Generate struct definitions for flat tool argument lists.
-fn generate_flat_arg_structs(info: &ServerInfo) -> Vec<TokenStream> {
-    info.tools
+fn generate_flat_arg_structs_for(struct_name: &str, tools: &[ToolMethod]) -> Vec<TokenStream> {
+    tools
         .iter()
         .filter_map(|tool| match &tool.params_kind {
             ParamsKind::Flat(params) => Some((tool, params)),
             _ => None,
         })
         .map(|(tool, params)| {
-            let struct_ident = flat_args_struct_ident(&info.struct_name, &tool.name);
+            let struct_ident = flat_args_struct_ident(struct_name, &tool.name);
             let fields = params.iter().map(|param| {
                 let ident = &param.ident;
                 let ty = &param.ty;
@@ -1123,6 +1394,11 @@ fn generate_flat_arg_structs(info: &ServerInfo) -> Vec<TokenStream> {
             }
         })
         .collect()
+}
+
+/// Generate struct definitions for flat tool argument lists.
+fn generate_flat_arg_structs(info: &ServerInfo) -> Vec<TokenStream> {
+    generate_flat_arg_structs_for(&info.struct_name, &info.tools)
 }
 
 /// Generate the ServerHandler::initialize implementation.
@@ -1146,7 +1422,7 @@ fn generate_initialize(
         }
     } else {
         // Use the default implementation
-        generate_default_initialize(info, args)
+        generate_default_initialize(info, args, has_tools(info))
     }
 }
 
@@ -1156,10 +1432,24 @@ fn has_tools(info: &ServerInfo) -> bool {
 }
 
 /// Generate the default ServerHandler::initialize implementation.
-fn generate_default_initialize(info: &ServerInfo, args: &ServerMacroArgs) -> TokenStream {
+fn generate_default_initialize(
+    info: &ServerInfo,
+    args: &ServerMacroArgs,
+    list_changed: bool,
+) -> TokenStream {
+    let prologue = quote! {};
+    generate_default_initialize_with_prologue(info, args, list_changed, &prologue)
+}
+
+/// Generate the default initialize implementation with a custom prologue.
+fn generate_default_initialize_with_prologue(
+    info: &ServerInfo,
+    args: &ServerMacroArgs,
+    list_changed: bool,
+    prologue: &TokenStream,
+) -> TokenStream {
     let snake_case_name = info.struct_name.to_snake_case();
     let description = &info.description;
-    let has_tools = has_tools(info);
 
     let name_expr = args
         .name
@@ -1201,14 +1491,282 @@ fn generate_default_initialize(info: &ServerInfo, args: &ServerMacroArgs) -> Tok
             _capabilities: tmcp::schema::ClientCapabilities,
             _client_info: tmcp::schema::Implementation,
         ) -> tmcp::Result<tmcp::schema::InitializeResult> {
+            #prologue
             let mut init = tmcp::schema::InitializeResult::new(#name_expr)
                 .with_version(#version_expr)
-                .with_tools(#has_tools);
+                .with_tools(#list_changed);
             #instructions_setter
             #protocol_version_setter
             Ok(init)
         }
     }
+}
+
+/// Generate tool registration statements for ToolSet-backed servers.
+fn generate_toolset_registration(info: &ServerInfo, toolset_field: &syn::Ident) -> TokenStream {
+    let group_registrations = info.groups.iter().map(|group| {
+        let method = &group.ident;
+        let override_expr = group
+            .segment_override
+            .as_ref()
+            .map(|name| quote! { Some(#name) })
+            .unwrap_or_else(|| quote! { None });
+        quote! {
+            {
+                let group = self.#method();
+                tmcp::GroupRegistration::register_with_override(
+                    &group,
+                    &self.#toolset_field,
+                    None,
+                    #override_expr,
+                )
+                .expect("group registration failed");
+            }
+        }
+    });
+
+    let tool_registrations = info.tools.iter().map(|tool| {
+        let name = &tool.name;
+        let name_expr = quote! { #name };
+        let schema = tool_schema_expr(tool, &info.struct_name);
+        let tool_expr = build_tool_expr(tool, &name_expr, &schema);
+        quote! {
+            {
+                let tool = #tool_expr;
+                self.#toolset_field
+                    .register_schema(#name, tool, tmcp::Visibility::Always)
+                    .expect("tool registration failed");
+            }
+        }
+    });
+
+    quote! {
+        #(#group_registrations)*
+        #(#tool_registrations)*
+    }
+}
+
+/// Generate a registration guard for ToolSet-backed servers.
+fn generate_toolset_ensure_registered(
+    info: &ServerInfo,
+    toolset_field: &syn::Ident,
+) -> TokenStream {
+    let registrations = generate_toolset_registration(info, toolset_field);
+    quote! {
+        #[doc(hidden)]
+        fn __ensure_tools_registered(&self) {
+            self.#toolset_field.ensure_registered(|| {
+                #registrations
+            });
+        }
+    }
+}
+
+/// Generate the ServerHandler::list_tools implementation for ToolSet-backed servers.
+fn generate_toolset_list_tools(toolset_field: &syn::Ident) -> TokenStream {
+    quote! {
+        async fn list_tools(
+            &self,
+            _context: &tmcp::ServerCtx,
+            cursor: Option<tmcp::schema::Cursor>,
+        ) -> tmcp::Result<tmcp::schema::ListToolsResult> {
+            self.__ensure_tools_registered();
+            self.#toolset_field.list_tools(cursor)
+        }
+    }
+}
+
+/// Generate group dispatch checks for ToolSet-backed servers.
+fn generate_group_dispatch_chain(groups: &[GroupMethod], receiver: &TokenStream) -> TokenStream {
+    let checks = groups.iter().map(|group| {
+        let method = &group.ident;
+        let segment_expr = group
+            .segment_override
+            .as_ref()
+            .map(|name| quote! { #name.to_string() })
+            .unwrap_or_else(|| quote! { tmcp::Group::config(&group).name });
+        quote! {
+            {
+                let group = #receiver.#method();
+                let segment = #segment_expr;
+                if let Some(rest) = name.strip_prefix(segment.as_str()) {
+                    if let Some(rest) = rest.strip_prefix('.') {
+                        return tmcp::GroupDispatch::call_tool(&group, context, rest, arguments)
+                            .await;
+                    }
+                }
+            }
+        }
+    });
+
+    quote! {
+        #(#checks)*
+    }
+}
+
+/// Generate the ServerHandler::call_tool implementation for ToolSet-backed servers.
+fn generate_toolset_call_tool(info: &ServerInfo, toolset_field: &syn::Ident) -> TokenStream {
+    let receiver = quote! { handler };
+    let tool_matches = info
+        .tools
+        .iter()
+        .map(|tool| generate_tool_call_arm(tool, &receiver, &info.struct_name));
+    let group_dispatch = generate_group_dispatch_chain(&info.groups, &receiver);
+
+    quote! {
+        async fn call_tool(
+            &self,
+            context: &tmcp::ServerCtx,
+            name: String,
+            arguments: Option<tmcp::Arguments>,
+            _task: Option<tmcp::schema::TaskMetadata>,
+        ) -> tmcp::Result<tmcp::schema::CallToolResult> {
+            self.__ensure_tools_registered();
+            self.#toolset_field
+                .call_tool_with(self, context, &name, arguments, |handler, context, name, arguments| -> tmcp::ToolFuture<'_, tmcp::Result<tmcp::schema::CallToolResult>> {
+                    Box::pin(async move {
+                        match name {
+                            #(#tool_matches)*
+                            _ => {
+                                #group_dispatch
+                                handler
+                                    .#toolset_field
+                                    .call_dynamic_tool(context, name, arguments)
+                                    .await
+                            }
+                        }
+                    })
+                })
+                .await
+        }
+    }
+}
+
+/// Generate initialize for ToolSet-backed servers.
+fn generate_toolset_initialize(
+    info: &ServerInfo,
+    args: &ServerMacroArgs,
+    custom_init_fn: Option<&syn::Ident>,
+) -> TokenStream {
+    if let Some(init_fn) = custom_init_fn {
+        quote! {
+            async fn initialize(
+                &self,
+                context: &tmcp::ServerCtx,
+                protocol_version: String,
+                capabilities: tmcp::schema::ClientCapabilities,
+                client_info: tmcp::schema::Implementation,
+            ) -> tmcp::Result<tmcp::schema::InitializeResult> {
+                self.__ensure_tools_registered();
+                self.#init_fn(context, protocol_version, capabilities, client_info).await
+            }
+        }
+    } else {
+        let prologue = quote! {
+            self.__ensure_tools_registered();
+        };
+        generate_default_initialize_with_prologue(info, args, true, &prologue)
+    }
+}
+
+/// Generate the GroupDispatch implementation for a group impl block.
+fn generate_group_dispatch_impl(info: &ServerInfo) -> TokenStream {
+    let struct_ident = syn::Ident::new(&info.struct_name, proc_macro2::Span::call_site());
+
+    let tool_registrations = info.tools.iter().map(|tool| {
+        let name = &tool.name;
+        let name_expr = quote! { name.clone() };
+        let schema = tool_schema_expr(tool, &info.struct_name);
+        let tool_expr = build_tool_expr(tool, &name_expr, &schema);
+        let always_visible = tool.attrs.always || name == "activate" || name == "deactivate";
+        let visibility = if always_visible {
+            quote! { tmcp::Visibility::Always }
+        } else {
+            quote! { tmcp::Visibility::Group(group_name.to_string()) }
+        };
+        quote! {
+            {
+                let name = tmcp::ToolSet::qualified_name(group_name, #name);
+                let tool = #tool_expr;
+                toolset.register_schema(&name, tool, #visibility)?;
+            }
+        }
+    });
+
+    let group_registrations = info.groups.iter().map(|group| {
+        let method = &group.ident;
+        let override_expr = group
+            .segment_override
+            .as_ref()
+            .map(|name| quote! { Some(#name) })
+            .unwrap_or_else(|| quote! { None });
+        quote! {
+            {
+                let group = self.#method();
+                tmcp::GroupRegistration::register_with_override(
+                    &group,
+                    toolset,
+                    Some(group_name),
+                    #override_expr,
+                )?;
+            }
+        }
+    });
+
+    let receiver = quote! { self };
+    let tool_matches = info
+        .tools
+        .iter()
+        .map(|tool| generate_tool_call_arm(tool, &receiver, &info.struct_name));
+    let group_dispatch = generate_group_dispatch_chain(&info.groups, &receiver);
+
+    quote! {
+        impl tmcp::GroupDispatch for #struct_ident {
+            fn register_tools(&self, toolset: &tmcp::ToolSet, group_name: &str) -> tmcp::Result<()> {
+                #(#tool_registrations)*
+                #(#group_registrations)*
+                Ok(())
+            }
+
+            fn call_tool<'a>(
+                &'a self,
+                context: &'a tmcp::ServerCtx,
+                name: &'a str,
+                arguments: Option<tmcp::Arguments>,
+            ) -> tmcp::ToolFuture<'a, tmcp::Result<tmcp::schema::CallToolResult>> {
+                Box::pin(async move {
+                    match name {
+                        #(#tool_matches)*
+                        _ => {
+                            #group_dispatch
+                            Err(tmcp::Error::ToolNotFound(name.to_string()))
+                        }
+                    }
+                })
+            }
+        }
+    }
+}
+
+/// Expand a #[group] impl block into dispatch and registration logic.
+fn expand_group_impl(input: &TokenStream) -> Result<TokenStream> {
+    let impl_block = syn::parse2::<ItemImpl>(input.clone())?;
+    if impl_block.trait_.is_some() {
+        return Err(syn::Error::new(
+            impl_block.impl_token.span(),
+            "#[group] can only be used on inherent impl blocks",
+        ));
+    }
+
+    let (impl_block, info) = parse_impl_block(input)?;
+    let flat_structs = generate_flat_arg_structs_for(&info.struct_name, &info.tools);
+    let dispatch_impl = generate_group_dispatch_impl(&info);
+
+    Ok(quote! {
+        #(#flat_structs)*
+        #impl_block
+        #dispatch_impl
+    })
 }
 
 /// Validate the signature of a custom initialize function.
@@ -1283,7 +1841,14 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
     let args = syn::parse2::<ServerMacroArgs>(attr).unwrap_or_default();
     let (impl_block, info) = parse_impl_block(input)?;
 
-    if info.tools.is_empty() {
+    if args.toolset.is_none() && !info.groups.is_empty() {
+        return Err(syn::Error::new(
+            input.span(),
+            "#[group] methods require #[mcp_server(toolset = \"field\")]",
+        ));
+    }
+
+    if args.toolset.is_none() && info.tools.is_empty() {
         return Err(syn::Error::new(
             input.span(),
             "No tool methods found. Use #[tool] to mark methods as MCP tools",
@@ -1296,22 +1861,54 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
     }
 
     let struct_name = syn::Ident::new(&info.struct_name, proc_macro2::Span::call_site());
-    let call_tool = generate_call_tool(&info);
-    let list_tools = generate_list_tools(&info);
-    let initialize = generate_initialize(&info, &args, args.initialize_fn.as_ref());
+    let toolset_field = args.toolset.as_ref();
+    let call_tool = if let Some(toolset_field) = toolset_field {
+        generate_toolset_call_tool(&info, toolset_field)
+    } else {
+        generate_call_tool(&info)
+    };
+    let list_tools = if let Some(toolset_field) = toolset_field {
+        generate_toolset_list_tools(toolset_field)
+    } else {
+        generate_list_tools(&info)
+    };
+    let initialize = if toolset_field.is_some() {
+        generate_toolset_initialize(&info, &args, args.initialize_fn.as_ref())
+    } else {
+        generate_initialize(&info, &args, args.initialize_fn.as_ref())
+    };
     let flat_structs = generate_flat_arg_structs(&info);
 
-    Ok(quote! {
-        #(#flat_structs)*
-        #impl_block
+    if let Some(toolset_field) = toolset_field {
+        let ensure_registered = generate_toolset_ensure_registered(&info, toolset_field);
+        Ok(quote! {
+            #(#flat_structs)*
+            #impl_block
 
-        #[async_trait::async_trait]
-        impl tmcp::ServerHandler for #struct_name {
-            #initialize
-            #list_tools
-            #call_tool
-        }
-    })
+            impl #struct_name {
+                #ensure_registered
+            }
+
+            #[async_trait::async_trait]
+            impl tmcp::ServerHandler for #struct_name {
+                #initialize
+                #list_tools
+                #call_tool
+            }
+        })
+    } else {
+        Ok(quote! {
+            #(#flat_structs)*
+            #impl_block
+
+            #[async_trait::async_trait]
+            impl tmcp::ServerHandler for #struct_name {
+                #initialize
+                #list_tools
+                #call_tool
+            }
+        })
+    }
 }
 
 /// Derive the ServerHandler methods from an impl block.
@@ -1336,6 +1933,51 @@ pub fn tool(
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     input
+}
+
+/// Mark a group impl block or group factory method.
+///
+/// Apply `#[group]` to a group impl block to generate ToolSet registration
+/// and dispatch glue. Use `#[group]` on methods that return child groups.
+/// When applied to a struct alongside `#[derive(Group)]`, the attribute
+/// supplies group metadata.
+#[proc_macro_attribute]
+pub fn group(
+    attr: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let attr_tokens = TokenStream::from(attr);
+    let input_tokens = TokenStream::from(input);
+
+    if let Ok(item_impl) = syn::parse2::<ItemImpl>(input_tokens.clone()) {
+        if !attr_tokens.is_empty() {
+            return syn::Error::new(
+                item_impl.impl_token.span(),
+                "#[group] on impl blocks does not accept arguments",
+            )
+            .to_compile_error()
+            .into();
+        }
+        let impl_tokens = quote! { #item_impl };
+        return match expand_group_impl(&impl_tokens) {
+            Ok(tokens) => tokens.into(),
+            Err(err) => err.to_compile_error().into(),
+        };
+    }
+
+    if let Ok(mut item) = syn::parse2::<syn::DeriveInput>(input_tokens.clone()) {
+        if !attr_tokens.is_empty() {
+            let meta_attr: syn::Attribute = syn::parse_quote! { #[tmcp_group_meta(#attr_tokens)] };
+            item.attrs.push(meta_attr);
+        }
+        return quote!(#item).into();
+    }
+
+    if let Ok(method) = syn::parse2::<syn::ImplItemFn>(input_tokens.clone()) {
+        return quote!(#method).into();
+    }
+
+    input_tokens.into()
 }
 
 /// Collect derive identifiers from attributes.
@@ -1440,6 +2082,101 @@ pub fn derive_tool_response(input: proc_macro::TokenStream) -> proc_macro::Token
                 match ::tmcp::schema::CallToolResult::structured(self) {
                     Ok(result) => result,
                     Err(err) => ::tmcp::schema::CallToolResult::error("INTERNAL", err.to_string()),
+                }
+            }
+        }
+    };
+
+    expanded.into()
+}
+
+/// Derive `Group` for ToolSet-backed tool groups.
+#[proc_macro_derive(Group, attributes(tmcp_group_meta, group))]
+pub fn derive_group(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    if !matches!(input.data, syn::Data::Struct(_)) {
+        return syn::Error::new(input.ident.span(), "Group can only be derived for structs")
+            .to_compile_error()
+            .into();
+    }
+    let ident = &input.ident;
+
+    let doc_description = extract_doc_comment(&input.attrs);
+    let meta = match parse_group_meta(&input.attrs) {
+        Ok(meta) => meta,
+        Err(err) => return err.to_compile_error().into(),
+    };
+
+    let default_name = ident.to_string().to_snake_case();
+    let name = meta.name.unwrap_or(default_name);
+    if name.is_empty() || name.contains('.') {
+        return syn::Error::new(
+            ident.span(),
+            "group name must be non-empty and must not contain '.'",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let description = meta.description.unwrap_or(doc_description);
+    let show_deactivator = meta.show_deactivator.unwrap_or(true);
+
+    let on_activate_method = meta.on_activate.clone();
+    let on_deactivate_method = meta.on_deactivate;
+    let requires_clone = on_activate_method.is_some() || on_deactivate_method.is_some();
+
+    let on_activate = if let Some(method) = on_activate_method {
+        quote! {
+            Some(Box::new({
+                let group = self.clone();
+                move |ctx| {
+                    let group = group.clone();
+                    let ctx = ctx.clone();
+                    Box::pin(async move { group.#method(&ctx).await })
+                }
+            }))
+        }
+    } else {
+        quote! { None }
+    };
+
+    let on_deactivate = if let Some(method) = on_deactivate_method {
+        quote! {
+            Some(Box::new({
+                let group = self.clone();
+                move |ctx| {
+                    let group = group.clone();
+                    let ctx = ctx.clone();
+                    Box::pin(async move { group.#method(&ctx).await })
+                }
+            }))
+        }
+    } else {
+        quote! { None }
+    };
+
+    let mut generics = input.generics.clone();
+    if requires_clone {
+        let type_generics = {
+            let (_, ty_generics, _) = generics.split_for_impl();
+            quote! { #ty_generics }
+        };
+        let where_clause = generics.make_where_clause();
+        where_clause.predicates.push(syn::parse_quote!(
+            #ident #type_generics: Clone + Send + Sync + 'static
+        ));
+    }
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let expanded = quote! {
+        impl #impl_generics tmcp::Group for #ident #ty_generics #where_clause {
+            fn config(&self) -> tmcp::GroupConfig {
+                tmcp::GroupConfig {
+                    name: #name.to_string(),
+                    description: #description.to_string(),
+                    parent: None,
+                    on_activate: #on_activate,
+                    on_deactivate: #on_deactivate,
+                    show_deactivator: #show_deactivator,
                 }
             }
         }
@@ -1775,6 +2512,7 @@ mod tests {
         assert_eq!(info.struct_name, "TestServer");
         assert_eq!(info.description, "Test server implementation");
         assert_eq!(info.tools.len(), 2);
+        assert!(info.groups.is_empty());
         assert_eq!(info.tools[0].name, "echo");
         assert_eq!(info.tools[0].docs, "Echo tool");
         assert_eq!(info.tools[1].name, "ping");
@@ -1837,6 +2575,7 @@ mod tests {
                     attrs: ToolAttrs::default(),
                 },
             ],
+            groups: Vec::new(),
         };
 
         let generated = generate_call_tool(&info);
@@ -1863,6 +2602,7 @@ mod tests {
                 return_kind: ToolReturnKind::Result,
                 attrs: ToolAttrs::default(),
             }],
+            groups: Vec::new(),
         };
 
         let generated = generate_list_tools(&info);

@@ -93,6 +93,19 @@ pub enum Error {
     #[error("Tool not found: {0}")]
     ToolNotFound(String),
 
+    /// Tool group not found error.
+    #[error("Tool group not found: {0}")]
+    GroupNotFound(String),
+
+    /// Tool group requires its parent to be active.
+    #[error("Tool group '{group}' requires active parent '{parent}'")]
+    GroupInactive {
+        /// Child group name.
+        group: String,
+        /// Parent group name.
+        parent: String,
+    },
+
     /// Invalid configuration error.
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
@@ -219,6 +232,11 @@ impl Error {
                 (INVALID_PARAMS, format!("Invalid parameters: {message}"))
             }
             Self::InvalidRequest(msg) => (INVALID_REQUEST, format!("Invalid request: {msg}")),
+            Self::GroupNotFound(group) => (INVALID_PARAMS, format!("Group not found: {group}")),
+            Self::GroupInactive { group, parent } => (
+                INVALID_PARAMS,
+                format!("Group '{group}' requires active parent '{parent}'"),
+            ),
             Self::JsonParse { message } => {
                 (PARSE_ERROR, format!("JSON serialization error: {message}"))
             }
