@@ -31,41 +31,43 @@ impl Decoder for JsonRpcCodec {
     type Item = JSONRPCMessage;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
-        // Look for newline delimiter
-        let Some(n) = src.iter().position(|b| *b == b'\n') else {
-            // Not enough data
-            return Ok(None);
-        };
+        loop {
+            // Look for newline delimiter
+            let Some(n) = src.iter().position(|b| *b == b'\n') else {
+                // Not enough data
+                return Ok(None);
+            };
 
-        // Split off the line including the newline
-        let line = src.split_to(n + 1);
+            // Split off the line including the newline
+            let line = src.split_to(n + 1);
 
-        // Skip empty lines
-        if line.len() <= 1 {
-            return Ok(None);
-        }
-
-        // Parse JSON, excluding the trailing newline
-        let json_bytes = &line[..line.len() - 1];
-
-        debug!(
-            "Decoding JSON-RPC message: {:?}",
-            str::from_utf8(json_bytes)
-        );
-
-        let message: JSONRPCMessage = serde_json::from_slice(json_bytes).map_err(|e| {
-            error!("Failed to parse JSON-RPC message: {}", e);
-            if let Ok(text) = str::from_utf8(json_bytes) {
-                Error::InvalidMessageFormat {
-                    message: format!("Invalid JSON: {e} (content: {text})"),
-                }
-            } else {
-                Error::InvalidMessageFormat {
-                    message: format!("Invalid JSON: {e} (non-UTF8 content)"),
-                }
+            // Skip empty lines
+            if line.len() <= 1 {
+                continue;
             }
-        })?;
-        Ok(Some(message))
+
+            // Parse JSON, excluding the trailing newline
+            let json_bytes = &line[..line.len() - 1];
+
+            debug!(
+                "Decoding JSON-RPC message: {:?}",
+                str::from_utf8(json_bytes)
+            );
+
+            let message: JSONRPCMessage = serde_json::from_slice(json_bytes).map_err(|e| {
+                error!("Failed to parse JSON-RPC message: {}", e);
+                if let Ok(text) = str::from_utf8(json_bytes) {
+                    Error::InvalidMessageFormat {
+                        message: format!("Invalid JSON: {e} (content: {text})"),
+                    }
+                } else {
+                    Error::InvalidMessageFormat {
+                        message: format!("Invalid JSON: {e} (non-UTF8 content)"),
+                    }
+                }
+            })?;
+            return Ok(Some(message));
+        }
     }
 }
 
@@ -138,5 +140,16 @@ mod tests {
             }
             _ => panic!("Expected request message"),
         }
+    }
+
+    #[test]
+    fn test_decode_skips_empty_lines() {
+        let mut codec = JsonRpcCodec::new();
+        // Buffer with leading newline and a valid message
+        let mut buf = BytesMut::from("\n{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}\n");
+
+        // Should skip the first newline and return the message
+        let decoded = codec.decode(&mut buf).unwrap();
+        assert!(decoded.is_some(), "Should decode message after empty line");
     }
 }
