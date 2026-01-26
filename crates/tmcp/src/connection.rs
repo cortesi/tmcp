@@ -254,10 +254,7 @@ pub trait ServerHandler: Send + Sync {
         name: String,
         _arguments: Option<HashMap<String, String>>,
     ) -> Result<GetPromptResult> {
-        Err(Error::handler_error(
-            "prompt",
-            format!("Prompt '{name}' not found"),
-        ))
+        Err(Error::PromptNotFound(name))
     }
 
     /// Handle completion request

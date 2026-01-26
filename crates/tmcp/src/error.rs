@@ -57,15 +57,6 @@ pub enum Error {
     #[error("Connection closed")]
     ConnectionClosed,
 
-    /// Handler error with type context.
-    #[error("Handler error for {handler_type}: {message}")]
-    HandlerError {
-        /// Handler type name.
-        handler_type: String,
-        /// Error message.
-        message: String,
-    },
-
     /// Resource not found error.
     #[error("Resource not found: {uri}")]
     ResourceNotFound {
@@ -92,6 +83,10 @@ pub enum Error {
     /// Tool not found error.
     #[error("Tool not found: {0}")]
     ToolNotFound(String),
+
+    /// Prompt not found error.
+    #[error("Prompt not found: {0}")]
+    PromptNotFound(String),
 
     /// Tool group not found error.
     #[error("Tool group not found: {0}")]
@@ -200,14 +195,6 @@ impl From<ToolError> for CallToolResult {
 }
 
 impl Error {
-    /// Create a HandlerError with type context
-    pub fn handler_error(handler_type: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::HandlerError {
-            handler_type: handler_type.into(),
-            message: message.into(),
-        }
-    }
-
     /// Create a ToolExecutionFailed error
     pub fn tool_execution_failed(tool: impl Into<String>, message: impl Into<String>) -> Self {
         Self::ToolExecutionFailed {
@@ -224,6 +211,9 @@ impl Error {
         let (code, message) = match self {
             Self::ToolNotFound(tool_name) => {
                 (METHOD_NOT_FOUND, format!("Tool not found: {tool_name}"))
+            }
+            Self::PromptNotFound(prompt_name) => {
+                (METHOD_NOT_FOUND, format!("Prompt not found: {prompt_name}"))
             }
             Self::MethodNotFound(method_name) => {
                 (METHOD_NOT_FOUND, format!("Method not found: {method_name}"))
