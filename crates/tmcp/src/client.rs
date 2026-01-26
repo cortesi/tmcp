@@ -6,7 +6,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     process::{Child, Command},
-    sync::{Mutex, broadcast},
+    sync::{Mutex, mpsc},
 };
 use tracing::{debug, error, info, warn};
 
@@ -364,8 +364,8 @@ where
         // Clone the connection for use in the handler
         let connection = self.connection.clone();
 
-        // Create broadcast channel for client notifications
-        let (client_notification_tx, mut client_notification_rx) = broadcast::channel(100);
+        // Create mpsc channel for client notifications
+        let (client_notification_tx, mut client_notification_rx) = mpsc::unbounded_channel();
 
         // Create the context for the connection
         let context = ClientCtx::new(client_notification_tx);
@@ -435,20 +435,12 @@ where
                     }
 
                     // Forward client notifications to server
-                    result = client_notification_rx.recv() => {
-                        match result {
-                            Ok(notification) => {
-                                let jsonrpc_notification = create_jsonrpc_notification(&notification);
-                                let mut sink = notification_sink.lock().await;
-                                if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
-                                    error!("Error sending notification to server: {}", e);
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                debug!("Client notification channel closed: {}", e);
-                                // This is expected when the client shuts down
-                            }
+                    Some(notification) = client_notification_rx.recv() => {
+                        let jsonrpc_notification = create_jsonrpc_notification(&notification);
+                        let mut sink = notification_sink.lock().await;
+                        if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
+                            error!("Error sending notification to server: {}", e);
+                            break;
                         }
                     }
                 }

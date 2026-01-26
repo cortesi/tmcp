@@ -12,7 +12,7 @@ mod tests {
             connected_client_and_server_with_conn, shutdown_client_and_server, test_client_ctx,
         },
     };
-    use tokio::sync::broadcast;
+    use tokio::sync::mpsc;
     use tracing_subscriber::fmt;
 
     #[derive(Default, Clone)]
@@ -87,7 +87,7 @@ mod tests {
     async fn client_connection_trait_methods() {
         let connection = TestClientHandler::default();
 
-        let (tx, _) = broadcast::channel(10);
+        let (tx, _) = mpsc::unbounded_channel();
         let ctx = test_client_ctx(tx);
 
         connection.pong(&ctx).await.expect("Ping failed");

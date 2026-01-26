@@ -8,10 +8,10 @@ mod tests {
     use std::collections::HashMap;
 
     use tmcp::{Arguments, Error, Result, ServerCtx, ServerHandler, ToolError, schema, testutils};
-    use tokio::sync::broadcast;
+    use tokio::sync::mpsc;
 
     fn create_test_context() -> ServerCtx {
-        let (notification_tx, _) = broadcast::channel(100);
+        let (notification_tx, _) = mpsc::unbounded_channel();
         testutils::test_server_ctx(notification_tx)
     }
 

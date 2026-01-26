@@ -1,5 +1,5 @@
 use serde::de::DeserializeOwned;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 use crate::{
     error::{Error, Result},
@@ -15,14 +15,16 @@ use crate::{
 #[derive(Clone)]
 pub struct ClientCtx {
     /// Sender for client notifications
-    pub(crate) notification_tx: broadcast::Sender<schema::ClientNotification>,
+    pub(crate) notification_tx: mpsc::UnboundedSender<schema::ClientNotification>,
     /// The current request ID, if this context is handling a request
     pub(crate) request_id: Option<schema::RequestId>,
 }
 
 impl ClientCtx {
     /// Create a new `ClientCtx` with the given notification sender
-    pub(crate) fn new(notification_tx: broadcast::Sender<schema::ClientNotification>) -> Self {
+    pub(crate) fn new(
+        notification_tx: mpsc::UnboundedSender<schema::ClientNotification>,
+    ) -> Self {
         Self {
             notification_tx,
             request_id: None,
@@ -67,7 +69,7 @@ impl ClientCtx {
 #[derive(Clone)]
 pub struct ServerCtx {
     /// Sender for server notifications
-    pub(crate) notification_tx: broadcast::Sender<schema::ServerNotification>,
+    pub(crate) notification_tx: mpsc::UnboundedSender<schema::ServerNotification>,
     /// Request handler for making requests to clients
     request_handler: RequestHandler,
     /// The current request ID, if this context is handling a request
@@ -77,7 +79,7 @@ pub struct ServerCtx {
 impl ServerCtx {
     /// Create a new ServerCtx with notification channel and transport
     pub(crate) fn new(
-        notification_tx: broadcast::Sender<schema::ServerNotification>,
+        notification_tx: mpsc::UnboundedSender<schema::ServerNotification>,
         transport_tx: Option<TransportSink>,
     ) -> Self {
         Self {

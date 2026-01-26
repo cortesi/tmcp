@@ -16,7 +16,7 @@
 
 use tokio::{
     io::{self, AsyncRead, AsyncWrite},
-    sync::broadcast,
+    sync::mpsc,
 };
 
 use crate::{
@@ -127,13 +127,13 @@ where
 
 /// Create a ServerCtx for testing purposes.
 /// This creates a ServerCtx with only notification capability (no request/response).
-pub fn test_server_ctx(notification_tx: broadcast::Sender<ServerNotification>) -> ServerCtx {
+pub fn test_server_ctx(notification_tx: mpsc::UnboundedSender<ServerNotification>) -> ServerCtx {
     ServerCtx::new(notification_tx, None)
 }
 
 /// Create a ClientCtx for testing purposes.
 /// This creates a ClientCtx with only notification capability (no request/response).
-pub fn test_client_ctx(notification_tx: broadcast::Sender<ClientNotification>) -> ClientCtx {
+pub fn test_client_ctx(notification_tx: mpsc::UnboundedSender<ClientNotification>) -> ClientCtx {
     ClientCtx::new(notification_tx)
 }
 
@@ -144,13 +144,13 @@ pub struct TestServerContext {
     /// Server context for tests.
     ctx: ServerCtx,
     /// Receiver for server notifications.
-    notification_rx: broadcast::Receiver<ServerNotification>,
+    notification_rx: mpsc::UnboundedReceiver<ServerNotification>,
 }
 
 impl TestServerContext {
     /// Create a new test server context with notification channels
     pub fn new() -> Self {
-        let (notification_tx, notification_rx) = broadcast::channel(100);
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
         let ctx = test_server_ctx(notification_tx);
         Self {
             ctx,
@@ -169,7 +169,7 @@ impl TestServerContext {
         timeout(Duration::from_millis(10), self.notification_rx.recv())
             .await
             .ok()
-            .and_then(|result| result.ok())
+            .flatten()
     }
 }
 
@@ -186,13 +186,13 @@ pub struct TestClientContext {
     /// Client context for tests.
     ctx: ClientCtx,
     /// Receiver for client notifications.
-    notification_rx: broadcast::Receiver<ClientNotification>,
+    notification_rx: mpsc::UnboundedReceiver<ClientNotification>,
 }
 
 impl TestClientContext {
     /// Create a new test client context with notification channels
     pub fn new() -> Self {
-        let (notification_tx, notification_rx) = broadcast::channel(100);
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
         let ctx = test_client_ctx(notification_tx);
         Self {
             ctx,
@@ -211,7 +211,7 @@ impl TestClientContext {
         timeout(Duration::from_millis(10), self.notification_rx.recv())
             .await
             .ok()
-            .and_then(|result| result.ok())
+            .flatten()
     }
 }
 

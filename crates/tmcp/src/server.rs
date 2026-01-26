@@ -10,7 +10,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, ToSocketAddrs},
     runtime::Builder,
-    sync::{Mutex, broadcast, mpsc},
+    sync::{Mutex, mpsc},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -224,7 +224,7 @@ pub struct ServerHandle {
     /// Join handle for the server task.
     pub handle: JoinHandle<()>,
     /// Sender for outbound server notifications.
-    notification_tx: broadcast::Sender<ServerNotification>,
+    notification_tx: mpsc::UnboundedSender<ServerNotification>,
     /// Token used to signal shutdown to the server loop.
     shutdown_token: CancellationToken,
     /// The actual bound address (for servers that bind to a network port)
@@ -246,7 +246,7 @@ impl ServerHandle {
         let (sink_tx, mut stream_rx) = stream.split();
 
         info!("MCP server started");
-        let (notification_tx, mut notification_rx) = broadcast::channel(100);
+        let (notification_tx, mut notification_rx) = mpsc::unbounded_channel();
 
         // Channel for queueing responses to be sent
         let (response_tx, mut response_rx) = mpsc::unbounded_channel::<JSONRPCMessage>();
@@ -362,21 +362,13 @@ impl ServerHandle {
                     }
 
                     // Forward internal notifications to client
-                    result = notification_rx.recv() => {
-                        match result {
-                            Ok(notification) => {
-                                let jsonrpc_notification = create_jsonrpc_notification(&notification);
-                                {
-                                    let mut sink = sink_tx.lock().await;
-                                    if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
-                                        error!("Error sending notification to client: {}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                debug!("Notification channel closed: {}", e);
-                                // This is expected when the server shuts down
+                    Some(notification) = notification_rx.recv() => {
+                        let jsonrpc_notification = create_jsonrpc_notification(&notification);
+                        {
+                            let mut sink = sink_tx.lock().await;
+                            if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
+                                error!("Error sending notification to client: {}", e);
+                                break;
                             }
                         }
                     }
