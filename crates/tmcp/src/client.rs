@@ -118,7 +118,9 @@ impl Client<()> {
 
     /// Set the request timeout duration.
     pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
-        self.request_handler = self.request_handler.with_timeout(timeout.as_millis() as u64);
+        self.request_handler = self
+            .request_handler
+            .with_timeout(timeout.as_millis() as u64);
         self
     }
 }
@@ -1388,10 +1390,13 @@ mod tests {
     async fn test_request_timeout() {
         let (client_transport, _server_transport) = TestTransport::create_pair();
 
-        let mut client = Client::new("test", "1.0")
-            .with_request_timeout(Duration::from_millis(100));
+        let mut client =
+            Client::new("test", "1.0").with_request_timeout(Duration::from_millis(100));
 
-        client.connect(client_transport).await.expect("Failed to connect");
+        client
+            .connect(client_transport)
+            .await
+            .expect("Failed to connect");
 
         // init() sends initialize request.
         // Since server transport is not read, it won't respond.
@@ -1445,7 +1450,10 @@ mod tests {
             .expect("Failed to start server");
 
         let mut client = Client::new("test-client", "1.0.0");
-        client.connect(client_transport).await.expect("Failed to connect");
+        client
+            .connect(client_transport)
+            .await
+            .expect("Failed to connect");
         client.init().await.expect("Failed to initialize");
 
         // Call the failing tool

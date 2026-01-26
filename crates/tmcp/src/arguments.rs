@@ -102,9 +102,8 @@ impl Arguments {
     /// a required string parameter with proper error handling.
     pub fn require_string(&self, key: &str) -> crate::Result<String> {
         match self.0.get(key) {
-            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
-                Error::InvalidParams(format!("parameter '{}' must be a string", key))
-            }),
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|_| Error::InvalidParams(format!("parameter '{}' must be a string", key))),
             None => Err(Error::InvalidParams(format!(
                 "missing required parameter: {}",
                 key

@@ -101,10 +101,7 @@ where
 {
     /// Create a new duplex wrapper from reader and writer halves.
     pub fn new(reader: R, writer: W) -> Self {
-        Self {
-            reader,
-            writer,
-        }
+        Self { reader, writer }
     }
 }
 

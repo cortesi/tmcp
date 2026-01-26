@@ -10,7 +10,7 @@ readme = "README.md"
 
 [workspace]
 resolver = "2"
-members = ["crates/*", "examples"]
+members = ["crates/*", "examples", "xtask"]
 
 [workspace.lints.rust]
 missing_docs = "warn"

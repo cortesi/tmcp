@@ -38,7 +38,6 @@ dashmap = "6.1"
 async-stream = "0.3"
 oauth2 = { version = "5.0", features = ["reqwest"] }
 url = "2.5"
-tokio-tungstenite = "0.28"
 mime_guess = "2.0"
 base64 = "0.22"
 

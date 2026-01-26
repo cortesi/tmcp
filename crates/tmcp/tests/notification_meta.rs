@@ -1,14 +1,20 @@
+//! Integration test for notification meta propagation.
+
+#![allow(missing_docs)]
+#![allow(clippy::tests_outside_test_module)]
+
 use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use serde_json::json;
 use tmcp::{
-    Result, ServerCtx, ServerHandler, schema,
-    Server, ServerHandle,
-    testutils::make_duplex_pair,
+    Result, Server, ServerCtx, ServerHandle, ServerHandler, schema, testutils::make_duplex_pair,
 };
-use tokio::io::AsyncWriteExt;
-use tokio::sync::oneshot;
-use tokio::time::{Duration, timeout};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::oneshot,
+    time::{Duration, timeout},
+};
 
 #[derive(Clone)]
 struct MetaRecorder {
@@ -22,18 +28,16 @@ impl ServerHandler for MetaRecorder {
         _context: &ServerCtx,
         notification: schema::ClientNotification,
     ) -> Result<()> {
-        if let schema::ClientNotification::Initialized { _meta } = notification {
-             if let Some(meta) = _meta {
-                 if meta.contains_key("test_key") {
-                     if let Some(tx) = self.tx.lock().unwrap().take() {
-                         tx.send(()).ok();
-                     }
-                 }
-             }
+        if let schema::ClientNotification::Initialized { _meta } = notification
+            && let Some(meta) = _meta
+            && meta.contains_key("test_key")
+            && let Some(tx) = self.tx.lock().unwrap().take()
+        {
+            tx.send(()).ok();
         }
         Ok(())
     }
-    
+
     async fn initialize(
         &self,
         _ctx: &ServerCtx,
@@ -61,7 +65,7 @@ async fn test_notification_meta_propagation() {
         .expect("Failed to start server");
 
     // Manually send JSON-RPC notification with _meta
-    
+
     let init_req = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -72,7 +76,7 @@ async fn test_notification_meta_propagation() {
             "clientInfo": { "name": "test", "version": "1.0" }
         }
     });
-    
+
     let req_str = serde_json::to_string(&init_req).unwrap();
     client_writer.write_all(req_str.as_bytes()).await.unwrap();
     client_writer.write_all(b"\n").await.unwrap();
@@ -85,15 +89,18 @@ async fn test_notification_meta_propagation() {
             "_meta": { "test_key": "found" }
         }
     });
-    
+
     let notif_str = serde_json::to_string(&notification).unwrap();
     client_writer.write_all(notif_str.as_bytes()).await.unwrap();
     client_writer.write_all(b"\n").await.unwrap();
 
     // Wait for the server to receive and verify meta
     let result = timeout(Duration::from_secs(2), rx_success).await;
-    
-    assert!(result.is_ok(), "Timeout waiting for notification with meta. This implies _meta was lost or not processed.");
+
+    assert!(
+        result.is_ok(),
+        "Timeout waiting for notification with meta. This implies _meta was lost or not processed."
+    );
 
     // Cleanup
     server_handle.stop().await.ok();

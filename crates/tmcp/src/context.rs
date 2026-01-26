@@ -22,9 +22,7 @@ pub struct ClientCtx {
 
 impl ClientCtx {
     /// Create a new `ClientCtx` with the given notification sender
-    pub(crate) fn new(
-        notification_tx: mpsc::UnboundedSender<schema::ClientNotification>,
-    ) -> Self {
+    pub(crate) fn new(notification_tx: mpsc::UnboundedSender<schema::ClientNotification>) -> Self {
         Self {
             notification_tx,
             request_id: None,
