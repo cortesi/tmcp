@@ -28,7 +28,7 @@ use reqwest::Client as HttpClient;
 use serde_json::Value;
 use tokio::{
     net::TcpListener,
-    sync::{Mutex, RwLock, oneshot},
+    sync::{Mutex, oneshot},
     task::JoinHandle,
     time::{sleep, timeout},
 };
@@ -50,11 +50,14 @@ use crate::{
 /// Default HTTP client timeout for transport requests.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Session inactivity timeout (1 hour).
+const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);
+
 /// Session information for HTTP transport
 #[derive(Debug, Clone)]
 pub struct HttpSession {
     /// Timestamp of the last observed activity for the session.
-    pub last_activity: Arc<RwLock<Instant>>,
+    pub last_activity: Arc<std::sync::Mutex<Instant>>,
     /// Sender used to forward JSON-RPC messages to the session.
     pub sender: mpsc::UnboundedSender<JSONRPCMessage>,
     /// Receiver used to read JSON-RPC messages for the session.
@@ -769,6 +772,36 @@ impl HttpServerTransport {
         // Clone for the ready signal
         let bind_addr_clone = bind_addr.clone();
 
+        // Start session cleanup task
+        let cleanup_sessions = state.sessions.clone();
+        let cleanup_shutdown = state.shutdown.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = cleanup_shutdown.cancelled() => break,
+                    _ = interval.tick() => {
+                        let now = Instant::now();
+                        // Collect expired keys to avoid holding locks during removal
+                        let expired: Vec<String> = cleanup_sessions
+                            .iter()
+                            .filter(|entry| {
+                                let last_active = *entry.value().last_activity.lock().unwrap();
+                                now.duration_since(last_active) > SESSION_TIMEOUT
+                            })
+                            .map(|entry| entry.key().clone())
+                            .collect();
+
+                        for id in expired {
+                            debug!("Removing expired session: {}", id);
+                            cleanup_sessions.remove(&id);
+                        }
+                    }
+                }
+            }
+        });
+
         let server_handle = tokio::spawn(async move {
             info!("HTTP server starting on {}", bind_addr);
 
@@ -821,7 +854,7 @@ impl Transport for HttpServerTransport {
 
         if let Some(state) = &self.state {
             let session = HttpSession {
-                last_activity: Arc::new(RwLock::new(Instant::now())),
+                last_activity: Arc::new(std::sync::Mutex::new(Instant::now())),
                 sender: tx,
                 receiver: Arc::new(Mutex::new(rx)),
                 event_counter: Arc::new(AtomicU64::new(0)),
@@ -1018,7 +1051,7 @@ async fn handle_post(
         let (tx, rx) = mpsc::unbounded();
 
         let session = HttpSession {
-            last_activity: Arc::new(RwLock::new(Instant::now())),
+            last_activity: Arc::new(std::sync::Mutex::new(Instant::now())),
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             event_counter: Arc::new(AtomicU64::new(0)),
@@ -1073,7 +1106,7 @@ async fn handle_post(
     };
 
     let session = if let Some(session) = state.sessions.get(&session_id) {
-        *session.last_activity.write().await = Instant::now();
+        *session.last_activity.lock().unwrap() = Instant::now();
         session.clone()
     } else {
         return (StatusCode::NOT_FOUND, "Session not found").into_response();
@@ -1250,7 +1283,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded();
 
         let session = HttpSession {
-            last_activity: Arc::new(RwLock::new(Instant::now())),
+            last_activity: Arc::new(std::sync::Mutex::new(Instant::now())),
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             event_counter: Arc::new(AtomicU64::new(0)),
@@ -1258,10 +1291,10 @@ mod tests {
         };
 
         // Test that we can update last activity
-        let before = *session.last_activity.read().await;
+        let before = *session.last_activity.lock().unwrap();
         sleep(Duration::from_millis(10)).await;
-        *session.last_activity.write().await = Instant::now();
-        let after = *session.last_activity.read().await;
+        *session.last_activity.lock().unwrap() = Instant::now();
+        let after = *session.last_activity.lock().unwrap();
         assert!(after > before);
     }
 
@@ -1335,7 +1368,7 @@ mod tests {
     fn test_apply_last_event_id_advances_counter() {
         let (tx, rx) = mpsc::unbounded();
         let session = HttpSession {
-            last_activity: Arc::new(RwLock::new(Instant::now())),
+            last_activity: Arc::new(std::sync::Mutex::new(Instant::now())),
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             event_counter: Arc::new(AtomicU64::new(0)),
