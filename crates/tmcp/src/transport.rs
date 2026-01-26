@@ -41,15 +41,7 @@ pub trait TransportStream:
 {
 }
 
-/// A duplex wrapper around stdin/stdout for use with codec framing
-pub struct StdioDuplex {
-    /// Stdin reader.
-    reader: Stdin,
-    /// Stdout writer.
-    writer: Stdout,
-}
-
-/// A generic duplex wrapper for combining separate AsyncRead and AsyncWrite streams
+/// A generic duplex wrapper for combining separate AsyncRead and AsyncWrite streams.
 pub struct GenericDuplex<R, W> {
     /// Reader half.
     reader: R,
@@ -57,43 +49,8 @@ pub struct GenericDuplex<R, W> {
     writer: W,
 }
 
-impl StdioDuplex {
-    /// Create a duplex wrapper for stdin/stdout.
-    pub fn new(stdin: Stdin, stdout: Stdout) -> Self {
-        Self {
-            reader: stdin,
-            writer: stdout,
-        }
-    }
-}
-
-impl AsyncRead for StdioDuplex {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.reader).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for StdioDuplex {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.writer).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.writer).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.writer).poll_shutdown(cx)
-    }
-}
+/// Duplex wrapper for stdin/stdout, used by stdio transport.
+pub type StdioDuplex = GenericDuplex<Stdin, Stdout>;
 
 impl<R, W> GenericDuplex<R, W>
 where
