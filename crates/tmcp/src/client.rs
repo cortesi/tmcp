@@ -571,7 +571,19 @@ where
         name: impl Into<String> + Send,
         arguments: impl Serialize + Send,
     ) -> Result<R> {
-        let result = self.call_tool(name, arguments).await?;
+        let tool_name = name.into();
+        let result = self.call_tool(tool_name.clone(), arguments).await?;
+
+        if result.is_error.unwrap_or(false) {
+            let message = if !result.content.is_empty() {
+                result.all_text()
+            } else if let Some(structured) = &result.structured_content {
+                serde_json::to_string(structured).unwrap_or_default()
+            } else {
+                "Unknown error".to_string()
+            };
+            return Err(Error::tool_execution_failed(tool_name, message));
+        }
 
         let text = result
             .text()
@@ -590,7 +602,20 @@ where
         name: impl Into<String> + Send,
         arguments: impl Serialize + Send,
     ) -> Result<R> {
-        let result = self.call_tool(name, arguments).await?;
+        let tool_name = name.into();
+        let result = self.call_tool(tool_name.clone(), arguments).await?;
+
+        if result.is_error.unwrap_or(false) {
+            let message = if !result.content.is_empty() {
+                result.all_text()
+            } else if let Some(structured) = &result.structured_content {
+                serde_json::to_string(structured).unwrap_or_default()
+            } else {
+                "Unknown error".to_string()
+            };
+            return Err(Error::tool_execution_failed(tool_name, message));
+        }
+
         result.structured_as().map_err(|e| Error::JsonParse {
             message: format!("Failed to parse tool structured content: {e}"),
         })
@@ -1377,6 +1402,62 @@ mod tests {
         match result {
             Err(Error::Timeout { .. }) => {}
             _ => panic!("Expected timeout error, got {:?}", result),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_json_error() {
+        #[derive(Debug, Default)]
+        struct ErrorConnection;
+
+        #[async_trait::async_trait]
+        impl ServerHandlerTrait for ErrorConnection {
+            async fn initialize(
+                &self,
+                _context: &ServerCtx,
+                _protocol_version: String,
+                _capabilities: ClientCapabilities,
+                _client_info: Implementation,
+            ) -> Result<InitializeResult> {
+                Ok(InitializeResult::new("test-server").with_version("1.0.0"))
+            }
+
+            async fn call_tool(
+                &self,
+                _context: &ServerCtx,
+                name: String,
+                _arguments: Option<crate::Arguments>,
+                _task: Option<TaskMetadata>,
+            ) -> Result<CallToolResult> {
+                if name == "fail" {
+                    // Return a tool error (isError: true) with structured content
+                    Ok(CallToolResult::error("ERR", "Tool failed details"))
+                } else {
+                    Ok(CallToolResult::new().with_text_content("{}"))
+                }
+            }
+        }
+
+        let (client_transport, server_transport) = TestTransport::create_pair();
+        let server = Server::new(ErrorConnection::default);
+        let _server_handle = ServerHandle::new(server, server_transport)
+            .await
+            .expect("Failed to start server");
+
+        let mut client = Client::new("test-client", "1.0.0");
+        client.connect(client_transport).await.expect("Failed to connect");
+        client.init().await.expect("Failed to initialize");
+
+        // Call the failing tool
+        let result: Result<serde_json::Value> = client.call_tool_json("fail", ()).await;
+
+        match result {
+            Err(Error::ToolExecutionFailed { tool, message }) => {
+                assert_eq!(tool, "fail");
+                // The message should come from the structured content since text is empty
+                assert!(message.contains("Tool failed details"));
+            }
+            _ => panic!("Expected ToolExecutionFailed, got {:?}", result),
         }
     }
 }

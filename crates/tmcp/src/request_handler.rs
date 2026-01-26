@@ -168,7 +168,7 @@ impl RequestHandler {
             }
 
             result = timeout(timeout_duration, response_rx) => {
-                self.process_response_result(id, method, result)
+                self.process_response_result(&id, method, result)
             }
         }
     }
@@ -176,7 +176,7 @@ impl RequestHandler {
     /// Process the result of waiting for a response.
     fn process_response_result<Res>(
         &self,
-        id: RequestId,
+        id: &RequestId,
         method: &str,
         result: TimeoutResult<JSONRPCResponse>,
     ) -> Result<Res>
@@ -186,13 +186,13 @@ impl RequestHandler {
         match result {
             Ok(Ok(response)) => Self::decode_response(method, response),
             Ok(Err(_recv_error)) => {
-                self.pending_requests.remove(&id);
+                self.pending_requests.remove(id);
                 Err(Error::Protocol(
                     "Response channel closed unexpectedly".to_string(),
                 ))
             }
             Err(_timeout) => {
-                self.pending_requests.remove(&id);
+                self.pending_requests.remove(id);
                 tracing::warn!("Request {} timed out after {}ms", id, self.timeout_ms);
                 Err(Error::Timeout {
                     request_id: id.to_string(),

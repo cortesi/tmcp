@@ -3,7 +3,7 @@ use std::{
     pin::Pin,
     result::Result as StdResult,
     sync::{
-        Arc,
+        self, Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::{Context, Poll},
@@ -30,7 +30,7 @@ use tokio::{
     net::TcpListener,
     sync::{Mutex, oneshot},
     task::JoinHandle,
-    time::{sleep, timeout},
+    time::{interval, sleep, timeout},
 };
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
@@ -57,7 +57,7 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);
 #[derive(Debug, Clone)]
 pub struct HttpSession {
     /// Timestamp of the last observed activity for the session.
-    pub last_activity: Arc<std::sync::Mutex<Instant>>,
+    pub last_activity: Arc<sync::Mutex<Instant>>,
     /// Sender used to forward JSON-RPC messages to the session.
     pub sender: mpsc::UnboundedSender<JSONRPCMessage>,
     /// Receiver used to read JSON-RPC messages for the session.
@@ -777,7 +777,7 @@ impl HttpServerTransport {
         let cleanup_shutdown = state.shutdown.clone();
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let mut interval = interval(Duration::from_secs(60));
             loop {
                 tokio::select! {
                     _ = cleanup_shutdown.cancelled() => break,
@@ -854,7 +854,7 @@ impl Transport for HttpServerTransport {
 
         if let Some(state) = &self.state {
             let session = HttpSession {
-                last_activity: Arc::new(std::sync::Mutex::new(Instant::now())),
+                last_activity: Arc::new(sync::Mutex::new(Instant::now())),
                 sender: tx,
                 receiver: Arc::new(Mutex::new(rx)),
                 event_counter: Arc::new(AtomicU64::new(0)),
@@ -1051,7 +1051,7 @@ async fn handle_post(
         let (tx, rx) = mpsc::unbounded();
 
         let session = HttpSession {
-            last_activity: Arc::new(std::sync::Mutex::new(Instant::now())),
+            last_activity: Arc::new(sync::Mutex::new(Instant::now())),
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             event_counter: Arc::new(AtomicU64::new(0)),
@@ -1283,7 +1283,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded();
 
         let session = HttpSession {
-            last_activity: Arc::new(std::sync::Mutex::new(Instant::now())),
+            last_activity: Arc::new(sync::Mutex::new(Instant::now())),
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             event_counter: Arc::new(AtomicU64::new(0)),
@@ -1368,7 +1368,7 @@ mod tests {
     fn test_apply_last_event_id_advances_counter() {
         let (tx, rx) = mpsc::unbounded();
         let session = HttpSession {
-            last_activity: Arc::new(std::sync::Mutex::new(Instant::now())),
+            last_activity: Arc::new(sync::Mutex::new(Instant::now())),
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
             event_counter: Arc::new(AtomicU64::new(0)),
