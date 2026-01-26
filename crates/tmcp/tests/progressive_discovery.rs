@@ -55,10 +55,7 @@ mod tests {
         }
     }
 
-    fn ok_handler<'a>(
-        _ctx: &'a ServerCtx,
-        _args: Option<Arguments>,
-    ) -> ToolFuture<'a, Result<CallToolResult>> {
+    fn ok_handler<'a>(_ctx: &'a ServerCtx, _args: Option<Arguments>) -> ToolFuture<'a> {
         Box::pin(async { Ok(CallToolResult::new()) })
     }
 

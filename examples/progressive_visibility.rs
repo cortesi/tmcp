@@ -23,10 +23,7 @@ struct VisibilityServer {
 }
 
 /// Handler for the beta tool.
-fn beta_greet<'a>(
-    _ctx: &'a ServerCtx,
-    _args: Option<Arguments>,
-) -> ToolFuture<'a, Result<CallToolResult>> {
+fn beta_greet<'a>(_ctx: &'a ServerCtx, _args: Option<Arguments>) -> ToolFuture<'a> {
     Box::pin(async { Ok(CallToolResult::new().with_text_content("hello from the beta tool")) })
 }
 

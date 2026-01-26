@@ -17,9 +17,9 @@ pub struct ToolSetView<'a> {
     groups: &'a HashMap<String, GroupSnapshot>,
 }
 
-/// Shared boxed future type used by tool dispatch.
+/// Boxed future type returned by tool handlers.
 #[doc(hidden)]
-pub type ToolFuture<'a, T> = BoxFuture<'a, T>;
+pub type ToolFuture<'a> = BoxFuture<'a, Result<CallToolResult>>;
 
 impl ToolSetView<'_> {
     /// Check whether a group is active in the current snapshot.
@@ -114,7 +114,7 @@ pub trait GroupDispatch {
         ctx: &'a ServerCtx,
         name: &'a str,
         arguments: Option<Arguments>,
-    ) -> ToolFuture<'a, Result<CallToolResult>>;
+    ) -> ToolFuture<'a>;
 }
 
 /// Internal helper for overriding group path segments during registration.
@@ -253,10 +253,7 @@ impl ToolSet {
     /// Register a tool into the root group (always visible).
     pub fn register<F>(&self, name: &str, tool: Tool, handler: F) -> Result<()>
     where
-        F: for<'a> Fn(&'a ServerCtx, Option<Arguments>) -> ToolFuture<'a, Result<CallToolResult>>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> Fn(&'a ServerCtx, Option<Arguments>) -> ToolFuture<'a> + Send + Sync + 'static,
     {
         self.register_with_visibility(name, tool, Visibility::Always, handler)
     }
@@ -270,10 +267,7 @@ impl ToolSet {
         handler: F,
     ) -> Result<()>
     where
-        F: for<'a> Fn(&'a ServerCtx, Option<Arguments>) -> ToolFuture<'a, Result<CallToolResult>>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> Fn(&'a ServerCtx, Option<Arguments>) -> ToolFuture<'a> + Send + Sync + 'static,
     {
         let handler: ToolHandler = Arc::new(handler);
         self.register_entry(name, tool, visibility, Some(handler), ToolOrigin::Explicit)
@@ -351,12 +345,7 @@ impl ToolSet {
         dispatch: F,
     ) -> Result<CallToolResult>
     where
-        F: for<'a> Fn(
-            &'a H,
-            &'a ServerCtx,
-            &'a str,
-            Option<Arguments>,
-        ) -> ToolFuture<'a, Result<CallToolResult>>,
+        F: for<'a> Fn(&'a H, &'a ServerCtx, &'a str, Option<Arguments>) -> ToolFuture<'a>,
     {
         if !self.is_tool_visible(name) {
             return Err(Error::ToolNotFound(name.to_string()));
@@ -561,11 +550,8 @@ impl ToolSet {
 }
 
 /// Handler function for a tool.
-type ToolHandler = Arc<
-    dyn for<'a> Fn(&'a ServerCtx, Option<Arguments>) -> ToolFuture<'a, Result<CallToolResult>>
-        + Send
-        + Sync,
->;
+type ToolHandler =
+    Arc<dyn for<'a> Fn(&'a ServerCtx, Option<Arguments>) -> ToolFuture<'a> + Send + Sync>;
 
 /// Shared activation hook used in group state.
 type SharedActivationHook = Arc<dyn Fn(&ServerCtx) -> BoxFuture<'static, Result<()>> + Send + Sync>;

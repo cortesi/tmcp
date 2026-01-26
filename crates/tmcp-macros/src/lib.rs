@@ -1623,7 +1623,7 @@ fn generate_toolset_call_tool(info: &ServerInfo, toolset_field: &syn::Ident) -> 
         ) -> tmcp::Result<tmcp::schema::CallToolResult> {
             self.__ensure_tools_registered();
             self.#toolset_field
-                .call_tool_with(self, context, &name, arguments, |handler, context, name, arguments| -> tmcp::ToolFuture<'_, tmcp::Result<tmcp::schema::CallToolResult>> {
+                .call_tool_with(self, context, &name, arguments, |handler, context, name, arguments| -> tmcp::ToolFuture<'_> {
                     Box::pin(async move {
                         match name {
                             #(#tool_matches)*
@@ -1733,7 +1733,7 @@ fn generate_group_dispatch_impl(info: &ServerInfo) -> TokenStream {
                 context: &'a tmcp::ServerCtx,
                 name: &'a str,
                 arguments: Option<tmcp::Arguments>,
-            ) -> tmcp::ToolFuture<'a, tmcp::Result<tmcp::schema::CallToolResult>> {
+            ) -> tmcp::ToolFuture<'a> {
                 Box::pin(async move {
                     match name {
                         #(#tool_matches)*
