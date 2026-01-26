@@ -103,7 +103,7 @@ impl ServerHandler for TestConnection {
                 let Some(args) = arguments else {
                     return Ok(ToolError::invalid_input("echo: Missing arguments").into());
                 };
-                let Some(message) = args.get_string("message") else {
+                let Some(message) = args.get::<String>("message") else {
                     return Ok(ToolError::invalid_input("echo: Missing message parameter").into());
                 };
 

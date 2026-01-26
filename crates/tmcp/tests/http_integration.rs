@@ -55,7 +55,7 @@ mod tests {
             let Some(args) = arguments else {
                 return Ok(ToolError::invalid_input("Missing args").into());
             };
-            let Some(message) = args.get_string("message") else {
+            let Some(message) = args.get::<String>("message") else {
                 return Ok(ToolError::invalid_input("Missing message").into());
             };
             Ok(CallToolResult::new().with_text_content(message))

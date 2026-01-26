@@ -81,61 +81,6 @@ impl Arguments {
         self.0.get(key)
     }
 
-    /// Get a string value by key.
-    pub fn get_string(&self, key: &str) -> Option<String> {
-        self.get::<String>(key)
-    }
-
-    /// Get an i64 value by key.
-    pub fn get_i64(&self, key: &str) -> Option<i64> {
-        self.get::<i64>(key)
-    }
-
-    /// Get a bool value by key.
-    pub fn get_bool(&self, key: &str) -> Option<bool> {
-        self.get::<bool>(key)
-    }
-
-    /// Require a string parameter, returning an error if missing.
-    ///
-    /// This is a convenience method for the common pattern of extracting
-    /// a required string parameter with proper error handling.
-    pub fn require_string(&self, key: &str) -> crate::Result<String> {
-        match self.0.get(key) {
-            Some(value) => serde_json::from_value(value.clone())
-                .map_err(|_| Error::InvalidParams(format!("parameter '{}' must be a string", key))),
-            None => Err(Error::InvalidParams(format!(
-                "missing required parameter: {}",
-                key
-            ))),
-        }
-    }
-
-    /// Require an i64 parameter, returning an error if missing.
-    pub fn require_i64(&self, key: &str) -> crate::Result<i64> {
-        match self.0.get(key) {
-            Some(value) => serde_json::from_value(value.clone())
-                .map_err(|_| Error::InvalidParams(format!("parameter '{}' must be an i64", key))),
-            None => Err(Error::InvalidParams(format!(
-                "missing required parameter: {}",
-                key
-            ))),
-        }
-    }
-
-    /// Require a bool parameter, returning an error if missing.
-    pub fn require_bool(&self, key: &str) -> crate::Result<bool> {
-        match self.0.get(key) {
-            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
-                Error::InvalidParams(format!("parameter '{}' must be a boolean", key))
-            }),
-            None => Err(Error::InvalidParams(format!(
-                "missing required parameter: {}",
-                key
-            ))),
-        }
-    }
-
     /// Require a typed parameter, returning an error if missing or wrong type.
     pub fn require<T: DeserializeOwned>(&self, key: &str) -> crate::Result<T> {
         match self.0.get(key) {
@@ -205,53 +150,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_require_string() {
-        let args = Arguments::new().insert("name", "Alice");
+    fn test_require() {
+        let args = Arguments::new()
+            .insert("name", "Alice")
+            .insert("count", 42)
+            .insert("enabled", true);
 
-        // Present key
-        assert_eq!(args.require_string("name").unwrap(), "Alice");
-
-        // Missing key
-        let err = args.require_string("missing").unwrap_err();
-        assert!(matches!(err, Error::InvalidParams(_)));
-        assert!(err.to_string().contains("missing"));
-    }
-
-    #[test]
-    fn test_require_i64() {
-        let args = Arguments::new().insert("count", 42);
-
-        // Present key
-        assert_eq!(args.require_i64("count").unwrap(), 42);
-
-        // Missing key
-        let err = args.require_i64("missing").unwrap_err();
-        assert!(matches!(err, Error::InvalidParams(_)));
-    }
-
-    #[test]
-    fn test_require_bool() {
-        let args = Arguments::new().insert("enabled", true);
-
-        // Present key
-        assert!(args.require_bool("enabled").unwrap());
-
-        // Missing key
-        let err = args.require_bool("missing").unwrap_err();
-        assert!(matches!(err, Error::InvalidParams(_)));
-    }
-
-    #[test]
-    fn test_require_typed() {
-        let args = Arguments::new().insert("name", "test").insert("count", 5);
-
-        // Present keys
-        assert_eq!(args.require::<String>("name").unwrap(), "test");
-        assert_eq!(args.require::<i64>("count").unwrap(), 5);
+        // Present keys with various types
+        assert_eq!(args.require::<String>("name").unwrap(), "Alice");
+        assert_eq!(args.require::<i64>("count").unwrap(), 42);
+        assert!(args.require::<bool>("enabled").unwrap());
 
         // Missing key
         let err = args.require::<String>("missing").unwrap_err();
         assert!(matches!(err, Error::InvalidParams(_)));
+        assert!(err.to_string().contains("missing"));
     }
 
     #[test]
