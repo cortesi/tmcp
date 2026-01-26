@@ -303,10 +303,14 @@ impl Tool {
     pub fn from_schema<T: schemars::JsonSchema>(name: impl Into<String>) -> Self {
         let schema = ToolSchema::from_json_schema::<T>();
         let description = schema.description().map(|s| s.to_string());
+        let title = schema.title().map(|s| s.to_string());
 
         let mut tool = Self::new(name, schema);
         if let Some(desc) = description {
             tool.description = Some(desc);
+        }
+        if let Some(t) = title {
+            tool.title = Some(t);
         }
         tool
     }

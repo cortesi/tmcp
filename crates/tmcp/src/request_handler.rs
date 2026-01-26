@@ -58,8 +58,8 @@ struct PendingRequest {
 pub struct RequestHandler {
     /// Transport sink for sending messages.
     transport_tx: Option<TransportSink>,
-    /// Pending requests waiting for responses, keyed by normalized request ID.
-    pending_requests: Arc<DashMap<String, PendingRequest>>,
+    /// Pending requests waiting for responses, keyed by request ID.
+    pending_requests: Arc<DashMap<RequestId, PendingRequest>>,
     /// Next request ID counter.
     next_request_id: Arc<AtomicU64>,
     /// Prefix for request IDs (e.g., "req" for client, "srv-req" for server).
@@ -103,7 +103,7 @@ impl RequestHandler {
         let id = self.next_request_id();
 
         // Store and send the request
-        let response_rx = self.store_and_send_request(&id, &request).await?;
+        let response_rx = self.store_and_send_request(id.clone(), &request).await?;
 
         // Wait for response with timeout and cancellation
         self.await_response(id, request.method(), response_rx).await
@@ -112,7 +112,7 @@ impl RequestHandler {
     /// Store a pending request and send it over the transport.
     async fn store_and_send_request<Req>(
         &self,
-        id: &str,
+        id: RequestId,
         request: &Req,
     ) -> Result<oneshot::Receiver<JSONRPCResponse>>
     where
@@ -121,7 +121,7 @@ impl RequestHandler {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.pending_requests
-            .insert(id.to_string(), PendingRequest { response_tx });
+            .insert(id.clone(), PendingRequest { response_tx });
 
         tracing::debug!(
             "Stored pending request with ID: {}, total pending: {}",
@@ -129,7 +129,7 @@ impl RequestHandler {
             self.pending_requests.len()
         );
 
-        let jsonrpc_request = Self::build_request(id, request)?;
+        let jsonrpc_request = Self::build_request(id.clone(), request)?;
         tracing::info!(
             "Sending request with ID: {} method: {}",
             id,
@@ -140,7 +140,7 @@ impl RequestHandler {
             .send_message(JSONRPCMessage::Request(jsonrpc_request))
             .await
         {
-            self.pending_requests.remove(id);
+            self.pending_requests.remove(&id);
             return Err(e);
         }
 
@@ -150,7 +150,7 @@ impl RequestHandler {
     /// Wait for a response with timeout and cancellation support.
     async fn await_response<Res>(
         &self,
-        id: String,
+        id: RequestId,
         method: &str,
         response_rx: oneshot::Receiver<JSONRPCResponse>,
     ) -> Result<Res>
@@ -164,7 +164,7 @@ impl RequestHandler {
 
             () = self.global_cancel.cancelled() => {
                 self.pending_requests.remove(&id);
-                Err(Error::Cancelled { request_id: id })
+                Err(Error::Cancelled { request_id: id.to_string() })
             }
 
             result = timeout(timeout_duration, response_rx) => {
@@ -176,7 +176,7 @@ impl RequestHandler {
     /// Process the result of waiting for a response.
     fn process_response_result<Res>(
         &self,
-        id: String,
+        id: RequestId,
         method: &str,
         result: TimeoutResult<JSONRPCResponse>,
     ) -> Result<Res>
@@ -195,7 +195,7 @@ impl RequestHandler {
                 self.pending_requests.remove(&id);
                 tracing::warn!("Request {} timed out after {}ms", id, self.timeout_ms);
                 Err(Error::Timeout {
-                    request_id: id,
+                    request_id: id.to_string(),
                     timeout_ms: self.timeout_ms,
                 })
             }
@@ -241,13 +241,13 @@ impl RequestHandler {
     }
 
     /// Generate the next request ID.
-    fn next_request_id(&self) -> String {
+    fn next_request_id(&self) -> RequestId {
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        format!("{}-{}", self.id_prefix, id)
+        RequestId::String(format!("{}-{}", self.id_prefix, id))
     }
 
     /// Build a JSON-RPC request message from a typed request.
-    fn build_request<Req>(id: &str, request: &Req) -> Result<JSONRPCRequest>
+    fn build_request<Req>(id: RequestId, request: &Req) -> Result<JSONRPCRequest>
     where
         Req: serde::Serialize + RequestMethod,
     {
@@ -269,7 +269,7 @@ impl RequestHandler {
         };
         Ok(JSONRPCRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
-            id: RequestId::String(id.to_string()),
+            id,
             request: Request {
                 method: request.method().to_string(),
                 params,
@@ -313,8 +313,7 @@ impl RequestHandler {
 
     /// Handle a response from the remote side.
     ///
-    /// This method handles both string and numeric request IDs by normalizing them
-    /// to a consistent key format.
+    /// This method handles both string and numeric request IDs.
     pub async fn handle_response(&self, response: JSONRPCResponse) {
         let Some(id) = Self::response_id(&response) else {
             tracing::warn!("Received error response without ID");
@@ -331,15 +330,15 @@ impl RequestHandler {
     }
 
     /// Extract the request ID key from a JSON-RPC response.
-    fn response_id(response: &JSONRPCResponse) -> Option<String> {
+    fn response_id(response: &JSONRPCResponse) -> Option<RequestId> {
         match response {
-            JSONRPCResponse::Result(result) => Some(result.id.to_key()),
-            JSONRPCResponse::Error(error) => error.id.as_ref().map(RequestId::to_key),
+            JSONRPCResponse::Result(result) => Some(result.id.clone()),
+            JSONRPCResponse::Error(error) => error.id.clone(),
         }
     }
 
     /// Route a response to the pending request receiver, if present.
-    fn dispatch_response(&self, id: &str, response: JSONRPCResponse) {
+    fn dispatch_response(&self, id: &RequestId, response: JSONRPCResponse) {
         if let Some((_, pending)) = self.pending_requests.remove(id) {
             if pending.response_tx.send(response).is_err() {
                 tracing::debug!("Response receiver dropped for request {}", id);
