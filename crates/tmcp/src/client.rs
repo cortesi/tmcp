@@ -182,7 +182,7 @@ where
     /// This is a convenience method that creates a stdio transport,
     /// connects to the server, and performs the initialization handshake.
     pub async fn connect_stdio(&mut self) -> Result<InitializeResult> {
-        let transport = Box::new(StdioTransport::new());
+        let transport = Box::new(StdioTransport);
         self.connect(transport).await?;
         self.init().await
     }

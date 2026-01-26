@@ -101,21 +101,9 @@ where
 /// Wrapper to implement TransportStream for any Framed type
 impl<T> TransportStream for Framed<T, JsonRpcCodec> where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
-/// Standard I/O transport using stdin/stdout
+/// Standard I/O transport using stdin/stdout.
+#[derive(Default)]
 pub struct StdioTransport;
-
-impl StdioTransport {
-    /// Create a new stdio transport instance.
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for StdioTransport {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 #[async_trait]
 impl Transport for StdioTransport {
@@ -128,7 +116,7 @@ impl Transport for StdioTransport {
         let stdin = stdin();
         let stdout = stdout();
         let duplex = StdioDuplex::new(stdin, stdout);
-        let framed = Framed::new(duplex, JsonRpcCodec::new());
+        let framed = Framed::new(duplex, JsonRpcCodec);
         Ok(Box::new(framed))
     }
 
@@ -182,7 +170,7 @@ impl Transport for TcpClientTransport {
     fn framed(self: Box<Self>) -> Result<Box<dyn TransportStream>> {
         let stream = self.stream.ok_or(Error::TransportDisconnected)?;
 
-        let framed = Framed::new(stream, JsonRpcCodec::new());
+        let framed = Framed::new(stream, JsonRpcCodec);
         Ok(Box::new(framed))
     }
 
@@ -203,7 +191,7 @@ where
 
     fn framed(self: Box<Self>) -> Result<Box<dyn TransportStream>> {
         let stream = self.stream.ok_or(Error::TransportDisconnected)?;
-        let framed = Framed::new(stream, JsonRpcCodec::new());
+        let framed = Framed::new(stream, JsonRpcCodec);
         Ok(Box::new(framed))
     }
 }
@@ -217,7 +205,7 @@ impl Transport for TcpStream {
     }
 
     fn framed(self: Box<Self>) -> Result<Box<dyn TransportStream>> {
-        let framed = Framed::new(*self, JsonRpcCodec::new());
+        let framed = Framed::new(*self, JsonRpcCodec);
         Ok(Box::new(framed))
     }
 
@@ -346,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_stdio_transport_creation() {
-        let _transport = StdioTransport::new();
+        let _transport = StdioTransport;
         // Just ensure it can be created
     }
 

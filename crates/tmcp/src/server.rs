@@ -113,7 +113,7 @@ where
     /// Serve connections from stdin/stdout
     /// This is a convenience method for the common stdio use case
     pub async fn serve_stdio(self) -> Result<()> {
-        let transport = Box::new(StdioTransport::new());
+        let transport = Box::new(StdioTransport);
         self.serve(transport).await
     }
 

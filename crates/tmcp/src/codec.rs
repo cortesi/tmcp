@@ -9,22 +9,11 @@ use crate::{
     schema::{JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse},
 };
 
-/// JSON-RPC codec for encoding/decoding messages over a stream
-/// Uses newline-delimited JSON format
+/// JSON-RPC codec for encoding/decoding messages over a stream.
+///
+/// Uses newline-delimited JSON format.
+#[derive(Default)]
 pub struct JsonRpcCodec;
-
-impl JsonRpcCodec {
-    /// Create a new JSON-RPC codec.
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for JsonRpcCodec {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 impl Decoder for JsonRpcCodec {
     type Error = Error;
@@ -115,7 +104,7 @@ mod tests {
 
     #[test]
     fn test_encode_decode_request() {
-        let mut codec = JsonRpcCodec::new();
+        let mut codec = JsonRpcCodec;
         let mut buf = BytesMut::new();
 
         let request = JSONRPCRequest {
@@ -144,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_decode_skips_empty_lines() {
-        let mut codec = JsonRpcCodec::new();
+        let mut codec = JsonRpcCodec;
         // Buffer with leading newline and a valid message
         let mut buf = BytesMut::from("\n{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}\n");
 
