@@ -123,7 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 info!("Dynamic registration failed: {}", e);
                 info!("Attempting manual registration...");
 
-                let registration_client = DynamicRegistrationClient::new();
+                let registration_client = DynamicRegistrationClient::default();
 
                 // Create metadata for manual registration
                 let metadata = ClientMetadata::new(&args.client_name, &redirect_url)

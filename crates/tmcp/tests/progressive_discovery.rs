@@ -95,7 +95,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mutual_exclusion() {
-        let tools = ToolSet::new();
+        let tools = ToolSet::default();
         tools
             .register_group(group_config("mode_a", "Mode A"))
             .unwrap();
@@ -117,7 +117,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hierarchical_groups() {
-        let tools = ToolSet::new();
+        let tools = ToolSet::default();
         tools
             .register_group(group_config("database", "Database operations"))
             .unwrap();
@@ -156,7 +156,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let flag_clone = flag.clone();
 
-        let tools = ToolSet::new();
+        let tools = ToolSet::default();
         tools
             .register_with_visibility(
                 "conditional_tool",
@@ -198,7 +198,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_activation_hooks() {
-        let tools = ToolSet::new();
+        let tools = ToolSet::default();
         let ctx = TestServerContext::new();
 
         let activated = Arc::new(AtomicBool::new(false));
@@ -227,7 +227,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hidden_deactivator() {
-        let tools = ToolSet::new();
+        let tools = ToolSet::default();
         let ctx = TestServerContext::new();
 
         tools
@@ -251,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_groups() {
-        let tools = ToolSet::new();
+        let tools = ToolSet::default();
         tools
             .register_group(group_config("file_ops", "File operations"))
             .unwrap();
@@ -275,7 +275,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_root_not_listed() {
-        let tools = ToolSet::new();
+        let tools = ToolSet::default();
         tools
             .register_group(group_config("file_ops", "File operations"))
             .unwrap();
@@ -285,7 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_tools_ordering() {
-        let tools = ToolSet::new();
+        let tools = ToolSet::default();
         tools
             .register(
                 "b_tool",

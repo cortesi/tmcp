@@ -26,11 +26,6 @@ pub struct ClientCapabilities {
 }
 
 impl ClientCapabilities {
-    /// Create a new empty ClientCapabilities
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Add an experimental capability
     pub fn with_experimental_capability(mut self, key: impl Into<String>, value: Value) -> Self {
         self.experimental

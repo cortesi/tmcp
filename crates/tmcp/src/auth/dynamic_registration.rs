@@ -182,11 +182,6 @@ impl Default for DynamicRegistrationClient {
 }
 
 impl DynamicRegistrationClient {
-    /// Create a new dynamic registration client
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Register a client with the authorization server
     pub async fn register(
         &self,

@@ -180,11 +180,6 @@ impl Default for ToolSet {
 }
 
 impl ToolSet {
-    /// Create an empty tool set with an always-active root group.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Register a group definition.
     ///
     /// This registers the group configuration and auto activation tools.

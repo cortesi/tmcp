@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map(|c| c.split(',').map(|s| s.trim().to_string()).collect());
 
     // Create registration client
-    let registration_client = DynamicRegistrationClient::new();
+    let registration_client = DynamicRegistrationClient::default();
 
     // Create client metadata
     let mut metadata = ClientMetadata::new(&args.client_name, &args.redirect_uri)

@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn test_client_capabilities_elicitation() {
-        let caps = ClientCapabilities::new().with_elicitation();
+        let caps = ClientCapabilities::default().with_elicitation();
         let json = serde_json::to_value(&caps).unwrap();
         assert!(json["elicitation"].is_object());
     }

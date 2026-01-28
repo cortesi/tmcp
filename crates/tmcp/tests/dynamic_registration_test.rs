@@ -12,7 +12,7 @@ mod tests {
         let metadata = ClientMetadata::new("Test", "http://localhost:8080/callback");
         assert_eq!(metadata.client_name, Some("Test".to_string()));
 
-        let _client = DynamicRegistrationClient::new();
+        let _client = DynamicRegistrationClient::default();
 
         // Test OAuth2Config::from_registration
         let registration = ClientRegistrationResponse {

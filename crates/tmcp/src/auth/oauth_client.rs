@@ -91,7 +91,7 @@ impl OAuth2Client {
         scopes: Vec<String>,
         registration_endpoint: Option<String>,
     ) -> Result<Self, Error> {
-        let registration_client = DynamicRegistrationClient::new();
+        let registration_client = DynamicRegistrationClient::default();
 
         // Try to discover registration endpoint if not provided
         let reg_endpoint = if let Some(endpoint) = registration_endpoint {

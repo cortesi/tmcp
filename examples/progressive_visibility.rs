@@ -31,7 +31,7 @@ fn beta_greet<'a>(_ctx: &'a ServerCtx, _args: Option<Arguments>) -> ToolFuture<'
 impl VisibilityServer {
     /// Create a new server with a predicate-gated tool.
     fn new() -> Self {
-        let tools = ToolSet::new();
+        let tools = ToolSet::default();
         let beta_enabled = Arc::new(AtomicBool::new(false));
         let flag = beta_enabled.clone();
 

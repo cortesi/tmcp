@@ -95,7 +95,7 @@
 //!     ).await?;
 //!
 //!     // Option 2: Manual registration with custom metadata
-//!     let registration_client = DynamicRegistrationClient::new();
+//!     let registration_client = DynamicRegistrationClient::default();
 //!     let metadata = ClientMetadata::new("My Client", "http://localhost:8080/callback")
 //!         .with_resource("https://mcp.example.com")
 //!         .with_scopes(&["read".to_string()])
