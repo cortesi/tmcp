@@ -1,6 +1,6 @@
 use std::{collections::HashMap, mem, result::Result as StdResult};
 
-use schemars::{consts::meta_schemas::DRAFT2020_12, generate::SchemaSettings};
+use schemars::generate::SchemaSettings;
 use serde::{
     Deserialize, Serialize,
     de::{DeserializeOwned, Error as DeError},
@@ -403,9 +403,7 @@ impl Tool {
 
 /// A JSON Schema object defining the input or output schema for a tool.
 ///
-/// tmcp defaults tool schemas to JSON Schema 2020-12. If the schema does not
-/// include a `$schema` declaration, tmcp inserts the 2020-12 dialect marker.
-/// Dialects specified by `$schema` are preserved and passed through unchanged.
+/// tmcp defaults tool schemas to JSON Schema 2020-12.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ToolSchema(pub Value);
@@ -420,8 +418,7 @@ impl Default for ToolSchema {
 
 impl ToolSchema {
     /// Create a new schema from a JSON value.
-    pub fn new(mut schema: Value) -> Self {
-        ensure_schema_dialect(&mut schema);
+    pub fn new(schema: Value) -> Self {
         Self(schema)
     }
 
@@ -542,13 +539,13 @@ impl ToolSchema {
     pub fn from_json_schema<T: schemars::JsonSchema>() -> Self {
         let mut settings = SchemaSettings::draft2020_12();
         settings.inline_subschemas = true;
+        settings.meta_schema = None;
         let generator = settings.into_generator();
         let schema = generator.into_root_schema_for::<T>();
         let mut value =
             serde_json::to_value(&schema).unwrap_or_else(|_| Value::Object(Default::default()));
         simplify_schema_value(&mut value);
         force_object_schema(&mut value);
-        ensure_schema_dialect(&mut value);
         Self(value)
     }
 
@@ -560,14 +557,6 @@ impl ToolSchema {
     }
 }
 
-/// Ensure schemas declare a dialect if one is missing.
-fn ensure_schema_dialect(value: &mut Value) {
-    let Value::Object(map) = value else {
-        return;
-    };
-    map.entry("$schema".to_string())
-        .or_insert_with(|| Value::String(DRAFT2020_12.to_string()));
-}
 
 /// Normalize generated schemas for stricter JSON-schema consumers.
 fn simplify_schema_value(value: &mut Value) {
@@ -1011,10 +1000,7 @@ mod tests {
         let schema = ToolSchema::empty();
         assert_eq!(schema.schema_type(), Some("object"));
         assert!(schema.properties().is_none());
-        assert_eq!(
-            schema.as_value().get("$schema").and_then(|v| v.as_str()),
-            Some(DRAFT2020_12)
-        );
+        assert!(schema.as_value().get("$schema").is_none());
     }
 
     #[test]
@@ -1035,7 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_schema_from_json_schema_sets_dialect() {
+    fn test_tool_schema_from_json_schema_no_dialect() {
         use schemars::JsonSchema;
 
         #[derive(JsonSchema)]
@@ -1049,9 +1035,6 @@ mod tests {
         let _ = params.name;
 
         let schema = ToolSchema::from_json_schema::<Params>();
-        assert_eq!(
-            schema.as_value().get("$schema").and_then(|v| v.as_str()),
-            Some(DRAFT2020_12)
-        );
+        assert!(schema.as_value().get("$schema").is_none());
     }
 }
