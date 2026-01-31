@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     result::Result as StdResult,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -17,7 +17,7 @@ use dashmap::DashMap;
 use futures::{SinkExt, stream::SplitSink};
 use serde::de::DeserializeOwned;
 use tokio::{
-    sync::{Mutex, oneshot},
+    sync::{Mutex as TokioMutex, oneshot},
     time::{error::Elapsed, timeout},
 };
 use tokio_util::sync::CancellationToken;
@@ -39,7 +39,7 @@ use crate::{
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 /// Transport sink type used by the request handler.
-pub type TransportSink = Arc<Mutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
+pub type TransportSink = Arc<TokioMutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
 
 /// Metadata for a pending request.
 struct PendingRequest {
@@ -56,16 +56,20 @@ struct PendingRequest {
 /// - Cleaning up stale pending requests
 #[derive(Clone)]
 pub struct RequestHandler {
+    inner: Arc<RequestHandlerInner>,
+}
+
+struct RequestHandlerInner {
     /// Transport sink for sending messages.
-    transport_tx: Option<TransportSink>,
+    transport_tx: StdMutex<Option<TransportSink>>,
     /// Pending requests waiting for responses, keyed by request ID.
-    pending_requests: Arc<DashMap<RequestId, PendingRequest>>,
+    pending_requests: DashMap<RequestId, PendingRequest>,
     /// Next request ID counter.
-    next_request_id: Arc<AtomicU64>,
+    next_request_id: AtomicU64,
     /// Prefix for request IDs (e.g., "req" for client, "srv-req" for server).
     id_prefix: String,
     /// Request timeout in milliseconds.
-    timeout_ms: u64,
+    timeout_ms: AtomicU64,
     /// Global cancellation token for all requests (used during shutdown).
     global_cancel: CancellationToken,
 }
@@ -74,23 +78,27 @@ impl RequestHandler {
     /// Create a new RequestHandler with default timeout.
     pub fn new(transport_tx: Option<TransportSink>, id_prefix: String) -> Self {
         Self {
-            transport_tx,
-            pending_requests: Arc::new(DashMap::new()),
-            next_request_id: Arc::new(AtomicU64::new(1)),
-            id_prefix,
-            timeout_ms: DEFAULT_TIMEOUT_MS,
-            global_cancel: CancellationToken::new(),
+            inner: Arc::new(RequestHandlerInner {
+                transport_tx: StdMutex::new(transport_tx),
+                pending_requests: DashMap::new(),
+                next_request_id: AtomicU64::new(1),
+                id_prefix,
+                timeout_ms: AtomicU64::new(DEFAULT_TIMEOUT_MS),
+                global_cancel: CancellationToken::new(),
+            }),
         }
     }
 
     /// Set the transport sink (used when connecting).
-    pub fn set_transport(&mut self, transport_tx: TransportSink) {
-        self.transport_tx = Some(transport_tx);
+    pub fn set_transport(&self, transport_tx: TransportSink) {
+        if let Ok(mut lock) = self.inner.transport_tx.lock() {
+            *lock = Some(transport_tx);
+        }
     }
 
     /// Set the request timeout in milliseconds.
-    pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
-        self.timeout_ms = timeout_ms;
+    pub fn with_timeout(self, timeout_ms: u64) -> Self {
+        self.inner.timeout_ms.store(timeout_ms, Ordering::Relaxed);
         self
     }
 
@@ -120,13 +128,14 @@ impl RequestHandler {
     {
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.pending_requests
+        self.inner
+            .pending_requests
             .insert(id.clone(), PendingRequest { response_tx });
 
         tracing::debug!(
             "Stored pending request with ID: {}, total pending: {}",
             id,
-            self.pending_requests.len()
+            self.inner.pending_requests.len()
         );
 
         let jsonrpc_request = Self::build_request(id.clone(), request)?;
@@ -140,7 +149,7 @@ impl RequestHandler {
             .send_message(JSONRPCMessage::Request(jsonrpc_request))
             .await
         {
-            self.pending_requests.remove(&id);
+            self.inner.pending_requests.remove(&id);
             return Err(e);
         }
 
@@ -157,13 +166,14 @@ impl RequestHandler {
     where
         Res: DeserializeOwned,
     {
-        let timeout_duration = Duration::from_millis(self.timeout_ms);
+        let timeout_ms = self.inner.timeout_ms.load(Ordering::Relaxed);
+        let timeout_duration = Duration::from_millis(timeout_ms);
 
         tokio::select! {
             biased;
 
-            () = self.global_cancel.cancelled() => {
-                self.pending_requests.remove(&id);
+            () = self.inner.global_cancel.cancelled() => {
+                self.inner.pending_requests.remove(&id);
                 Err(Error::Cancelled { request_id: id.to_string() })
             }
 
@@ -186,17 +196,18 @@ impl RequestHandler {
         match result {
             Ok(Ok(response)) => Self::decode_response(method, response),
             Ok(Err(_recv_error)) => {
-                self.pending_requests.remove(id);
+                self.inner.pending_requests.remove(id);
                 Err(Error::Protocol(
                     "Response channel closed unexpectedly".to_string(),
                 ))
             }
             Err(_timeout) => {
-                self.pending_requests.remove(id);
-                tracing::warn!("Request {} timed out after {}ms", id, self.timeout_ms);
+                self.inner.pending_requests.remove(id);
+                let timeout_ms = self.inner.timeout_ms.load(Ordering::Relaxed);
+                tracing::warn!("Request {} timed out after {}ms", id, timeout_ms);
                 Err(Error::Timeout {
                     request_id: id.to_string(),
-                    timeout_ms: self.timeout_ms,
+                    timeout_ms,
                 })
             }
         }
@@ -204,7 +215,17 @@ impl RequestHandler {
 
     /// Send a message through the transport.
     pub async fn send_message(&self, message: JSONRPCMessage) -> Result<()> {
-        if let Some(transport_tx) = &self.transport_tx {
+        // Lock the transport option
+        let transport = {
+            let lock = self
+                .inner
+                .transport_tx
+                .lock()
+                .map_err(|_| Error::InternalError("Failed to lock transport".into()))?;
+            lock.clone()
+        };
+
+        if let Some(transport_tx) = transport {
             let mut tx = transport_tx.lock().await;
             tx.send(message).await?;
             Ok(())
@@ -242,8 +263,8 @@ impl RequestHandler {
 
     /// Generate the next request ID.
     fn next_request_id(&self) -> RequestId {
-        let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        RequestId::String(format!("{}-{}", self.id_prefix, id))
+        let id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);
+        RequestId::String(format!("{}-{}", self.inner.id_prefix, id))
     }
 
     /// Build a JSON-RPC request message from a typed request.
@@ -323,7 +344,7 @@ impl RequestHandler {
         tracing::debug!(
             "Handling response for ID: {}, pending requests: {}",
             id,
-            self.pending_requests.len()
+            self.inner.pending_requests.len()
         );
 
         self.dispatch_response(&id, response);
@@ -339,7 +360,7 @@ impl RequestHandler {
 
     /// Route a response to the pending request receiver, if present.
     fn dispatch_response(&self, id: &RequestId, response: JSONRPCResponse) {
-        if let Some((_, pending)) = self.pending_requests.remove(id) {
+        if let Some((_, pending)) = self.inner.pending_requests.remove(id) {
             if pending.response_tx.send(response).is_err() {
                 tracing::debug!("Response receiver dropped for request {}", id);
             }
