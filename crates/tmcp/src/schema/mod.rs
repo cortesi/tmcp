@@ -40,7 +40,6 @@ mod tasks;
 /// Tool schema types.
 mod tools;
 
-
 pub use capabilities::*;
 pub use completions::*;
 pub use content::*;

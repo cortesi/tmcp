@@ -557,7 +557,6 @@ impl ToolSchema {
     }
 }
 
-
 /// Normalize generated schemas for stricter JSON-schema consumers.
 fn simplify_schema_value(value: &mut Value) {
     match value {
