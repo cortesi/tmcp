@@ -132,8 +132,8 @@ pub struct ScriptEvalOutcome {
 impl ScriptEvalOutcome {
     /// Convert the outcome into a TMCP tool result payload.
     pub fn to_tool_result(&self) -> CallToolResult {
-        let json = match serde_json::to_string(self) {
-            Ok(json) => json,
+        let mut result = match CallToolResult::new().with_json_text(self) {
+            Ok(res) => res,
             Err(err) => {
                 let fallback = serde_json::json!({
                     "success": false,
@@ -146,12 +146,15 @@ impl ScriptEvalOutcome {
                         "message": format!("Failed to serialize output: {err}"),
                     },
                 });
-                serde_json::to_string(&fallback).unwrap_or_else(|_| {
-                    r#"{"success":false,"error":{"type":"runtime","message":"Failed to serialize output"}}"#.to_string()
-                })
+                CallToolResult::new()
+                    .with_json_text(&fallback)
+                    .unwrap_or_else(|_| {
+                        CallToolResult::new().with_text_content(
+                            r#"{"success":false,"error":{"type":"runtime","message":"Failed to serialize output"}}"#
+                        )
+                    })
             }
         };
-        let mut result = CallToolResult::new().with_text_content(json);
         for block in &self.content {
             result = result.with_content(block.clone());
         }

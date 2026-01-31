@@ -102,6 +102,12 @@ impl CallToolResult {
         self
     }
 
+    /// Serialize data to JSON and append it as a text content item.
+    pub fn with_json_text(self, data: impl Serialize) -> StdResult<Self, serde_json::Error> {
+        let text = serde_json::to_string(&data)?;
+        Ok(self.with_text_content(text))
+    }
+
     /// Mark this result as indicating an error.
     ///
     /// Tool results are successful by default (when `is_error` is `None`),
@@ -858,13 +864,24 @@ mod tests {
 
     #[test]
     fn test_call_tool_result_json() {
-        #[derive(Debug, PartialEq, serde::Deserialize)]
+        #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
         struct Response {
             value: i32,
             message: String,
         }
 
-        // Valid JSON
+        // Test with_json_text
+        let data = Response {
+            value: 42,
+            message: "hello".to_string(),
+        };
+        let result = CallToolResult::new().with_json_text(&data).unwrap();
+        assert_eq!(
+            result.text(),
+            Some(r#"{"value":42,"message":"hello"}"#)
+        );
+
+        // Valid JSON (deserialization test)
         let result =
             CallToolResult::new().with_text_content(r#"{"value": 42, "message": "hello"}"#);
         let parsed: Response = result.json().unwrap();
