@@ -97,4 +97,48 @@ impl InitializeResult {
         self.capabilities.completions = Some(serde_json::Value::Object(serde_json::Map::new()));
         self
     }
+
+    /// Enable task listing capability
+    pub fn with_tasks_list(mut self) -> Self {
+        self.capabilities = self.capabilities.with_tasks_list();
+        self
+    }
+
+    /// Enable task cancellation capability
+    pub fn with_tasks_cancel(mut self) -> Self {
+        self.capabilities = self.capabilities.with_tasks_cancel();
+        self
+    }
+
+    /// Enable task-augmented tools/call capability
+    pub fn with_task_tools_call(mut self) -> Self {
+        self.capabilities = self.capabilities.with_task_tools_call();
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_initialize_result_builder() {
+        let result = InitializeResult::new("test-server")
+            .with_version("1.2.3")
+            .with_logging()
+            .with_tools(true)
+            .with_tasks_list()
+            .with_task_tools_call();
+
+        assert_eq!(result.server_info.name, "test-server");
+        assert_eq!(result.server_info.version, "1.2.3");
+        assert!(result.capabilities.logging.is_some());
+        assert!(result.capabilities.tools.is_some());
+        assert!(result.capabilities.tools.unwrap().list_changed.unwrap());
+        
+        let tasks = result.capabilities.tasks.unwrap();
+        assert!(tasks.list.is_some());
+        assert!(tasks.cancel.is_none());
+        assert!(tasks.requests.unwrap().tools.unwrap().call.is_some());
+    }
 }

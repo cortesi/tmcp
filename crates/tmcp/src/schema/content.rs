@@ -29,6 +29,32 @@ pub enum ContentBlock {
     EmbeddedResource(EmbeddedResource),
 }
 
+impl ContentBlock {
+    /// Create a new text content block.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text(TextContent::new(text))
+    }
+
+    /// Create a new image content block.
+    pub fn image(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
+        Self::Image(ImageContent::new(data, mime_type))
+    }
+
+    /// Create a new audio content block.
+    pub fn audio(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
+        Self::Audio(AudioContent::new(data, mime_type))
+    }
+
+    /// Create a new embedded resource content block.
+    pub fn resource(resource: ResourceContents) -> Self {
+        Self::EmbeddedResource(EmbeddedResource {
+            resource,
+            annotations: None,
+            _meta: None,
+        })
+    }
+}
+
 /// A content block for sampling messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -290,4 +316,21 @@ pub struct ToolResultContent {
     /// Whether the tool use resulted in an error.
     #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_content_block_helpers() {
+        let text = ContentBlock::text("hello");
+        assert!(matches!(text, ContentBlock::Text(_)));
+
+        let image = ContentBlock::image("data", "image/png");
+        assert!(matches!(image, ContentBlock::Image(_)));
+
+        let audio = ContentBlock::audio("data", "audio/mpeg");
+        assert!(matches!(audio, ContentBlock::Audio(_)));
+    }
 }
