@@ -11,5 +11,8 @@ mod error;
 mod executor;
 
 pub use config::ScriptConfig;
-pub use error::{ScriptError, ScriptErrorInfo, ScriptEvalOutcome, ScriptResult};
-pub use executor::{RhaiScriptExecutor, ScriptApi};
+pub use error::{
+    ScriptAssertion, ScriptError, ScriptErrorInfo, ScriptEvalOutcome, ScriptImageInfo,
+    ScriptInfoResult, ScriptLocation, ScriptResult, ScriptTiming, ScriptValue,
+};
+pub use executor::{RhaiScriptExecutor, ScriptApi, ScriptExecutionOptions};
