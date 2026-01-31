@@ -1,14 +1,18 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use serde::Serialize;
+use tracing::info;
 
 use crate::{
     Error, Result,
     context::{ClientCtx, ServerCtx},
+    error::ToolError,
     schema::{
-        self, Cursor, ElicitRequestParams, ElicitResult, GetPromptResult, InitializeResult,
-        ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListRootsResult,
-        ListTasksResult, ListToolsResult, LoggingLevel, ReadResourceResult,
+        self, CallToolResult, ClientRequest, Cursor, ElicitRequestParams, ElicitResult,
+        GetPromptResult, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
+        ListResourcesResult, ListRootsResult, ListTasksResult, ListToolsResult, LoggingLevel,
+        ReadResourceResult, ServerRequest,
     },
 };
 
@@ -109,6 +113,44 @@ pub trait ClientHandler: Send + Sync {
         _notification: schema::ServerNotification,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Dispatches a parsed server request to the appropriate handler method.
+    ///
+    /// The default implementation matches on the request variant and calls the corresponding
+    /// trait method. You can override this to implement global behaviors (middleware, logging)
+    /// or to handle custom request types before delegating to the default logic.
+    async fn handle_request(
+        &self,
+        context: &ClientCtx,
+        request: ServerRequest,
+        method: &str,
+    ) -> Result<serde_json::Value> {
+        match request {
+            ServerRequest::Ping { _meta: _ } => {
+                info!("Server sent ping request, sending pong");
+                empty_result(self.pong(context).await)
+            }
+            ServerRequest::CreateMessage(params) => {
+                serialize_result(self.create_message(context, method, *params).await)
+            }
+            ServerRequest::ListRoots { _meta: _ } => {
+                serialize_result(self.list_roots(context).await)
+            }
+            ServerRequest::Elicit(params) => serialize_result(self.elicit(context, *params).await),
+            ServerRequest::GetTask { task_id, _meta: _ } => {
+                serialize_result(self.get_task(context, task_id).await)
+            }
+            ServerRequest::GetTaskPayload { task_id, _meta: _ } => {
+                serialize_result(self.get_task_payload(context, task_id).await)
+            }
+            ServerRequest::ListTasks { cursor, _meta: _ } => {
+                serialize_result(self.list_tasks(context, cursor).await)
+            }
+            ServerRequest::CancelTask { task_id, _meta: _ } => {
+                serialize_result(self.cancel_task(context, task_id).await)
+            }
+        }
     }
 }
 
@@ -347,4 +389,107 @@ pub trait ServerHandler: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
+
+    /// Dispatches a parsed client request to the appropriate handler method.
+    ///
+    /// The default implementation matches on the request variant and calls the corresponding
+    /// trait method. You can override this to implement global behaviors (middleware, logging)
+    /// or to handle custom request types before delegating to the default logic.
+    async fn handle_request(
+        &self,
+        context: &ServerCtx,
+        request: ClientRequest,
+    ) -> Result<serde_json::Value> {
+        match request {
+            ClientRequest::Initialize {
+                protocol_version,
+                capabilities,
+                client_info,
+                _meta: _,
+            } => serialize_result(
+                self.initialize(context, protocol_version, *capabilities, client_info)
+                    .await,
+            ),
+            ClientRequest::Ping { .. } => {
+                info!("Server received ping request, sending automatic response");
+                empty_result(self.pong(context).await)
+            }
+            ClientRequest::ListTools { cursor, _meta: _ } => {
+                serialize_result(self.list_tools(context, cursor).await)
+            }
+            ClientRequest::CallTool {
+                name,
+                arguments,
+                task,
+                _meta: _,
+            } => {
+                let result = self.call_tool(context, name, arguments, task).await;
+                match result {
+                    Ok(result) => serialize_result(Ok(result)),
+                    Err(Error::InvalidParams(message)) => {
+                        let tool_result: CallToolResult = ToolError::invalid_input(message).into();
+                        serialize_result(Ok(tool_result))
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            ClientRequest::ListResources { cursor, _meta: _ } => {
+                serialize_result(self.list_resources(context, cursor).await)
+            }
+            ClientRequest::ListResourceTemplates { cursor, _meta: _ } => {
+                serialize_result(self.list_resource_templates(context, cursor).await)
+            }
+            ClientRequest::ReadResource { uri, _meta: _ } => {
+                serialize_result(self.read_resource(context, uri).await)
+            }
+            ClientRequest::Subscribe { uri, _meta: _ } => {
+                empty_result(self.resources_subscribe(context, uri).await)
+            }
+            ClientRequest::Unsubscribe { uri, _meta: _ } => {
+                empty_result(self.resources_unsubscribe(context, uri).await)
+            }
+            ClientRequest::ListPrompts { cursor, _meta: _ } => {
+                serialize_result(self.list_prompts(context, cursor).await)
+            }
+            ClientRequest::GetPrompt {
+                name,
+                arguments,
+                _meta: _,
+            } => serialize_result(self.get_prompt(context, name, arguments).await),
+            ClientRequest::Complete {
+                reference,
+                argument,
+                context: completion_context,
+                _meta: _,
+            } => serialize_result(
+                self.complete(context, reference, argument, completion_context)
+                    .await,
+            ),
+            ClientRequest::SetLevel { level, _meta: _ } => {
+                empty_result(self.set_level(context, level).await)
+            }
+            ClientRequest::GetTask { task_id, _meta: _ } => {
+                serialize_result(self.get_task(context, task_id).await)
+            }
+            ClientRequest::GetTaskPayload { task_id, _meta: _ } => {
+                serialize_result(self.get_task_payload(context, task_id).await)
+            }
+            ClientRequest::ListTasks { cursor, _meta: _ } => {
+                serialize_result(self.list_tasks(context, cursor).await)
+            }
+            ClientRequest::CancelTask { task_id, _meta: _ } => {
+                serialize_result(self.cancel_task(context, task_id).await)
+            }
+        }
+    }
+}
+
+/// Serialize a handler result into JSON for a JSON-RPC response.
+fn serialize_result<T: Serialize>(result: Result<T>) -> Result<serde_json::Value> {
+    result.and_then(|value| serde_json::to_value(value).map_err(Into::into))
+}
+
+/// Convert a unit result into an empty JSON object response.
+fn empty_result(result: Result<()>) -> Result<serde_json::Value> {
+    result.map(|_| serde_json::json!({}))
 }

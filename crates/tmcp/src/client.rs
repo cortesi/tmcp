@@ -777,40 +777,9 @@ async fn handle_server_request_inner<C: ClientHandler>(
             }
         };
 
-    match server_request {
-        ServerRequest::Ping { _meta: _ } => {
-            info!("Server sent ping request, sending pong");
-            connection.pong(ctx).await.map(|_| serde_json::json!({}))
-        }
-        ServerRequest::CreateMessage(params) => connection
-            .create_message(ctx, &request.request.method, *params)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ServerRequest::ListRoots { _meta: _ } => connection
-            .list_roots(ctx)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ServerRequest::Elicit(params) => connection
-            .elicit(ctx, *params)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ServerRequest::GetTask { task_id, _meta: _ } => connection
-            .get_task(ctx, task_id)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ServerRequest::GetTaskPayload { task_id, _meta: _ } => connection
-            .get_task_payload(ctx, task_id)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ServerRequest::ListTasks { cursor, _meta: _ } => connection
-            .list_tasks(ctx, cursor)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-        ServerRequest::CancelTask { task_id, _meta: _ } => connection
-            .cancel_task(ctx, task_id)
-            .await
-            .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
-    }
+    connection
+        .handle_request(ctx, server_request, &request.request.method)
+        .await
 }
 
 /// Convert a JSON-RPC notification into a typed ServerNotification and pass it
