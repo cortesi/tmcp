@@ -56,9 +56,11 @@ struct PendingRequest {
 /// - Cleaning up stale pending requests
 #[derive(Clone)]
 pub struct RequestHandler {
+    /// Shared mutable state for outbound requests and inbound responses.
     inner: Arc<RequestHandlerInner>,
 }
 
+/// Shared request-handler state stored behind [`RequestHandler`].
 struct RequestHandlerInner {
     /// Transport sink for sending messages.
     transport_tx: StdMutex<Option<TransportSink>>,

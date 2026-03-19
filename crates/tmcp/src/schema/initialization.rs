@@ -135,7 +135,7 @@ mod tests {
         assert!(result.capabilities.logging.is_some());
         assert!(result.capabilities.tools.is_some());
         assert!(result.capabilities.tools.unwrap().list_changed.unwrap());
-        
+
         let tasks = result.capabilities.tasks.unwrap();
         assert!(tasks.list.is_some());
         assert!(tasks.cancel.is_none());

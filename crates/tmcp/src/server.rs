@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use futures::{SinkExt, StreamExt};
@@ -272,6 +275,8 @@ impl ServerHandle {
 
         // Track whether we've called on_connect after initialization
         let mut initialized = false;
+        let mut client_disconnected = false;
+        let in_flight_requests = Arc::new(AtomicUsize::new(0));
 
         // Start the main server loop in a background task
         let handle = tokio::spawn(async move {
@@ -283,7 +288,7 @@ impl ServerHandle {
                         break;
                     }
                     // Handle incoming messages from client
-                    result = stream_rx.next() => {
+                    result = stream_rx.next(), if !client_disconnected => {
                         match result {
                             Some(Ok(message)) => {
                                 match message {
@@ -340,6 +345,7 @@ impl ServerHandle {
                                             connection.clone(),
                                             other,
                                             response_tx.clone(),
+                                            in_flight_requests.clone(),
                                             &server_ctx,
                                         )
                                         .await
@@ -355,7 +361,7 @@ impl ServerHandle {
                             }
                             None => {
                                 info!("Client disconnected");
-                                break;
+                                client_disconnected = true;
                             }
                         }
                     }
@@ -380,6 +386,13 @@ impl ServerHandle {
                             break;
                         }
                     }
+                }
+
+                if client_disconnected
+                    && in_flight_requests.load(Ordering::SeqCst) == 0
+                    && response_rx.is_empty()
+                {
+                    break;
                 }
             }
 
@@ -519,6 +532,7 @@ async fn handle_message_with_connection(
     connection: Arc<Box<dyn ServerHandler>>,
     message: JSONRPCMessage,
     response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
+    in_flight_requests: Arc<AtomicUsize>,
     context: &ServerCtx,
 ) -> Result<()> {
     if let JSONRPCMessage::Notification(notification) = message {
@@ -526,7 +540,13 @@ async fn handle_message_with_connection(
         return Ok(());
     }
 
-    handle_message_without_await(&connection, message, response_tx, context);
+    handle_message_without_await(
+        &connection,
+        message,
+        response_tx,
+        in_flight_requests,
+        context,
+    );
     Ok(())
 }
 
@@ -536,10 +556,18 @@ fn handle_message_without_await(
     connection: &Arc<Box<dyn ServerHandler>>,
     message: JSONRPCMessage,
     response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
+    in_flight_requests: Arc<AtomicUsize>,
     context: &ServerCtx,
 ) {
     if let JSONRPCMessage::Request(request) = message {
-        spawn_request_handler(connection, request, response_tx, context);
+        in_flight_requests.fetch_add(1, Ordering::SeqCst);
+        spawn_request_handler(
+            connection,
+            request,
+            response_tx,
+            in_flight_requests,
+            context,
+        );
         return;
     }
 
@@ -554,6 +582,7 @@ fn spawn_request_handler(
     connection: &Arc<Box<dyn ServerHandler>>,
     request: JSONRPCRequest,
     response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
+    in_flight_requests: Arc<AtomicUsize>,
     context: &ServerCtx,
 ) {
     let conn = connection.clone();
@@ -567,6 +596,7 @@ fn spawn_request_handler(
         if let Err(e) = tx.send(response_message) {
             error!("Failed to queue response: {}", e);
         }
+        in_flight_requests.fetch_sub(1, Ordering::SeqCst);
     });
 }
 

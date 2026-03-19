@@ -728,19 +728,16 @@ fn add_null_type(value: &mut Value) {
     };
     if let Some(ty) = obj.get_mut("type") {
         match ty {
-            Value::String(s) => {
-                if s != "null" {
-                    let current = mem::take(s);
-                    *ty = Value::Array(vec![Value::String(current), Value::String("null".into())]);
-                }
+            Value::String(s) if s != "null" => {
+                let current = mem::take(s);
+                *ty = Value::Array(vec![Value::String(current), Value::String("null".into())]);
             }
-            Value::Array(arr) => {
+            Value::Array(arr)
                 if !arr
                     .iter()
-                    .any(|v| matches!(v, Value::String(s) if s == "null"))
-                {
-                    arr.push(Value::String("null".into()));
-                }
+                    .any(|v| matches!(v, Value::String(s) if s == "null")) =>
+            {
+                arr.push(Value::String("null".into()));
             }
             _ => {}
         }
@@ -876,10 +873,7 @@ mod tests {
             message: "hello".to_string(),
         };
         let result = CallToolResult::new().with_json_text(&data).unwrap();
-        assert_eq!(
-            result.text(),
-            Some(r#"{"value":42,"message":"hello"}"#)
-        );
+        assert_eq!(result.text(), Some(r#"{"value":42,"message":"hello"}"#));
 
         // Valid JSON (deserialization test)
         let result =
