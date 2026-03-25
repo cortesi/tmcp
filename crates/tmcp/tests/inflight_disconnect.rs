@@ -62,7 +62,6 @@ mod tests {
         let server_handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
             .await
             .expect("server starts");
-        let server_task = server_handle.handle;
 
         let initialize = json!({
             "jsonrpc": "2.0",
@@ -134,7 +133,7 @@ mod tests {
             "server must send the in-flight response after client EOF"
         );
 
-        timeout(Duration::from_secs(2), server_task)
+        timeout(Duration::from_secs(2), server_handle.join())
             .await
             .expect("server task finished")
             .expect("server task succeeded");

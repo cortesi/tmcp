@@ -25,6 +25,9 @@ use crate::{
     },
 };
 
+/// Maximum number of queued outbound client notifications before backpressure applies.
+const CLIENT_NOTIFICATION_BUFFER: usize = 64;
+
 /// Default no-op implementation of ClientHandler for unit type
 #[async_trait]
 impl ClientHandler for () {
@@ -367,7 +370,8 @@ where
         let connection = self.connection.clone();
 
         // Create mpsc channel for client notifications
-        let (client_notification_tx, mut client_notification_rx) = mpsc::unbounded_channel();
+        let (client_notification_tx, mut client_notification_rx) =
+            mpsc::channel(CLIENT_NOTIFICATION_BUFFER);
 
         // Create the context for the connection
         let context = ClientCtx::new(client_notification_tx);
@@ -427,10 +431,12 @@ where
                             }
                             Some(Err(e)) => {
                                 error!("Error receiving message: {}", e);
+                                request_handler.shutdown();
                                 break;
                             }
                             None => {
                                 info!("Server disconnected");
+                                request_handler.shutdown();
                                 break;
                             }
                         }
@@ -442,11 +448,14 @@ where
                         let mut sink = notification_sink.lock().await;
                         if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
                             error!("Error sending notification to server: {}", e);
+                            request_handler.shutdown();
                             break;
                         }
                     }
                 }
             }
+
+            request_handler.shutdown();
 
             // Clean up connection
             if let Err(e) = connection.on_shutdown(&context).await {

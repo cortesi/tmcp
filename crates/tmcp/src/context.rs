@@ -1,5 +1,5 @@
 use serde::de::DeserializeOwned;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TrySendError};
 
 use crate::{
     error::{Error, Result},
@@ -15,14 +15,14 @@ use crate::{
 #[derive(Clone)]
 pub struct ClientCtx {
     /// Sender for client notifications
-    pub(crate) notification_tx: mpsc::UnboundedSender<schema::ClientNotification>,
+    pub(crate) notification_tx: mpsc::Sender<schema::ClientNotification>,
     /// The current request ID, if this context is handling a request
     pub(crate) request_id: Option<schema::RequestId>,
 }
 
 impl ClientCtx {
     /// Create a new `ClientCtx` with the given notification sender
-    pub(crate) fn new(notification_tx: mpsc::UnboundedSender<schema::ClientNotification>) -> Self {
+    pub(crate) fn new(notification_tx: mpsc::Sender<schema::ClientNotification>) -> Self {
         Self {
             notification_tx,
             request_id: None,
@@ -32,8 +32,8 @@ impl ClientCtx {
     /// Send a notification to the server
     pub fn notify(&self, notification: schema::ClientNotification) -> Result<()> {
         self.notification_tx
-            .send(notification)
-            .map_err(|_| Error::InternalError("Failed to send notification".into()))?;
+            .try_send(notification)
+            .map_err(|err| notification_send_error(&err))?;
         Ok(())
     }
 
@@ -67,7 +67,7 @@ impl ClientCtx {
 #[derive(Clone)]
 pub struct ServerCtx {
     /// Sender for server notifications
-    pub(crate) notification_tx: mpsc::UnboundedSender<schema::ServerNotification>,
+    pub(crate) notification_tx: mpsc::Sender<schema::ServerNotification>,
     /// Request handler for making requests to clients
     request_handler: RequestHandler,
     /// The current request ID, if this context is handling a request
@@ -77,7 +77,7 @@ pub struct ServerCtx {
 impl ServerCtx {
     /// Create a new ServerCtx with notification channel and transport
     pub(crate) fn new(
-        notification_tx: mpsc::UnboundedSender<schema::ServerNotification>,
+        notification_tx: mpsc::Sender<schema::ServerNotification>,
         transport_tx: Option<TransportSink>,
     ) -> Self {
         Self {
@@ -90,8 +90,8 @@ impl ServerCtx {
     /// Send a notification to the client
     pub fn notify(&self, notification: schema::ServerNotification) -> Result<()> {
         self.notification_tx
-            .send(notification)
-            .map_err(|_| Error::InternalError("Failed to send notification".into()))?;
+            .try_send(notification)
+            .map_err(|err| notification_send_error(&err))?;
         Ok(())
     }
 
@@ -115,6 +115,11 @@ impl ServerCtx {
         // Clone the handler to avoid holding locks across await points
         let handler = self.request_handler.clone();
         handler.handle_response(response).await
+    }
+
+    /// Shut down any in-flight client requests tied to this connection.
+    pub(crate) fn shutdown_requests(&self) {
+        self.request_handler.shutdown();
     }
 
     /// Send a cancellation notification for the current request
@@ -196,5 +201,13 @@ impl ServerCtx {
     ) -> Result<schema::CancelTaskResult> {
         self.request(schema::ServerRequest::cancel_task(task_id))
             .await
+    }
+}
+
+/// Convert a bounded notification queue error into the crate error type.
+fn notification_send_error<T>(err: &TrySendError<T>) -> Error {
+    match err {
+        TrySendError::Full(_) => Error::Transport("Notification queue full".into()),
+        TrySendError::Closed(_) => Error::TransportDisconnected,
     }
 }

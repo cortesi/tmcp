@@ -11,7 +11,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn create_test_context() -> ServerCtx {
-        let (notification_tx, _) = mpsc::unbounded_channel();
+        let (notification_tx, _) = mpsc::channel(4);
         testutils::test_server_ctx(notification_tx)
     }
 

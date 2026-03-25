@@ -8,7 +8,7 @@ use std::{
     result::Result as StdResult,
     sync::{
         Arc, Mutex as StdMutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -20,7 +20,6 @@ use tokio::{
     sync::{Mutex as TokioMutex, oneshot},
     time::{error::Elapsed, timeout},
 };
-use tokio_util::sync::CancellationToken;
 
 /// Type alias for the nested Result type from timeout + channel receive.
 type TimeoutResult<T> = StdResult<StdResult<T, oneshot::error::RecvError>, Elapsed>;
@@ -72,8 +71,8 @@ struct RequestHandlerInner {
     id_prefix: String,
     /// Request timeout in milliseconds.
     timeout_ms: AtomicU64,
-    /// Global cancellation token for all requests (used during shutdown).
-    global_cancel: CancellationToken,
+    /// Tracks whether the current transport is shutting down.
+    shutting_down: AtomicBool,
 }
 
 impl RequestHandler {
@@ -86,7 +85,7 @@ impl RequestHandler {
                 next_request_id: AtomicU64::new(1),
                 id_prefix,
                 timeout_ms: AtomicU64::new(DEFAULT_TIMEOUT_MS),
-                global_cancel: CancellationToken::new(),
+                shutting_down: AtomicBool::new(false),
             }),
         }
     }
@@ -96,12 +95,22 @@ impl RequestHandler {
         if let Ok(mut lock) = self.inner.transport_tx.lock() {
             *lock = Some(transport_tx);
         }
+        self.inner.shutting_down.store(false, Ordering::Release);
     }
 
     /// Set the request timeout in milliseconds.
     pub fn with_timeout(self, timeout_ms: u64) -> Self {
         self.inner.timeout_ms.store(timeout_ms, Ordering::Relaxed);
         self
+    }
+
+    /// Shut down the current transport and wake any pending requests immediately.
+    pub fn shutdown(&self) {
+        self.inner.shutting_down.store(true, Ordering::Release);
+        if let Ok(mut lock) = self.inner.transport_tx.lock() {
+            *lock = None;
+        }
+        self.inner.pending_requests.clear();
     }
 
     /// Send a request and wait for response with timeout and cancellation support.
@@ -170,19 +179,8 @@ impl RequestHandler {
     {
         let timeout_ms = self.inner.timeout_ms.load(Ordering::Relaxed);
         let timeout_duration = Duration::from_millis(timeout_ms);
-
-        tokio::select! {
-            biased;
-
-            () = self.inner.global_cancel.cancelled() => {
-                self.inner.pending_requests.remove(&id);
-                Err(Error::Cancelled { request_id: id.to_string() })
-            }
-
-            result = timeout(timeout_duration, response_rx) => {
-                self.process_response_result(&id, method, result)
-            }
-        }
+        let result = timeout(timeout_duration, response_rx).await;
+        self.process_response_result(&id, method, result)
     }
 
     /// Process the result of waiting for a response.
@@ -199,9 +197,13 @@ impl RequestHandler {
             Ok(Ok(response)) => Self::decode_response(method, response),
             Ok(Err(_recv_error)) => {
                 self.inner.pending_requests.remove(id);
-                Err(Error::Protocol(
-                    "Response channel closed unexpectedly".to_string(),
-                ))
+                if self.inner.shutting_down.load(Ordering::Acquire) {
+                    Err(Error::TransportDisconnected)
+                } else {
+                    Err(Error::Protocol(
+                        "Response channel closed unexpectedly".to_string(),
+                    ))
+                }
             }
             Err(_timeout) => {
                 self.inner.pending_requests.remove(id);
@@ -217,6 +219,10 @@ impl RequestHandler {
 
     /// Send a message through the transport.
     pub async fn send_message(&self, message: JSONRPCMessage) -> Result<()> {
+        if self.inner.shutting_down.load(Ordering::Acquire) {
+            return Err(Error::TransportDisconnected);
+        }
+
         // Lock the transport option
         let transport = {
             let lock = self

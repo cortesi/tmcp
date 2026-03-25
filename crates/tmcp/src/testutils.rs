@@ -25,6 +25,9 @@ use crate::{
     schema::{ClientNotification, ServerNotification},
 };
 
+/// Queue size for test-only notification channels.
+const TEST_NOTIFICATION_BUFFER: usize = 16;
+
 /// Conveniently create **two** independent in-memory duplex pipes that together
 /// form a bidirectional channel suitable for wiring up a test client and
 /// server.
@@ -127,13 +130,13 @@ where
 
 /// Create a ServerCtx for testing purposes.
 /// This creates a ServerCtx with only notification capability (no request/response).
-pub fn test_server_ctx(notification_tx: mpsc::UnboundedSender<ServerNotification>) -> ServerCtx {
+pub fn test_server_ctx(notification_tx: mpsc::Sender<ServerNotification>) -> ServerCtx {
     ServerCtx::new(notification_tx, None)
 }
 
 /// Create a ClientCtx for testing purposes.
 /// This creates a ClientCtx with only notification capability (no request/response).
-pub fn test_client_ctx(notification_tx: mpsc::UnboundedSender<ClientNotification>) -> ClientCtx {
+pub fn test_client_ctx(notification_tx: mpsc::Sender<ClientNotification>) -> ClientCtx {
     ClientCtx::new(notification_tx)
 }
 
@@ -144,13 +147,13 @@ pub struct TestServerContext {
     /// Server context for tests.
     ctx: ServerCtx,
     /// Receiver for server notifications.
-    notification_rx: mpsc::UnboundedReceiver<ServerNotification>,
+    notification_rx: mpsc::Receiver<ServerNotification>,
 }
 
 impl TestServerContext {
     /// Create a new test server context with notification channels
     pub fn new() -> Self {
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (notification_tx, notification_rx) = mpsc::channel(TEST_NOTIFICATION_BUFFER);
         let ctx = test_server_ctx(notification_tx);
         Self {
             ctx,
@@ -186,13 +189,13 @@ pub struct TestClientContext {
     /// Client context for tests.
     ctx: ClientCtx,
     /// Receiver for client notifications.
-    notification_rx: mpsc::UnboundedReceiver<ClientNotification>,
+    notification_rx: mpsc::Receiver<ClientNotification>,
 }
 
 impl TestClientContext {
     /// Create a new test client context with notification channels
     pub fn new() -> Self {
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let (notification_tx, notification_rx) = mpsc::channel(TEST_NOTIFICATION_BUFFER);
         let ctx = test_client_ctx(notification_tx);
         Self {
             ctx,

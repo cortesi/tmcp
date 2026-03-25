@@ -28,6 +28,11 @@ use crate::{
     transport::{GenericDuplex, StdioTransport, StreamTransport, Transport},
 };
 
+/// Maximum number of queued outbound server notifications before backpressure applies.
+const SERVER_NOTIFICATION_BUFFER: usize = 64;
+/// Maximum number of queued server responses before request handlers backpressure.
+const SERVER_RESPONSE_BUFFER: usize = 64;
+
 /// MCP Server implementation
 pub struct Server<F> {
     /// Factory for creating per-connection handlers.
@@ -106,10 +111,7 @@ where
     /// This is a convenience method that starts the server and waits for completion
     pub(crate) async fn serve(self, transport: Box<dyn Transport>) -> Result<()> {
         let handle = ServerHandle::new(self, transport).await?;
-        handle
-            .handle
-            .await
-            .map_err(|e| Error::InternalError(format!("Server task failed: {e}")))
+        handle.join().await
     }
 
     /// Serve connections from stdin/stdout.
@@ -229,9 +231,9 @@ where
 /// Handle for controlling a running MCP server instance
 pub struct ServerHandle {
     /// Join handle for the server task.
-    pub handle: JoinHandle<()>,
+    handle: JoinHandle<()>,
     /// Sender for outbound server notifications.
-    notification_tx: mpsc::UnboundedSender<ServerNotification>,
+    notification_tx: mpsc::Sender<ServerNotification>,
     /// Token used to signal shutdown to the server loop.
     shutdown_token: CancellationToken,
     /// The actual bound address (for servers that bind to a network port)
@@ -253,10 +255,11 @@ impl ServerHandle {
         let (sink_tx, mut stream_rx) = stream.split();
 
         info!("MCP server started");
-        let (notification_tx, mut notification_rx) = mpsc::unbounded_channel();
+        let (notification_tx, mut notification_rx) = mpsc::channel(SERVER_NOTIFICATION_BUFFER);
 
         // Channel for queueing responses to be sent
-        let (response_tx, mut response_rx) = mpsc::unbounded_channel::<JSONRPCMessage>();
+        let (response_tx, mut response_rx) =
+            mpsc::channel::<JSONRPCMessage>(SERVER_RESPONSE_BUFFER);
 
         // Wrap the sink in an Arc<Mutex> for sharing
         let sink_tx = Arc::new(Mutex::new(sink_tx));
@@ -290,6 +293,7 @@ impl ServerHandle {
                     // Check for shutdown signal
                     _ = shutdown_token_task.cancelled() => {
                         info!("Server received shutdown signal");
+                        server_ctx.shutdown_requests();
                         break;
                     }
                     // Handle incoming messages from client
@@ -362,10 +366,12 @@ impl ServerHandle {
                             }
                             Some(Err(e)) => {
                                 error!("Error reading message: {}", e);
+                                server_ctx.shutdown_requests();
                                 break;
                             }
                             None => {
                                 info!("Client disconnected");
+                                server_ctx.shutdown_requests();
                                 client_disconnected = true;
                             }
                         }
@@ -378,6 +384,7 @@ impl ServerHandle {
                             let mut sink = sink_tx.lock().await;
                             if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
                                 error!("Error sending notification to client: {}", e);
+                                server_ctx.shutdown_requests();
                                 break;
                             }
                         }
@@ -388,6 +395,7 @@ impl ServerHandle {
                         let mut sink = sink_tx.lock().await;
                         if let Err(e) = sink.send(response).await {
                             error!("Error sending response to client: {}", e);
+                            server_ctx.shutdown_requests();
                             break;
                         }
                     }
@@ -445,7 +453,11 @@ impl ServerHandle {
         // Signal shutdown
         self.shutdown_token.cancel();
 
-        // Wait for the server task to complete
+        self.join().await
+    }
+
+    /// Wait for the server task to finish without signaling shutdown.
+    pub async fn join(self) -> Result<()> {
         self.handle
             .await
             .map_err(|e| Error::InternalError(format!("Server task failed: {e}")))?;
@@ -461,7 +473,7 @@ impl ServerHandle {
             );
             return;
         }
-        if let Err(e) = self.notification_tx.send(notification.clone()) {
+        if let Err(e) = self.notification_tx.try_send(notification.clone()) {
             error!(
                 "Failed to send server notification {:?}: {}",
                 notification, e
@@ -536,7 +548,7 @@ impl TcpServerHandle {
 async fn handle_message_with_connection(
     connection: Arc<Box<dyn ServerHandler>>,
     message: JSONRPCMessage,
-    response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
+    response_tx: mpsc::Sender<JSONRPCMessage>,
     in_flight_requests: Arc<AtomicUsize>,
     context: &ServerCtx,
 ) -> Result<()> {
@@ -560,7 +572,7 @@ async fn handle_message_with_connection(
 fn handle_message_without_await(
     connection: &Arc<Box<dyn ServerHandler>>,
     message: JSONRPCMessage,
-    response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
+    response_tx: mpsc::Sender<JSONRPCMessage>,
     in_flight_requests: Arc<AtomicUsize>,
     context: &ServerCtx,
 ) {
@@ -586,7 +598,7 @@ fn handle_message_without_await(
 fn spawn_request_handler(
     connection: &Arc<Box<dyn ServerHandler>>,
     request: JSONRPCRequest,
-    response_tx: mpsc::UnboundedSender<JSONRPCMessage>,
+    response_tx: mpsc::Sender<JSONRPCMessage>,
     in_flight_requests: Arc<AtomicUsize>,
     context: &ServerCtx,
 ) {
@@ -598,7 +610,7 @@ fn spawn_request_handler(
         let response_message = handle_request(&**conn, request.clone(), &ctx).await;
         tracing::info!("Server sending response: {:?}", response_message);
 
-        if let Err(e) = tx.send(response_message) {
+        if let Err(e) = tx.send(response_message).await {
             error!("Failed to queue response: {}", e);
         }
         in_flight_requests.fetch_sub(1, Ordering::SeqCst);

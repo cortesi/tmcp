@@ -87,7 +87,7 @@ mod tests {
     async fn client_connection_trait_methods() {
         let connection = TestClientHandler::default();
 
-        let (tx, _) = mpsc::unbounded_channel();
+        let (tx, _) = mpsc::channel(4);
         let ctx = test_client_ctx(tx);
 
         connection.pong(&ctx).await.expect("Ping failed");
