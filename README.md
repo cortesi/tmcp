@@ -190,6 +190,10 @@ async fn main() -> Result<()> {
 
 ```
 
+When you serve MCP over stdio, `stdout` is reserved for JSON-RPC messages. Do not attach a
+tracing/logging subscriber that writes human-readable logs to `stdout`, and do not print with
+`println!`. Route diagnostics to `stderr`, a file, or another sink instead.
+
 Flat tool arguments can be declared directly in the tool signature for multi-argument tools:
 
 ```rust

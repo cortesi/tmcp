@@ -112,8 +112,13 @@ where
             .map_err(|e| Error::InternalError(format!("Server task failed: {e}")))
     }
 
-    /// Serve connections from stdin/stdout
-    /// This is a convenience method for the common stdio use case
+    /// Serve connections from stdin/stdout.
+    ///
+    /// This is a convenience method for the common stdio use case.
+    ///
+    /// `stdout` is reserved for JSON-RPC traffic while this server is running. Do not print human
+    /// logs to `stdout` or install a tracing/logging subscriber that writes there; route
+    /// diagnostics to `stderr`, a file, or another sink instead.
     pub async fn serve_stdio(self) -> Result<()> {
         let transport = Box::new(StdioTransport);
         self.serve(transport).await
