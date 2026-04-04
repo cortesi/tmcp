@@ -20,11 +20,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    auth::server::{AuthConfig, BearerAuthLayer, protected_resource_handler},
+    auth::server::{
+        AuthConfig, BearerAuthLayer, normalize_endpoint_path, protected_resource_handler,
+    },
     connection::ServerHandler,
     context::ServerCtx,
     error::{Error, Result},
-    http::HttpServerTransport,
+    http::{EmbeddedHttpRoutes, HttpServerTransport},
     jsonrpc::create_jsonrpc_notification,
     schema::{self, *},
     transport::{GenericDuplex, StdioTransport, StreamTransport, Transport},
@@ -40,11 +42,23 @@ pub struct HttpBuilder<F> {
     /// Server to serve.
     server: Server<F>,
     /// Bind address for the HTTP listener.
-    bind_addr: String,
+    bind_addr: Option<String>,
+    /// Public endpoint path where MCP is served.
+    endpoint_path: String,
     /// Transformation applied to the MCP routes after state is attached.
     middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
     /// Additional routes merged outside the middleware scope.
     routes: Option<Router>,
+}
+
+/// Result of embedding tmcp HTTP routes into an existing Axum application.
+pub struct EmbeddedHttpServer {
+    /// Router containing the mounted MCP handlers and any auxiliary routes.
+    ///
+    /// Merge this router into the host application at the root.
+    pub router: Router,
+    /// Live tmcp server handle that must be shut down with the host application.
+    pub handle: ServerHandle,
 }
 
 /// MCP Server implementation
@@ -234,7 +248,19 @@ where
     pub fn http(self, addr: impl AsRef<str>) -> HttpBuilder<F> {
         HttpBuilder {
             server: self,
-            bind_addr: addr.as_ref().to_string(),
+            bind_addr: Some(addr.as_ref().to_string()),
+            endpoint_path: "/".to_string(),
+            middleware: None,
+            routes: None,
+        }
+    }
+
+    /// Configure an HTTP server for embedding into an existing Axum application.
+    pub fn http_embed(self) -> HttpBuilder<F> {
+        HttpBuilder {
+            server: self,
+            bind_addr: None,
+            endpoint_path: "/".to_string(),
             middleware: None,
             routes: None,
         }
@@ -252,6 +278,12 @@ impl<F> HttpBuilder<F>
 where
     F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
 {
+    /// Override the public endpoint path where the MCP handlers are mounted.
+    pub fn with_endpoint_path(mut self, endpoint_path: impl Into<String>) -> Self {
+        self.endpoint_path = normalize_endpoint_path(endpoint_path);
+        self
+    }
+
     /// Wrap the MCP routes in middleware after state has been attached.
     pub fn with_middleware<G>(mut self, middleware: G) -> Self
     where
@@ -275,24 +307,70 @@ where
 
     /// Protect the MCP routes with bearer-token auth and expose PRM discovery routes.
     pub fn with_auth(self, config: AuthConfig) -> Self {
-        let middleware = BearerAuthLayer::new(config.validator.clone(), &config.endpoint_path);
-        self.with_middleware(move |router| router.layer(middleware))
-            .with_routes(protected_resource_handler(
-                config.metadata,
-                &config.endpoint_path,
-            ))
+        let endpoint_path = config.endpoint_path.clone();
+        let middleware = BearerAuthLayer::new(config.validator.clone(), &endpoint_path);
+        self.with_endpoint_path(endpoint_path.clone())
+            .with_middleware(move |router| router.layer(middleware))
+            .with_routes(protected_resource_handler(config.metadata, &endpoint_path))
     }
 
     /// Start serving the configured HTTP transport.
     pub async fn serve(self) -> Result<ServerHandle> {
-        let mut http_transport = HttpServerTransport::new(&self.bind_addr);
+        let bind_addr = self.bind_addr.clone().ok_or_else(|| {
+            Error::InvalidConfiguration(
+                "HTTP embed builders do not have a bind address; call into_router()".to_string(),
+            )
+        })?;
+        let mut http_transport = HttpServerTransport::new(bind_addr, &self.endpoint_path);
         http_transport.start(self.middleware, self.routes).await?;
-        let bound_addr = http_transport.bind_addr.clone();
+        let bound_addr = http_transport
+            .bind_addr
+            .clone()
+            .expect("HTTP transport bound");
 
         let mut handle =
             ServerHandle::from_transport(self.server, Box::new(http_transport)).await?;
         handle.bound_addr = Some(bound_addr);
+        handle.endpoint_path = Some(self.endpoint_path);
         Ok(handle)
+    }
+
+    /// Build tmcp HTTP routers for embedding into an existing Axum application.
+    pub async fn into_router(self) -> Result<EmbeddedHttpServer> {
+        let endpoint_path = self.endpoint_path;
+        let mut http_transport = HttpServerTransport::embedded(&endpoint_path);
+        let EmbeddedHttpRoutes {
+            mcp_router,
+            aux_routes,
+        } = http_transport.embed(self.middleware, self.routes)?;
+
+        let router = mount_embedded_router(&endpoint_path, mcp_router, aux_routes);
+        let mut handle =
+            ServerHandle::from_transport(self.server, Box::new(http_transport)).await?;
+        handle.endpoint_path = Some(endpoint_path);
+        Ok(EmbeddedHttpServer { router, handle })
+    }
+}
+
+/// Return the externally reachable HTTP endpoint address.
+fn endpoint_addr(bound_addr: &str, endpoint_path: &str) -> String {
+    let endpoint_path = normalize_endpoint_path(endpoint_path);
+    if endpoint_path == "/" {
+        bound_addr.to_string()
+    } else {
+        format!("{bound_addr}{endpoint_path}")
+    }
+}
+
+/// Return an embedded router mounted at the configured endpoint path.
+fn mount_embedded_router(endpoint_path: &str, mcp_router: Router, aux_routes: Router) -> Router {
+    let endpoint_path = normalize_endpoint_path(endpoint_path);
+    if endpoint_path == "/" {
+        mcp_router.merge(aux_routes)
+    } else {
+        Router::new()
+            .nest(&endpoint_path, mcp_router)
+            .merge(aux_routes)
     }
 }
 
@@ -306,6 +384,8 @@ pub struct ServerHandle {
     shutdown_token: CancellationToken,
     /// The actual bound address (for servers that bind to a network port)
     pub bound_addr: Option<String>,
+    /// Public HTTP endpoint path, when the server is exposed over HTTP.
+    endpoint_path: Option<String>,
     /// Capabilities from the handler's initialize response.
     /// This is set when the client initializes and is used to gate notifications.
     capabilities: Arc<RwLock<ServerCapabilities>>,
@@ -492,6 +572,7 @@ impl ServerHandle {
             notification_tx: notification_tx_handle,
             shutdown_token,
             bound_addr: None,
+            endpoint_path: None,
             capabilities,
         })
     }
@@ -532,6 +613,14 @@ impl ServerHandle {
             .await
             .map_err(|e| Error::InternalError(format!("Server task failed: {e}")))?;
         Ok(())
+    }
+
+    /// Return the externally reachable endpoint address, including any HTTP path.
+    #[must_use]
+    pub fn endpoint_addr(&self) -> Option<String> {
+        let bound_addr = self.bound_addr.as_deref()?;
+        let endpoint_path = self.endpoint_path.as_deref().unwrap_or("/");
+        Some(endpoint_addr(bound_addr, endpoint_path))
     }
 
     /// Send a server notification to connected clients.

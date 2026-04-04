@@ -127,7 +127,7 @@ pub use error::{
     TOOL_ERROR_TIMEOUT, ToolError, ToolResult,
 };
 pub use schema::ToolResponse;
-pub use server::{HttpBuilder, Server, ServerHandle, TcpServerHandle};
+pub use server::{EmbeddedHttpServer, HttpBuilder, Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root
 pub use tmcp_macros::{Group, ToolResponse, group, mcp_server, tool, tool_params, tool_result};
 pub use toolset::{

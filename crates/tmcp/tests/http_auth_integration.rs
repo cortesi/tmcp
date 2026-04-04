@@ -9,6 +9,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
+    use axum::{Router, routing::get};
     use jsonwebtoken::{
         Algorithm, EncodingKey, Header, encode,
         jwk::{Jwk, JwkSet, KeyAlgorithm},
@@ -28,6 +29,8 @@ mod tests {
         },
         schema::*,
     };
+    use tokio::net::TcpListener;
+    use tokio_util::sync::CancellationToken;
     use tracing_subscriber::fmt;
 
     struct AuthenticatedConnection;
@@ -167,7 +170,10 @@ mod tests {
         ));
         let server_handle = Server::new(|| AuthenticatedConnection)
             .http("127.0.0.1:0")
-            .with_auth(AuthConfig::new(protected_resource_metadata(), validator))
+            .with_auth(
+                AuthConfig::new(protected_resource_metadata(), validator)
+                    .with_endpoint_path("/mcp"),
+            )
             .serve()
             .await
             .unwrap();
@@ -176,7 +182,7 @@ mod tests {
         let client = HttpClient::new();
 
         let no_auth = client
-            .post(format!("{base_url}/"))
+            .post(format!("{base_url}/mcp"))
             .header("Content-Type", "application/json")
             .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
             .json(&initialize_payload())
@@ -187,13 +193,13 @@ mod tests {
         let challenge = no_auth.headers()["www-authenticate"].to_str().unwrap();
         assert_eq!(
             challenge,
-            "Bearer resource_metadata=\"/.well-known/oauth-protected-resource\""
+            "Bearer resource_metadata=\"/.well-known/oauth-protected-resource/mcp\""
         );
         assert!(!challenge.contains("error="));
 
         let valid_token = token(&encoding_key, "kid-1", now() + 300);
         let init = client
-            .post(format!("{base_url}/"))
+            .post(format!("{base_url}/mcp"))
             .bearer_auth(&valid_token)
             .header("Content-Type", "application/json")
             .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
@@ -208,7 +214,7 @@ mod tests {
             .to_string();
 
         let call = client
-            .post(format!("{base_url}/"))
+            .post(format!("{base_url}/mcp"))
             .bearer_auth(&valid_token)
             .header("Content-Type", "application/json")
             .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
@@ -226,7 +232,7 @@ mod tests {
         );
 
         let expired = client
-            .post(format!("{base_url}/"))
+            .post(format!("{base_url}/mcp"))
             .bearer_auth(token(&encoding_key, "kid-1", now() - 1))
             .header("Content-Type", "application/json")
             .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
@@ -243,7 +249,7 @@ mod tests {
         );
 
         let sse = client
-            .get(format!("{base_url}/"))
+            .get(format!("{base_url}/mcp"))
             .bearer_auth(&valid_token)
             .header("Accept", "text/event-stream")
             .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
@@ -260,7 +266,7 @@ mod tests {
         );
 
         let sse_missing_auth = client
-            .get(format!("{base_url}/"))
+            .get(format!("{base_url}/mcp"))
             .header("Accept", "text/event-stream")
             .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
             .header("Mcp-Session-Id", &session_id)
@@ -272,11 +278,13 @@ mod tests {
             sse_missing_auth.headers()["www-authenticate"]
                 .to_str()
                 .unwrap()
-                .contains("resource_metadata=\"/.well-known/oauth-protected-resource\"")
+                .contains("resource_metadata=\"/.well-known/oauth-protected-resource/mcp\"")
         );
 
         let prm = client
-            .get(format!("{base_url}/.well-known/oauth-protected-resource"))
+            .get(format!(
+                "{base_url}/.well-known/oauth-protected-resource/mcp"
+            ))
             .send()
             .await
             .unwrap();
@@ -285,5 +293,94 @@ mod tests {
         assert_eq!(prm_body["resource"], "https://example.com/mcp");
 
         server_handle.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_embedded_http_auth_flow() {
+        fmt::try_init().ok();
+
+        let (encoding_key, jwk_set) = signing_key("kid-embed");
+        let validator = Arc::new(JwtValidator::from_jwk_set(
+            "https://issuer.example.com",
+            ["tmcp"],
+            jwk_set,
+        ));
+        let embedded = Server::new(|| AuthenticatedConnection)
+            .http_embed()
+            .with_auth(
+                AuthConfig::new(protected_resource_metadata(), validator)
+                    .with_endpoint_path("/mcp"),
+            )
+            .into_router()
+            .await
+            .unwrap();
+        let tmcp::EmbeddedHttpServer { router, handle } = embedded;
+
+        let shutdown = CancellationToken::new();
+        let shutdown_task = shutdown.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/healthz", get(|| async { "ok" }))
+            .merge(router);
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown_task.cancelled().await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let base_url = format!("http://{addr}");
+        let client = HttpClient::new();
+        let valid_token = token(&encoding_key, "kid-embed", now() + 300);
+
+        let health = client
+            .get(format!("{base_url}/healthz"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health.status(), reqwest::StatusCode::OK);
+
+        let init = client
+            .post(format!("{base_url}/mcp"))
+            .bearer_auth(&valid_token)
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .json(&initialize_payload())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(init.status(), reqwest::StatusCode::OK);
+        let session_id = init.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let call = client
+            .post(format!("{base_url}/mcp"))
+            .bearer_auth(&valid_token)
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("Mcp-Session-Id", &session_id)
+            .json(&call_tool_payload())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(call.status(), reqwest::StatusCode::OK);
+
+        let prm = client
+            .get(format!(
+                "{base_url}/.well-known/oauth-protected-resource/mcp"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(prm.status(), reqwest::StatusCode::OK);
+
+        shutdown.cancel();
+        server_task.await.unwrap();
+        handle.stop().await.unwrap();
     }
 }

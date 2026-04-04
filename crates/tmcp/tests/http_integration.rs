@@ -19,7 +19,11 @@ mod tests {
         Arguments, Client, Result, Server, ServerCtx, ServerHandler, ToolError,
         schema::{self, *},
     };
-    use tokio::time::{Duration, sleep};
+    use tokio::{
+        net::TcpListener,
+        time::{Duration, sleep},
+    };
+    use tokio_util::sync::CancellationToken;
     use tracing_subscriber::fmt;
 
     #[derive(Clone)]
@@ -246,5 +250,79 @@ mod tests {
         }
 
         server_handle.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_http_builder_endpoint_addr_includes_endpoint_path() {
+        let server_handle = Server::new(EchoConnection::default)
+            .http("127.0.0.1:0")
+            .with_endpoint_path("/mcp")
+            .serve()
+            .await
+            .unwrap();
+
+        let endpoint_addr = server_handle.endpoint_addr().unwrap();
+        assert!(endpoint_addr.ends_with("/mcp"));
+
+        let mut client = Client::new("http-test-client", "0.1.0");
+        let init = client
+            .connect_http(format!("http://{endpoint_addr}"))
+            .await
+            .unwrap();
+        assert_eq!(init.server_info.name, "http-echo-server");
+
+        let mut args = HashMap::new();
+        args.insert("message".to_string(), json!("hello"));
+        let result = client.call_tool("echo", args).await.unwrap();
+        if let Some(schema::ContentBlock::Text(text)) = result.content.first() {
+            assert_eq!(text.text, "hello");
+        } else {
+            panic!("expected text response");
+        }
+
+        drop(client);
+        server_handle.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_http_embed_default_root_router_merges() {
+        let embedded = Server::new(EchoConnection::default)
+            .http_embed()
+            .into_router()
+            .await
+            .unwrap();
+        let tmcp::EmbeddedHttpServer { router, handle } = embedded;
+
+        let shutdown = CancellationToken::new();
+        let shutdown_task = shutdown.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/healthz", get(|| async { StatusCode::OK }))
+            .merge(router);
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown_task.cancelled().await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let mut client = Client::new("http-test-client", "0.1.0");
+        let init = client.connect_http(format!("http://{addr}")).await.unwrap();
+        assert_eq!(init.server_info.name, "http-echo-server");
+
+        let health = HttpClient::new()
+            .get(format!("http://{addr}/healthz"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+
+        drop(client);
+        shutdown.cancel();
+        server_task.await.unwrap();
+        handle.stop().await.unwrap();
     }
 }

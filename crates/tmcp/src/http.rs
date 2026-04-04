@@ -40,7 +40,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    auth::OAuth2Client,
+    auth::{OAuth2Client, server::normalize_endpoint_path},
     error::{Error, Result},
     schema::{
         JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
@@ -172,7 +172,9 @@ pub struct HttpClientTransport {
 #[doc(hidden)]
 pub struct HttpServerTransport {
     /// Address to bind the HTTP server on.
-    pub bind_addr: String,
+    pub bind_addr: Option<String>,
+    /// Public endpoint path where MCP is served.
+    endpoint_path: String,
     /// Router configured with transport endpoints.
     router: Option<Router>,
     /// Shared server state across handlers.
@@ -183,6 +185,14 @@ pub struct HttpServerTransport {
     incoming_rx: Option<mpsc::UnboundedReceiver<(JSONRPCMessage, String, http::Extensions)>>,
     /// Shutdown token used to signal server termination.
     shutdown_token: Option<CancellationToken>,
+}
+
+/// Routers returned when embedding tmcp HTTP handlers into another Axum app.
+pub struct EmbeddedHttpRoutes {
+    /// Router containing only the MCP GET/POST endpoint handlers.
+    pub(crate) mcp_router: Router,
+    /// Auxiliary top-level routes that must be merged at the application root.
+    pub(crate) aux_routes: Router,
 }
 
 /// Stream wrapper for HTTP transport
@@ -719,9 +729,10 @@ impl Transport for HttpClientTransport {
 
 impl HttpServerTransport {
     /// Create a new HTTP server transport bound to the provided address.
-    pub fn new(bind_addr: impl Into<String>) -> Self {
+    pub fn new(bind_addr: impl Into<String>, endpoint_path: impl Into<String>) -> Self {
         Self {
-            bind_addr: bind_addr.into(),
+            bind_addr: Some(bind_addr.into()),
+            endpoint_path: normalize_endpoint_path(endpoint_path),
             router: None,
             state: None,
             server_handle: None,
@@ -730,93 +741,70 @@ impl HttpServerTransport {
         }
     }
 
-    /// Start the HTTP server
+    /// Create an HTTP server transport for embedding into an existing Axum server.
+    pub fn embedded(endpoint_path: impl Into<String>) -> Self {
+        Self {
+            bind_addr: None,
+            endpoint_path: normalize_endpoint_path(endpoint_path),
+            router: None,
+            state: None,
+            server_handle: None,
+            incoming_rx: None,
+            shutdown_token: None,
+        }
+    }
+
+    /// Prepare the transport state and return routers for embedding.
+    pub fn embed(
+        &mut self,
+        middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
+        routes: Option<Router>,
+    ) -> Result<EmbeddedHttpRoutes> {
+        self.configure_routes("/", middleware, routes)
+    }
+
+    /// Start the standalone HTTP server.
     pub async fn start(
         &mut self,
         middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
         routes: Option<Router>,
     ) -> Result<()> {
-        // If already started, just return
         if self.server_handle.is_some() {
             return Ok(());
         }
 
-        let (incoming_tx, incoming_rx) = mpsc::unbounded();
-        self.incoming_rx = Some(incoming_rx);
+        let EmbeddedHttpRoutes {
+            mcp_router,
+            aux_routes,
+        } = self.configure_routes(&self.endpoint_path.clone(), middleware, routes)?;
+        let router = mcp_router.merge(aux_routes);
 
-        let state = HttpServerState {
-            sessions: Arc::new(DashMap::new()),
-            incoming_tx,
-            shutdown: CancellationToken::new(),
-        };
-
-        self.state = Some(state.clone());
-        self.shutdown_token = Some(state.shutdown.clone());
-
-        let router = Router::new()
-            .route("/", post(handle_post))
-            .route("/", get(handle_get))
-            .with_state(state.clone());
-        let router = match middleware {
-            Some(transform) => transform(router),
-            None => router,
-        };
-        let router = match routes {
-            Some(extra_routes) => router.merge(extra_routes),
-            None => router,
-        };
-        let router = router.layer(CorsLayer::permissive());
-
-        self.router = Some(router.clone());
-
-        let listener = TcpListener::bind(&self.bind_addr).await.map_err(|e| {
-            Error::Transport(format!("Failed to bind to {}: {}", self.bind_addr, e))
+        let bind_addr = self.bind_addr.clone().ok_or_else(|| {
+            Error::InvalidConfiguration("Embedded HTTP transports do not bind listeners".into())
         })?;
+        let listener = TcpListener::bind(&bind_addr)
+            .await
+            .map_err(|e| Error::Transport(format!("Failed to bind to {bind_addr}: {e}")))?;
 
         // Update bind_addr with the actual address (in case port 0 was used)
-        self.bind_addr = listener
-            .local_addr()
-            .map_err(|e| Error::Transport(format!("Failed to get local address: {e}")))?
-            .to_string();
+        self.bind_addr = Some(
+            listener
+                .local_addr()
+                .map_err(|e| Error::Transport(format!("Failed to get local address: {e}")))?
+                .to_string(),
+        );
 
-        let bind_addr = self.bind_addr.clone();
-        let shutdown = state.shutdown.clone();
+        let bind_addr = self.bind_addr.clone().expect("bind addr set after bind");
+        let shutdown = self
+            .shutdown_token
+            .clone()
+            .expect("shutdown token initialized during route setup");
 
         // Create a channel to signal when the server is actually ready
         let (ready_tx, ready_rx) = oneshot::channel();
 
         // Clone for the ready signal
         let bind_addr_clone = bind_addr.clone();
-
-        // Start session cleanup task
-        let cleanup_sessions = state.sessions.clone();
-        let cleanup_shutdown = state.shutdown.clone();
-
-        tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(60));
-            loop {
-                tokio::select! {
-                    _ = cleanup_shutdown.cancelled() => break,
-                    _ = interval.tick() => {
-                        let now = Instant::now();
-                        // Collect expired keys to avoid holding locks during removal
-                        let expired: Vec<String> = cleanup_sessions
-                            .iter()
-                            .filter(|entry| {
-                                let last_active = *entry.value().last_activity.lock().unwrap();
-                                now.duration_since(last_active) > SESSION_TIMEOUT
-                            })
-                            .map(|entry| entry.key().clone())
-                            .collect();
-
-                        for id in expired {
-                            debug!("Removing expired session: {}", id);
-                            cleanup_sessions.remove(&id);
-                        }
-                    }
-                }
-            }
-        });
 
         let server_handle = tokio::spawn(async move {
             info!("HTTP server starting on {}", bind_addr);
@@ -847,12 +835,60 @@ impl HttpServerTransport {
 
         Ok(())
     }
+
+    /// Configure transport state and build routers.
+    fn configure_routes(
+        &mut self,
+        mcp_route_path: &str,
+        middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
+        routes: Option<Router>,
+    ) -> Result<EmbeddedHttpRoutes> {
+        if self.incoming_rx.is_none() {
+            let (incoming_tx, incoming_rx) = mpsc::unbounded();
+            self.incoming_rx = Some(incoming_rx);
+
+            let state = HttpServerState {
+                sessions: Arc::new(DashMap::new()),
+                incoming_tx,
+                shutdown: CancellationToken::new(),
+            };
+
+            self.shutdown_token = Some(state.shutdown.clone());
+            spawn_session_cleanup(&state);
+            self.state = Some(state);
+        }
+
+        let state = self.state.clone().ok_or(Error::TransportDisconnected)?;
+
+        let mut mcp_router = Router::new()
+            .route(mcp_route_path, post(handle_post))
+            .route(mcp_route_path, get(handle_get))
+            .with_state(state);
+        if let Some(transform) = middleware {
+            mcp_router = transform(mcp_router);
+        }
+        mcp_router = mcp_router.layer(CorsLayer::permissive());
+
+        let aux_routes = routes
+            .unwrap_or_else(Router::new)
+            .layer(CorsLayer::permissive());
+
+        self.router = Some(mcp_router.clone());
+        Ok(EmbeddedHttpRoutes {
+            mcp_router,
+            aux_routes,
+        })
+    }
 }
 
 #[async_trait]
 impl Transport for HttpServerTransport {
     async fn connect(&mut self) -> Result<()> {
-        self.start(None, None).await
+        if self.incoming_rx.is_some() {
+            Ok(())
+        } else {
+            self.start(None, None).await
+        }
     }
 
     fn framed(mut self: Box<Self>) -> Result<Box<dyn TransportStream>> {
@@ -891,8 +927,41 @@ impl Transport for HttpServerTransport {
     }
 
     fn remote_addr(&self) -> String {
-        self.bind_addr.clone()
+        self.bind_addr
+            .clone()
+            .unwrap_or_else(|| format!("embedded:{}", self.endpoint_path))
     }
+}
+
+/// Start the background task that expires inactive HTTP sessions.
+fn spawn_session_cleanup(state: &HttpServerState) {
+    let cleanup_sessions = state.sessions.clone();
+    let cleanup_shutdown = state.shutdown.clone();
+
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = cleanup_shutdown.cancelled() => break,
+                _ = interval.tick() => {
+                    let now = Instant::now();
+                    let expired: Vec<String> = cleanup_sessions
+                        .iter()
+                        .filter(|entry| {
+                            let last_active = *entry.value().last_activity.lock().unwrap();
+                            now.duration_since(last_active) > SESSION_TIMEOUT
+                        })
+                        .map(|entry| entry.key().clone())
+                        .collect();
+
+                    for id in expired {
+                        debug!("Removing expired session: {}", id);
+                        cleanup_sessions.remove(&id);
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// Server-side stream implementation
@@ -1371,8 +1440,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_server_transport_creation() {
-        let transport = HttpServerTransport::new("127.0.0.1:8080");
-        assert_eq!(transport.bind_addr, "127.0.0.1:8080");
+        let transport = HttpServerTransport::new("127.0.0.1:8080", "/");
+        assert_eq!(transport.bind_addr, Some("127.0.0.1:8080".to_string()));
+        assert_eq!(transport.endpoint_path, "/");
     }
 
     #[tokio::test]
