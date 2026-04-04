@@ -49,6 +49,10 @@ name = "oauth_client"
 path = "oauth_client.rs"
 
 [[example]]
+name = "oauth_server"
+path = "oauth_server.rs"
+
+[[example]]
 name = "process_spawn"
 path = "process_spawn.rs"
 

@@ -13,7 +13,8 @@ use std::{
 use async_trait::async_trait;
 use axum::{
     Json, Router,
-    extract::State,
+    body::{self, Body},
+    extract::{Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header, uri::Authority},
     response::{
         IntoResponse, Response,
@@ -45,13 +46,16 @@ use crate::{
         JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
         LATEST_PROTOCOL_VERSION, RequestId,
     },
-    transport::{Transport, TransportStream},
+    transport::{IncomingMessage, Transport, TransportStream},
 };
 /// Default HTTP client timeout for transport requests.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Session inactivity timeout (1 hour).
 const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// Maximum accepted HTTP request body size.
+const MAX_HTTP_BODY_SIZE: usize = 2 * 1024 * 1024;
 
 /// Session information for HTTP transport
 #[derive(Debug, Clone)]
@@ -136,7 +140,7 @@ struct HttpServerState {
     /// Active HTTP sessions keyed by session id.
     sessions: Arc<DashMap<String, HttpSession>>,
     /// Incoming JSON-RPC messages forwarded to the server.
-    incoming_tx: mpsc::UnboundedSender<(JSONRPCMessage, String)>,
+    incoming_tx: mpsc::UnboundedSender<(JSONRPCMessage, String, http::Extensions)>,
     /// Cancellation token for server shutdown.
     shutdown: CancellationToken,
 }
@@ -176,7 +180,7 @@ pub struct HttpServerTransport {
     /// Running server task handle.
     server_handle: Option<JoinHandle<Result<()>>>,
     /// Receiver for incoming JSON-RPC messages.
-    incoming_rx: Option<mpsc::UnboundedReceiver<(JSONRPCMessage, String)>>,
+    incoming_rx: Option<mpsc::UnboundedReceiver<(JSONRPCMessage, String, http::Extensions)>>,
     /// Shutdown token used to signal server termination.
     shutdown_token: Option<CancellationToken>,
 }
@@ -727,7 +731,11 @@ impl HttpServerTransport {
     }
 
     /// Start the HTTP server
-    pub async fn start(&mut self) -> Result<()> {
+    pub async fn start(
+        &mut self,
+        middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
+        routes: Option<Router>,
+    ) -> Result<()> {
         // If already started, just return
         if self.server_handle.is_some() {
             return Ok(());
@@ -748,8 +756,16 @@ impl HttpServerTransport {
         let router = Router::new()
             .route("/", post(handle_post))
             .route("/", get(handle_get))
-            .layer(CorsLayer::permissive())
             .with_state(state.clone());
+        let router = match middleware {
+            Some(transform) => transform(router),
+            None => router,
+        };
+        let router = match routes {
+            Some(extra_routes) => router.merge(extra_routes),
+            None => router,
+        };
+        let router = router.layer(CorsLayer::permissive());
 
         self.router = Some(router.clone());
 
@@ -836,7 +852,7 @@ impl HttpServerTransport {
 #[async_trait]
 impl Transport for HttpServerTransport {
     async fn connect(&mut self) -> Result<()> {
-        self.start().await
+        self.start(None, None).await
     }
 
     fn framed(mut self: Box<Self>) -> Result<Box<dyn TransportStream>> {
@@ -882,7 +898,7 @@ impl Transport for HttpServerTransport {
 /// Server-side stream implementation
 struct HttpServerStream {
     /// Receiver for incoming JSON-RPC messages and session ids.
-    incoming_rx: mpsc::UnboundedReceiver<(JSONRPCMessage, String)>,
+    incoming_rx: mpsc::UnboundedReceiver<(JSONRPCMessage, String, http::Extensions)>,
     /// Shared server state for routing responses.
     state: Option<HttpServerState>,
     // Track which session sent each request ID
@@ -891,16 +907,19 @@ struct HttpServerStream {
 }
 
 impl Stream for HttpServerStream {
-    type Item = Result<JSONRPCMessage>;
+    type Item = Result<IncomingMessage>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.incoming_rx.poll_next_unpin(cx) {
-            Poll::Ready(Some((msg, session_id))) => {
+            Poll::Ready(Some((message, session_id, extensions))) => {
                 // Track which session sent this request
-                if let JSONRPCMessage::Request(ref req) = msg {
+                if let JSONRPCMessage::Request(ref req) = message {
                     self.request_sessions.insert(req.id.clone(), session_id);
                 }
-                Poll::Ready(Some(Ok(msg)))
+                Poll::Ready(Some(Ok(IncomingMessage {
+                    message,
+                    extensions,
+                })))
             }
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
@@ -1021,12 +1040,84 @@ impl Drop for HttpServerTransport {
 
 // HTTP handlers
 
+/// Ensure the request Content-Type is JSON.
+fn validate_json_content_type(headers: &HeaderMap) -> StdResult<(), Box<Response>> {
+    let Some(content_type) = headers.get(header::CONTENT_TYPE) else {
+        return Err(Box::new(
+            (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type must be application/json",
+            )
+                .into_response(),
+        ));
+    };
+    let Ok(content_type) = content_type.to_str() else {
+        return Err(Box::new(
+            (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Invalid Content-Type").into_response(),
+        ));
+    };
+    if content_type
+        .to_ascii_lowercase()
+        .starts_with("application/json")
+    {
+        Ok(())
+    } else {
+        Err(Box::new(
+            (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type must be application/json",
+            )
+                .into_response(),
+        ))
+    }
+}
+
+/// Read the full HTTP request body with an explicit size limit.
+async fn read_json_body(body: Body) -> StdResult<bytes::Bytes, Box<Response>> {
+    body::to_bytes(body, MAX_HTTP_BODY_SIZE)
+        .await
+        .map_err(|error| {
+            let status = if error.to_string().contains("length limit exceeded") {
+                StatusCode::PAYLOAD_TOO_LARGE
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            Box::new((status, format!("Failed to read request body: {error}")).into_response())
+        })
+}
+
+/// Parse a JSON-RPC message body into a typed value.
+fn parse_jsonrpc_body(body: &[u8]) -> StdResult<JSONRPCMessage, Box<Response>> {
+    serde_json::from_slice(body).map_err(|error| {
+        Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid JSON body: {error}"),
+            )
+                .into_response(),
+        )
+    })
+}
+
 /// Handle inbound HTTP POST JSON-RPC messages.
-async fn handle_post(
-    State(state): State<HttpServerState>,
-    headers: HeaderMap,
-    Json(message): Json<JSONRPCMessage>,
-) -> Response {
+async fn handle_post(State(state): State<HttpServerState>, request: Request) -> Response {
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    let extensions = parts.extensions;
+
+    if let Err(response) = validate_json_content_type(&headers) {
+        return *response;
+    }
+
+    let body = match read_json_body(body).await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    let message = match parse_jsonrpc_body(&body) {
+        Ok(message) => message,
+        Err(response) => return *response,
+    };
+
     debug!("HTTP server received POST request: {:?}", message);
 
     if let Err(response) = validate_origin(&headers) {
@@ -1065,7 +1156,7 @@ async fn handle_post(
         // Forward to server logic
         state
             .incoming_tx
-            .unbounded_send((message, new_session_id.clone()))
+            .unbounded_send((message, new_session_id.clone(), extensions))
             .ok();
 
         // Wait for the actual response from the server with timeout
@@ -1117,7 +1208,7 @@ async fn handle_post(
             // Forward to server logic
             state
                 .incoming_tx
-                .unbounded_send((message, session_id.clone()))
+                .unbounded_send((message, session_id.clone(), extensions))
                 .ok();
 
             if session.streaming.load(Ordering::SeqCst) {
@@ -1172,7 +1263,10 @@ async fn handle_post(
         }
         JSONRPCMessage::Response(_) | JSONRPCMessage::Notification(_) => {
             // Forward to server logic
-            state.incoming_tx.unbounded_send((message, session_id)).ok();
+            state
+                .incoming_tx
+                .unbounded_send((message, session_id, extensions))
+                .ok();
             StatusCode::ACCEPTED.into_response()
         }
     }
@@ -1224,11 +1318,14 @@ async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) ->
 }
 
 impl Stream for HttpTransportStream {
-    type Item = Result<JSONRPCMessage>;
+    type Item = Result<IncomingMessage>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.receiver.poll_next_unpin(cx) {
-            Poll::Ready(Some(msg)) => Poll::Ready(Some(Ok(msg))),
+            Poll::Ready(Some(message)) => Poll::Ready(Some(Ok(IncomingMessage {
+                message,
+                extensions: http::Extensions::new(),
+            }))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
@@ -1330,7 +1427,7 @@ mod tests {
 
         stream1.send(msg.clone()).await.unwrap();
 
-        let received = stream2.next().await.unwrap().unwrap();
+        let received = stream2.next().await.unwrap().unwrap().message;
         match (msg, received) {
             (JSONRPCMessage::Notification(n1), JSONRPCMessage::Notification(n2)) => {
                 assert_eq!(n1.notification.method, n2.notification.method);

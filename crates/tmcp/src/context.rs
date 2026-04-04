@@ -1,3 +1,4 @@
+use http::Extensions;
 use serde::de::DeserializeOwned;
 use tokio::sync::mpsc::{self, error::TrySendError};
 
@@ -72,6 +73,8 @@ pub struct ServerCtx {
     request_handler: RequestHandler,
     /// The current request ID, if this context is handling a request
     pub(crate) request_id: Option<schema::RequestId>,
+    /// Per-request transport extensions.
+    extensions: Extensions,
 }
 
 impl ServerCtx {
@@ -84,6 +87,7 @@ impl ServerCtx {
             notification_tx,
             request_handler: RequestHandler::new(transport_tx, "srv-req".to_string()),
             request_id: None,
+            extensions: Extensions::new(),
         }
     }
 
@@ -99,6 +103,18 @@ impl ServerCtx {
     pub(crate) fn with_request_id(&self, request_id: schema::RequestId) -> Self {
         let mut ctx = self.clone();
         ctx.request_id = Some(request_id);
+        ctx
+    }
+
+    /// Return per-request transport extensions.
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+
+    /// Create a new context with request-scoped extensions.
+    pub(crate) fn with_extensions(&self, extensions: Extensions) -> Self {
+        let mut ctx = self.clone();
+        ctx.extensions = extensions;
         ctx
     }
 

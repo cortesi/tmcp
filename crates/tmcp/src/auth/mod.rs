@@ -1,7 +1,10 @@
 //! # OAuth Authentication Module for MCP
 //!
-//! This module provides comprehensive OAuth 2.0 authentication support for the Model Context Protocol (MCP),
-//! implementing the authorization requirements specified in the MCP specification.
+//! This module provides OAuth support for both sides of MCP over HTTP:
+//! - client-side OAuth 2.0/OAuth 2.1 flows for connecting to protected MCP servers
+//! - server-side OAuth 2.1 resource-server support for protecting tmcp HTTP servers
+//!
+//! Together these components implement the authorization requirements from the MCP specification.
 //!
 //! ## Features
 //!
@@ -27,6 +30,13 @@
 //! - Protected resource metadata discovery (RFC 9728) with `WWW-Authenticate` handling
 //! - Authorization server discovery via RFC 8414 and OpenID Connect Discovery
 //! - Client ID metadata documents for HTTPS client identifiers
+//!
+//! ### Server-Side Resource Protection
+//! - Bearer-token auth middleware for tmcp HTTP servers
+//! - Protected Resource Metadata (RFC 9728) serving for public discovery
+//! - Request-scoped `AuthInfo` propagation into `ServerCtx`
+//! - Pluggable token validation via `TokenValidator`
+//! - Built-in JWT/JWKS validation via `server::JwtValidator`
 //!
 //! ### Browser-based Authentication Flow
 //! - Built-in OAuth callback server for handling browser redirects
@@ -75,6 +85,67 @@
 //!
 //!     Ok(())
 //! }
+//! ```
+//!
+//! ### Protecting an MCP HTTP Server
+//! ```no_run
+//! use std::{collections::HashMap, sync::Arc};
+//!
+//! use async_trait::async_trait;
+//! use tmcp::{
+//!     Result, Server, ServerCtx, ServerHandler,
+//!     auth::{
+//!         ProtectedResourceMetadata,
+//!         server::{AuthConfig, JwtValidator},
+//!     },
+//!     schema::{ClientCapabilities, Cursor, Implementation, InitializeResult, ListToolsResult, ServerCapabilities},
+//! };
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<()> {
+//! struct MyServer;
+//!
+//! #[async_trait]
+//! impl ServerHandler for MyServer {
+//!     async fn initialize(
+//!         &self,
+//!         _ctx: &ServerCtx,
+//!         _protocol_version: String,
+//!         _capabilities: ClientCapabilities,
+//!         _client_info: Implementation,
+//!     ) -> Result<InitializeResult> {
+//!         Ok(InitializeResult::new("protected-server")
+//!             .with_version("1.0.0")
+//!             .with_capabilities(ServerCapabilities::default().with_tools(None)))
+//!     }
+//!
+//!     async fn list_tools(&self, _ctx: &ServerCtx, _cursor: Option<Cursor>) -> Result<ListToolsResult> {
+//!         Ok(ListToolsResult::default())
+//!     }
+//! }
+//!
+//! let metadata = ProtectedResourceMetadata {
+//!     resource: "https://example.com/mcp".to_string(),
+//!     authorization_servers: vec!["https://issuer.example.com".to_string()],
+//!     scopes_supported: Some(vec!["tools:call".to_string()]),
+//!     bearer_methods_supported: Some(vec!["header".to_string()]),
+//!     resource_documentation: None,
+//!     additional: HashMap::new(),
+//! };
+//!
+//! let validator = Arc::new(JwtValidator::new(
+//!     "https://issuer.example.com",
+//!     ["tmcp"],
+//!     "https://issuer.example.com/.well-known/jwks.json",
+//! ));
+//!
+//! Server::new(|| MyServer)
+//!     .http("127.0.0.1:8080")
+//!     .with_auth(AuthConfig::new(metadata, validator))
+//!     .serve()
+//!     .await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ### Dynamic Client Registration
@@ -165,6 +236,8 @@ mod discovery;
 mod dynamic_registration;
 /// OAuth 2.0 client implementation and callback server.
 mod oauth_client;
+/// OAuth 2.1 resource-server support for tmcp servers.
+pub mod server;
 
 pub use discovery::{
     AuthorizationDiscoveryClient, AuthorizationServerDiscovery, AuthorizationServerMetadata,

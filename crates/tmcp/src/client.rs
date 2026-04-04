@@ -389,7 +389,8 @@ where
                     // Handle incoming messages from server
                     result = rx.next() => {
                         match result {
-                            Some(Ok(message)) => {
+                            Some(Ok(incoming)) => {
+                                let message = incoming.message;
                                 debug!("Received message: {:?}", message);
 
                                 match message {

@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+use axum::Router;
 use futures::{SinkExt, StreamExt};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -19,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    auth::server::{AuthConfig, BearerAuthLayer, protected_resource_handler},
     connection::ServerHandler,
     context::ServerCtx,
     error::{Error, Result},
@@ -32,6 +34,18 @@ use crate::{
 const SERVER_NOTIFICATION_BUFFER: usize = 64;
 /// Maximum number of queued server responses before request handlers backpressure.
 const SERVER_RESPONSE_BUFFER: usize = 64;
+
+/// Builder that configures and serves the HTTP transport.
+pub struct HttpBuilder<F> {
+    /// Server to serve.
+    server: Server<F>,
+    /// Bind address for the HTTP listener.
+    bind_addr: String,
+    /// Transformation applied to the MCP routes after state is attached.
+    middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
+    /// Additional routes merged outside the middleware scope.
+    routes: Option<Router>,
+}
 
 /// MCP Server implementation
 pub struct Server<F> {
@@ -217,12 +231,66 @@ where
     /// Serve HTTP connections
     /// This is a convenience method for the common HTTP server use case
     /// Returns a ServerHandle that can be used to stop the server
+    pub fn http(self, addr: impl AsRef<str>) -> HttpBuilder<F> {
+        HttpBuilder {
+            server: self,
+            bind_addr: addr.as_ref().to_string(),
+            middleware: None,
+            routes: None,
+        }
+    }
+
+    /// Serve HTTP connections
+    /// This is a convenience method for the common HTTP server use case
+    /// Returns a ServerHandle that can be used to stop the server
     pub async fn serve_http(self, addr: impl AsRef<str>) -> Result<ServerHandle> {
-        let mut http_transport = HttpServerTransport::new(addr.as_ref());
-        http_transport.start().await?;
+        self.http(addr).serve().await
+    }
+}
+
+impl<F> HttpBuilder<F>
+where
+    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
+{
+    /// Wrap the MCP routes in middleware after state has been attached.
+    pub fn with_middleware<G>(mut self, middleware: G) -> Self
+    where
+        G: FnOnce(Router) -> Router + Send + 'static,
+    {
+        self.middleware = Some(match self.middleware.take() {
+            Some(previous) => Box::new(move |router| middleware(previous(router))),
+            None => Box::new(middleware),
+        });
+        self
+    }
+
+    /// Merge additional routes that bypass the configured middleware.
+    pub fn with_routes(mut self, routes: Router) -> Self {
+        self.routes = Some(match self.routes.take() {
+            Some(existing) => existing.merge(routes),
+            None => routes,
+        });
+        self
+    }
+
+    /// Protect the MCP routes with bearer-token auth and expose PRM discovery routes.
+    pub fn with_auth(self, config: AuthConfig) -> Self {
+        let middleware = BearerAuthLayer::new(config.validator.clone(), &config.endpoint_path);
+        self.with_middleware(move |router| router.layer(middleware))
+            .with_routes(protected_resource_handler(
+                config.metadata,
+                &config.endpoint_path,
+            ))
+    }
+
+    /// Start serving the configured HTTP transport.
+    pub async fn serve(self) -> Result<ServerHandle> {
+        let mut http_transport = HttpServerTransport::new(&self.bind_addr);
+        http_transport.start(self.middleware, self.routes).await?;
         let bound_addr = http_transport.bind_addr.clone();
 
-        let mut handle = ServerHandle::from_transport(self, Box::new(http_transport)).await?;
+        let mut handle =
+            ServerHandle::from_transport(self.server, Box::new(http_transport)).await?;
         handle.bound_addr = Some(bound_addr);
         Ok(handle)
     }
@@ -299,7 +367,9 @@ impl ServerHandle {
                     // Handle incoming messages from client
                     result = stream_rx.next(), if !client_disconnected => {
                         match result {
-                            Some(Ok(message)) => {
+                            Some(Ok(incoming)) => {
+                                let context = server_ctx.with_extensions(incoming.extensions);
+                                let message = incoming.message;
                                 match message {
                                     JSONRPCMessage::Request(request)
                                         if !initialized && request.request.method == "initialize" =>
@@ -309,7 +379,7 @@ impl ServerHandle {
                                             handle_initialize_request(
                                                 connection.as_ref().as_ref(),
                                                 request,
-                                                &server_ctx
+                                                &context
                                             ).await;
 
                                         let should_connect = init_caps.is_some();
@@ -329,7 +399,7 @@ impl ServerHandle {
                                         }
 
                                         if should_connect {
-                                            if let Err(e) = connection.on_connect(&server_ctx, &remote_addr).await {
+                                            if let Err(e) = connection.on_connect(&context, &remote_addr).await {
                                                 error!("Error during on_connect: {}", e);
                                                 break;
                                             }
@@ -347,7 +417,7 @@ impl ServerHandle {
                                             "Server received response from client: {:?}",
                                             response_id
                                         );
-                                        server_ctx.handle_client_response(response).await;
+                                        context.handle_client_response(response).await;
                                     }
                                     other => {
                                         if let Err(e) = handle_message_with_connection(
@@ -355,7 +425,7 @@ impl ServerHandle {
                                             other,
                                             response_tx.clone(),
                                             in_flight_requests.clone(),
-                                            &server_ctx,
+                                            &context,
                                         )
                                         .await
                                         {

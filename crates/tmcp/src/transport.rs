@@ -1,11 +1,13 @@
 use std::{
     io,
     pin::Pin,
+    result::Result as StdResult,
     task::{Context, Poll},
 };
 
 use async_trait::async_trait;
 use futures::{Sink, Stream};
+use http::Extensions;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf, Stdin, Stdout, stdin, stdout},
     net::TcpStream,
@@ -18,6 +20,14 @@ use crate::{
     error::{Error, Result},
     schema::JSONRPCMessage,
 };
+
+/// A received JSON-RPC message plus transport-specific metadata.
+pub struct IncomingMessage {
+    /// The decoded JSON-RPC payload.
+    pub message: JSONRPCMessage,
+    /// Per-message transport metadata.
+    pub extensions: Extensions,
+}
 
 /// Transport trait for different connection types
 #[async_trait]
@@ -37,7 +47,7 @@ pub trait Transport: Send + Sync {
 
 /// Trait for a bidirectional stream of JSON-RPC messages
 pub trait TransportStream:
-    Stream<Item = Result<JSONRPCMessage>> + Sink<JSONRPCMessage, Error = Error> + Send + Unpin
+    Stream<Item = Result<IncomingMessage>> + Sink<JSONRPCMessage, Error = Error> + Send + Unpin
 {
 }
 
@@ -98,8 +108,82 @@ where
     }
 }
 
-/// Wrapper to implement TransportStream for any Framed type
-impl<T> TransportStream for Framed<T, JsonRpcCodec> where T: AsyncRead + AsyncWrite + Send + Unpin {}
+/// Adapter that adds empty extensions to codec-decoded messages.
+struct FramedTransport<T> {
+    /// Underlying framed transport.
+    inner: Framed<T, JsonRpcCodec>,
+}
+
+impl<T> FramedTransport<T>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin,
+{
+    /// Create a new framed transport adapter.
+    fn new(stream: T) -> Self {
+        Self {
+            inner: Framed::new(stream, JsonRpcCodec),
+        }
+    }
+}
+
+impl<T> Stream for FramedTransport<T>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin,
+{
+    type Item = Result<IncomingMessage>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(message))) => Poll::Ready(Some(Ok(IncomingMessage {
+                message,
+                extensions: Extensions::new(),
+            }))),
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<T> Sink<JSONRPCMessage> for FramedTransport<T>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin,
+{
+    type Error = Error;
+
+    fn poll_ready(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<StdResult<(), Self::Error>> {
+        <Framed<T, JsonRpcCodec> as Sink<JSONRPCMessage>>::poll_ready(Pin::new(&mut self.inner), cx)
+            .map_err(Error::from)
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, item: JSONRPCMessage) -> StdResult<(), Self::Error> {
+        <Framed<T, JsonRpcCodec> as Sink<JSONRPCMessage>>::start_send(
+            Pin::new(&mut self.inner),
+            item,
+        )
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<StdResult<(), Self::Error>> {
+        <Framed<T, JsonRpcCodec> as Sink<JSONRPCMessage>>::poll_flush(Pin::new(&mut self.inner), cx)
+            .map_err(Error::from)
+    }
+
+    fn poll_close(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<StdResult<(), Self::Error>> {
+        <Framed<T, JsonRpcCodec> as Sink<JSONRPCMessage>>::poll_close(Pin::new(&mut self.inner), cx)
+            .map_err(Error::from)
+    }
+}
+
+impl<T> TransportStream for FramedTransport<T> where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
 /// Standard I/O transport using stdin/stdout.
 #[derive(Default)]
@@ -116,8 +200,7 @@ impl Transport for StdioTransport {
         let stdin = stdin();
         let stdout = stdout();
         let duplex = StdioDuplex::new(stdin, stdout);
-        let framed = Framed::new(duplex, JsonRpcCodec);
-        Ok(Box::new(framed))
+        Ok(Box::new(FramedTransport::new(duplex)))
     }
 
     fn remote_addr(&self) -> String {
@@ -169,9 +252,7 @@ impl Transport for TcpClientTransport {
 
     fn framed(self: Box<Self>) -> Result<Box<dyn TransportStream>> {
         let stream = self.stream.ok_or(Error::TransportDisconnected)?;
-
-        let framed = Framed::new(stream, JsonRpcCodec);
-        Ok(Box::new(framed))
+        Ok(Box::new(FramedTransport::new(stream)))
     }
 
     fn remote_addr(&self) -> String {
@@ -191,8 +272,7 @@ where
 
     fn framed(self: Box<Self>) -> Result<Box<dyn TransportStream>> {
         let stream = self.stream.ok_or(Error::TransportDisconnected)?;
-        let framed = Framed::new(stream, JsonRpcCodec);
-        Ok(Box::new(framed))
+        Ok(Box::new(FramedTransport::new(stream)))
     }
 }
 
@@ -205,8 +285,7 @@ impl Transport for TcpStream {
     }
 
     fn framed(self: Box<Self>) -> Result<Box<dyn TransportStream>> {
-        let framed = Framed::new(*self, JsonRpcCodec);
-        Ok(Box::new(framed))
+        Ok(Box::new(FramedTransport::new(*self)))
     }
 
     fn remote_addr(&self) -> String {
@@ -227,6 +306,7 @@ pub mod test_transport {
         task::{Context, Poll},
     };
 
+    use http::Extensions;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -277,11 +357,14 @@ pub mod test_transport {
     }
 
     impl Stream for TestTransportStream {
-        type Item = Result<JSONRPCMessage>;
+        type Item = Result<IncomingMessage>;
 
         fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             match self.receiver.poll_recv(cx) {
-                Poll::Ready(Some(msg)) => Poll::Ready(Some(Ok(msg))),
+                Poll::Ready(Some(message)) => Poll::Ready(Some(Ok(IncomingMessage {
+                    message,
+                    extensions: Extensions::new(),
+                }))),
                 Poll::Ready(None) => Poll::Ready(None),
                 Poll::Pending => Poll::Pending,
             }
