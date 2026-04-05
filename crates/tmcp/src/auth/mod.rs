@@ -124,24 +124,17 @@
 //!     }
 //! }
 //!
-//! let metadata = ProtectedResourceMetadata {
-//!     resource: "https://example.com/mcp".to_string(),
-//!     authorization_servers: vec!["https://issuer.example.com".to_string()],
-//!     scopes_supported: Some(vec!["tools:call".to_string()]),
-//!     bearer_methods_supported: Some(vec!["header".to_string()]),
-//!     resource_documentation: None,
-//!     additional: HashMap::new(),
-//! };
-//!
 //! let validator = Arc::new(JwtValidator::new(
 //!     "https://issuer.example.com",
 //!     ["tmcp"],
 //!     "https://issuer.example.com/.well-known/jwks.json",
 //! ));
 //!
+//! let auth = AuthConfig::new("https://example.com", validator)
+//!     .with_endpoint_path("/mcp");
 //! Server::new(|| MyServer)
 //!     .http("127.0.0.1:8080")
-//!     .with_auth(AuthConfig::new(metadata, validator))
+//!     .with_auth(&auth)
 //!     .serve()
 //!     .await?;
 //! # Ok(())

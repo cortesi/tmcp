@@ -3,7 +3,6 @@
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
         sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -23,10 +22,7 @@ mod tests {
     use serde_json::{Value, json};
     use tmcp::{
         Arguments, Result, Server, ServerCtx, ServerHandler,
-        auth::{
-            ProtectedResourceMetadata,
-            server::{AuthConfig, AuthInfo, JwtValidator},
-        },
+        auth::server::{AuthConfig, AuthInfo, JwtValidator},
         schema::*,
     };
     use tokio::net::TcpListener;
@@ -147,17 +143,6 @@ mod tests {
         })
     }
 
-    fn protected_resource_metadata() -> ProtectedResourceMetadata {
-        ProtectedResourceMetadata {
-            resource: "https://example.com/mcp".to_string(),
-            authorization_servers: vec!["https://issuer.example.com".to_string()],
-            scopes_supported: Some(vec!["resources:read".to_string(), "tools:call".to_string()]),
-            bearer_methods_supported: Some(vec!["header".to_string()]),
-            resource_documentation: None,
-            additional: HashMap::new(),
-        }
-    }
-
     #[tokio::test]
     async fn test_http_auth_flow() {
         fmt::try_init().ok();
@@ -171,8 +156,9 @@ mod tests {
         let server_handle = Server::new(|| AuthenticatedConnection)
             .http("127.0.0.1:0")
             .with_auth(
-                AuthConfig::new(protected_resource_metadata(), validator)
-                    .with_endpoint_path("/mcp"),
+                &AuthConfig::new("https://example.com", validator)
+                    .with_endpoint_path("/mcp")
+                    .with_scopes(["resources:read", "tools:call"]),
             )
             .serve()
             .await
@@ -181,6 +167,7 @@ mod tests {
         let base_url = format!("http://{}", server_handle.bound_addr.as_ref().unwrap());
         let client = HttpClient::new();
 
+        // Unauthenticated → 401 with absolute resource_metadata URI.
         let no_auth = client
             .post(format!("{base_url}/mcp"))
             .header("Content-Type", "application/json")
@@ -191,12 +178,15 @@ mod tests {
             .unwrap();
         assert_eq!(no_auth.status(), reqwest::StatusCode::UNAUTHORIZED);
         let challenge = no_auth.headers()["www-authenticate"].to_str().unwrap();
-        assert_eq!(
-            challenge,
-            "Bearer resource_metadata=\"/.well-known/oauth-protected-resource/mcp\""
+        assert!(
+            challenge.contains(
+                "resource_metadata=\"https://example.com/.well-known/oauth-protected-resource/mcp\""
+            ),
+            "expected absolute resource_metadata URL, got: {challenge}"
         );
         assert!(!challenge.contains("error="));
 
+        // Valid token → successful initialize + tool call.
         let valid_token = token(&encoding_key, "kid-1", now() + 300);
         let init = client
             .post(format!("{base_url}/mcp"))
@@ -231,6 +221,7 @@ mod tests {
             "subject=user-123;audiences=tmcp;scopes=resources:read,tools:call"
         );
 
+        // Expired token → 401 with invalid_token error.
         let expired = client
             .post(format!("{base_url}/mcp"))
             .bearer_auth(token(&encoding_key, "kid-1", now() - 1))
@@ -248,6 +239,7 @@ mod tests {
                 .contains("error=\"invalid_token\"")
         );
 
+        // SSE stream with valid token.
         let sse = client
             .get(format!("{base_url}/mcp"))
             .bearer_auth(&valid_token)
@@ -265,6 +257,7 @@ mod tests {
                 .starts_with("text/event-stream")
         );
 
+        // SSE without auth → 401 with absolute resource_metadata URI.
         let sse_missing_auth = client
             .get(format!("{base_url}/mcp"))
             .header("Accept", "text/event-stream")
@@ -278,9 +271,10 @@ mod tests {
             sse_missing_auth.headers()["www-authenticate"]
                 .to_str()
                 .unwrap()
-                .contains("resource_metadata=\"/.well-known/oauth-protected-resource/mcp\"")
+                .contains("resource_metadata=\"https://example.com/.well-known/oauth-protected-resource/mcp\"")
         );
 
+        // Protected resource metadata reflects configured base URL.
         let prm = client
             .get(format!(
                 "{base_url}/.well-known/oauth-protected-resource/mcp"
@@ -291,6 +285,10 @@ mod tests {
         assert_eq!(prm.status(), reqwest::StatusCode::OK);
         let prm_body = prm.json::<Value>().await.unwrap();
         assert_eq!(prm_body["resource"], "https://example.com/mcp");
+        assert_eq!(
+            prm_body["authorization_servers"],
+            json!(["https://example.com"])
+        );
 
         server_handle.stop().await.unwrap();
     }
@@ -308,8 +306,7 @@ mod tests {
         let embedded = Server::new(|| AuthenticatedConnection)
             .http_embed()
             .with_auth(
-                AuthConfig::new(protected_resource_metadata(), validator)
-                    .with_endpoint_path("/mcp"),
+                &AuthConfig::new("https://example.com", validator).with_endpoint_path("/mcp"),
             )
             .into_router()
             .await

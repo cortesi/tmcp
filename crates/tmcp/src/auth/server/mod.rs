@@ -9,17 +9,16 @@ use std::{
 use async_trait::async_trait;
 use axum::{
     Json, Router,
+    extract::State,
     http::{
-        HeaderValue, StatusCode,
-        header::{InvalidHeaderValue, WWW_AUTHENTICATE},
+        HeaderMap, HeaderValue, StatusCode,
+        header::{self, AsHeaderName, InvalidHeaderValue, WWW_AUTHENTICATE},
     },
     response::{IntoResponse, Response},
     routing::get,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
-
-use super::ProtectedResourceMetadata;
 
 /// JWT/JWKS-backed bearer token validation.
 mod jwt;
@@ -35,27 +34,68 @@ const WELL_KNOWN_PROTECTED_RESOURCE_PATH: &str = "/.well-known/oauth-protected-r
 /// High-level HTTP auth configuration for a protected MCP endpoint.
 #[derive(Clone)]
 pub struct AuthConfig {
-    /// Protected resource metadata served from the public well-known endpoint.
-    pub metadata: ProtectedResourceMetadata,
     /// Validator used to authenticate bearer tokens.
     pub validator: Arc<dyn TokenValidator>,
     /// External endpoint path for the protected MCP routes.
     pub endpoint_path: String,
+    /// Externally visible base URL used to construct absolute metadata URIs.
+    ///
+    /// Required by RFC 9728. When the server runs behind a reverse proxy, this is the
+    /// public-facing origin (e.g. `https://example.com`). Request-time forwarding headers
+    /// (`X-Forwarded-Host`, `X-Forwarded-Proto`) override this value when present.
+    pub base_url: String,
+    /// Authorization server issuer URLs advertised in the protected resource metadata.
+    ///
+    /// Defaults to `[base_url]`. Override with [`Self::with_authorization_servers`] when
+    /// tokens are issued by an external identity provider.
+    pub authorization_servers: Vec<String>,
+    /// OAuth scopes advertised in the protected resource metadata.
+    pub scopes_supported: Vec<String>,
+    /// Bearer token delivery methods advertised in the protected resource metadata.
+    pub bearer_methods_supported: Vec<String>,
 }
 
 impl AuthConfig {
-    /// Create an auth configuration for the default root endpoint.
-    pub fn new(metadata: ProtectedResourceMetadata, validator: Arc<dyn TokenValidator>) -> Self {
+    /// Create an auth configuration with the given base URL and token validator.
+    ///
+    /// The `base_url` is the externally visible origin (e.g. `https://example.com`). It is
+    /// used to construct absolute `resource_metadata` URIs in `WWW-Authenticate` challenges
+    /// and to serve RFC 9728 protected resource metadata. By default the base URL is also
+    /// advertised as the sole authorization server; call [`Self::with_authorization_servers`]
+    /// to override when tokens come from an external identity provider.
+    pub fn new(base_url: impl Into<String>, validator: Arc<dyn TokenValidator>) -> Self {
+        let base_url = base_url.into();
         Self {
-            metadata,
             validator,
             endpoint_path: "/".to_string(),
+            authorization_servers: vec![base_url.clone()],
+            base_url,
+            scopes_supported: vec!["mcp".to_string()],
+            bearer_methods_supported: vec!["header".to_string()],
         }
     }
 
     /// Override the externally visible MCP endpoint path.
     pub fn with_endpoint_path(mut self, endpoint_path: impl Into<String>) -> Self {
         self.endpoint_path = normalize_endpoint_path(endpoint_path.into());
+        self
+    }
+
+    /// Override the advertised authorization server URLs.
+    ///
+    /// Use this when tokens are issued by an external identity provider rather than the
+    /// resource server itself (e.g. `["https://issuer.example.com"]`).
+    pub fn with_authorization_servers(
+        mut self,
+        servers: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.authorization_servers = servers.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Override the advertised OAuth scopes (default: `["mcp"]`).
+    pub fn with_scopes(mut self, scopes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.scopes_supported = scopes.into_iter().map(Into::into).collect();
         self
     }
 }
@@ -190,36 +230,93 @@ impl WwwAuthenticate {
     }
 }
 
+/// Shared state for dynamic protected-resource metadata handlers.
+#[derive(Clone)]
+struct ProtectedResourceState {
+    /// Fallback externally visible base URL.
+    base_url: String,
+    /// MCP endpoint path component.
+    endpoint_path: String,
+    /// Authorization server issuer URLs.
+    authorization_servers: Vec<String>,
+    /// Scopes advertised in the metadata document.
+    scopes_supported: Vec<String>,
+    /// Bearer methods advertised in the metadata document.
+    bearer_methods_supported: Vec<String>,
+}
+
 /// Return an RFC 9728 protected resource metadata router for the endpoint path.
-pub fn protected_resource_handler(
-    metadata: ProtectedResourceMetadata,
-    endpoint_path: &str,
-) -> Router {
-    let metadata = Arc::new(metadata);
+///
+/// The `base_url` is used as a fallback origin; request-time `X-Forwarded-Host` and
+/// `X-Forwarded-Proto` headers take precedence so the metadata document reflects the
+/// externally visible URL even when the server is behind a reverse proxy.
+pub fn protected_resource_handler(config: &AuthConfig) -> Router {
+    let state = ProtectedResourceState {
+        base_url: config.base_url.trim_end_matches('/').to_string(),
+        endpoint_path: normalize_endpoint_path(&config.endpoint_path),
+        authorization_servers: config.authorization_servers.clone(),
+        scopes_supported: config.scopes_supported.clone(),
+        bearer_methods_supported: config.bearer_methods_supported.clone(),
+    };
+
     let mut router = Router::new().route(
         WELL_KNOWN_PROTECTED_RESOURCE_PATH,
-        get({
-            let metadata = metadata.clone();
-            move || {
-                let metadata = metadata.clone();
-                async move { Json((*metadata).clone()) }
-            }
-        }),
+        get(serve_protected_resource_metadata),
     );
 
-    let endpoint_path = normalize_endpoint_path(endpoint_path);
+    let endpoint_path = normalize_endpoint_path(&config.endpoint_path);
     if endpoint_path != "/" {
         let path = resource_metadata_relative_uri(&endpoint_path);
-        router = router.route(
-            &path,
-            get(move || {
-                let metadata = metadata.clone();
-                async move { Json((*metadata).clone()) }
-            }),
-        );
+        router = router.route(&path, get(serve_protected_resource_metadata));
     }
 
-    router
+    router.with_state(state)
+}
+
+/// Handler that builds protected resource metadata dynamically from the request origin.
+async fn serve_protected_resource_metadata(
+    State(state): State<ProtectedResourceState>,
+    headers: HeaderMap,
+) -> Json<Value> {
+    let base = resolve_base_url(&headers, &state.base_url);
+    Json(json!({
+        "resource": format!("{base}{}", state.endpoint_path),
+        "authorization_servers": state.authorization_servers,
+        "scopes_supported": state.scopes_supported,
+        "bearer_methods_supported": state.bearer_methods_supported,
+    }))
+}
+
+/// Resolve the externally visible origin from forwarding headers or a fallback base URL.
+///
+/// Only uses request headers when explicit forwarding headers (`X-Forwarded-Host`,
+/// `X-Forwarded-Proto`) are present, indicating a reverse proxy. Otherwise the configured
+/// base URL is returned unchanged.
+fn resolve_base_url(headers: &HeaderMap, fallback: &str) -> String {
+    let forwarded_host = first_forwarded_value(headers, "x-forwarded-host");
+    let forwarded_proto = first_forwarded_value(headers, "x-forwarded-proto");
+
+    if forwarded_host.is_none() && forwarded_proto.is_none() {
+        return fallback.trim_end_matches('/').to_string();
+    }
+
+    let host = forwarded_host.or_else(|| first_forwarded_value(headers, header::HOST));
+    let scheme = forwarded_proto.or_else(|| fallback.split_once("://").map(|(s, _)| s));
+
+    match (scheme, host) {
+        (Some(scheme), Some(host)) => format!("{scheme}://{host}"),
+        _ => fallback.trim_end_matches('/').to_string(),
+    }
+}
+
+/// Return the first value from a potentially comma-separated forwarding header.
+fn first_forwarded_value<K: AsHeaderName>(headers: &HeaderMap, name: K) -> Option<&str> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
 }
 
 /// Return a 403 response describing the required scope.
@@ -298,28 +395,32 @@ pub(crate) const DEFAULT_JWKS_CACHE_TTL: Duration = Duration::from_secs(300);
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    use axum::body::Body;
+    use axum::body::{self, Body};
     use http::{Request, StatusCode};
     use tower::ServiceExt;
 
     use super::*;
 
-    fn metadata() -> ProtectedResourceMetadata {
-        ProtectedResourceMetadata {
-            resource: "https://example.com/mcp".to_string(),
-            authorization_servers: vec!["https://issuer.example.com".to_string()],
-            scopes_supported: None,
-            bearer_methods_supported: None,
-            resource_documentation: None,
-            additional: HashMap::new(),
+    fn test_config(endpoint_path: &str) -> AuthConfig {
+        AuthConfig::new("https://example.com", stub_validator()).with_endpoint_path(endpoint_path)
+    }
+
+    fn stub_validator() -> Arc<dyn TokenValidator> {
+        struct Stub;
+
+        #[async_trait]
+        impl TokenValidator for Stub {
+            async fn validate(&self, _: &str) -> Result<AuthInfo, AuthError> {
+                Err(AuthError::Invalid)
+            }
         }
+
+        Arc::new(Stub)
     }
 
     #[tokio::test]
     async fn protected_resource_handler_serves_root_metadata() {
-        let response = protected_resource_handler(metadata(), "/")
+        let response = protected_resource_handler(&test_config("/"))
             .oneshot(
                 Request::builder()
                     .uri(WELL_KNOWN_PROTECTED_RESOURCE_PATH)
@@ -333,7 +434,7 @@ mod tests {
 
     #[tokio::test]
     async fn protected_resource_handler_serves_path_specific_metadata() {
-        let response = protected_resource_handler(metadata(), "/mcp")
+        let response = protected_resource_handler(&test_config("/mcp"))
             .oneshot(
                 Request::builder()
                     .uri("/.well-known/oauth-protected-resource/mcp")
@@ -343,6 +444,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn protected_resource_metadata_uses_forwarded_headers() {
+        let response = protected_resource_handler(&test_config("/mcp"))
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-protected-resource/mcp")
+                    .header("x-forwarded-host", "prod.example.com")
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let metadata: Value = serde_json::from_slice(&body).unwrap();
+        // Resource URI reflects the forwarded public host.
+        assert_eq!(metadata["resource"], "https://prod.example.com/mcp");
+        // Authorization servers come from config, not from forwarding headers.
+        assert_eq!(
+            metadata["authorization_servers"],
+            json!(["https://example.com"])
+        );
     }
 
     #[test]

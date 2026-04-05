@@ -306,12 +306,12 @@ where
     }
 
     /// Protect the MCP routes with bearer-token auth and expose PRM discovery routes.
-    pub fn with_auth(self, config: AuthConfig) -> Self {
-        let endpoint_path = config.endpoint_path.clone();
-        let middleware = BearerAuthLayer::new(config.validator.clone(), &endpoint_path);
-        self.with_endpoint_path(endpoint_path.clone())
-            .with_middleware(move |router| router.layer(middleware))
-            .with_routes(protected_resource_handler(config.metadata, &endpoint_path))
+    pub fn with_auth(self, config: &AuthConfig) -> Self {
+        let middleware = BearerAuthLayer::new(config.validator.clone(), &config.endpoint_path)
+            .with_base_url(&config.base_url);
+        self.with_endpoint_path(&config.endpoint_path)
+            .with_middleware(|router| router.layer(middleware))
+            .with_routes(protected_resource_handler(config))
     }
 
     /// Start serving the configured HTTP transport.
