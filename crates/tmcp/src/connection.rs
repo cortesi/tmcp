@@ -421,9 +421,13 @@ pub trait ServerHandler: Send + Sync {
                 name,
                 arguments,
                 task,
-                _meta: _,
+                _meta,
             } => {
-                let result = self.call_tool(context, name, arguments, task).await;
+                let call_context = _meta.and_then(|meta| meta.progress_token).map_or_else(
+                    || context.clone(),
+                    |token| context.with_progress_token(token),
+                );
+                let result = self.call_tool(&call_context, name, arguments, task).await;
                 match result {
                     Ok(result) => serialize_result(Ok(result)),
                     Err(Error::InvalidParams(message)) => {

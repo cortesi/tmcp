@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
 use http::Extensions;
 use serde::de::DeserializeOwned;
 use tokio::sync::mpsc::{self, error::TrySendError};
@@ -75,6 +80,10 @@ pub struct ServerCtx {
     pub(crate) request_id: Option<schema::RequestId>,
     /// Per-request transport extensions.
     extensions: Extensions,
+    /// Optional progress token attached to the active request.
+    progress_token: Option<schema::ProgressToken>,
+    /// Shared progress counter for all clones derived from the same request context.
+    progress_counter: Option<Arc<AtomicU64>>,
 }
 
 impl ServerCtx {
@@ -88,6 +97,8 @@ impl ServerCtx {
             request_handler: RequestHandler::new(transport_tx, "srv-req".to_string()),
             request_id: None,
             extensions: Extensions::new(),
+            progress_token: None,
+            progress_counter: None,
         }
     }
 
@@ -104,6 +115,37 @@ impl ServerCtx {
         let mut ctx = self.clone();
         ctx.request_id = Some(request_id);
         ctx
+    }
+
+    /// Create a new context with a specific progress token.
+    #[must_use]
+    pub fn with_progress_token(&self, token: schema::ProgressToken) -> Self {
+        let mut ctx = self.clone();
+        ctx.progress_token = Some(token);
+        ctx.progress_counter = Some(Arc::new(AtomicU64::new(0)));
+        ctx
+    }
+
+    /// Return the progress token for this request, if present.
+    #[must_use]
+    pub fn progress_token(&self) -> Option<&schema::ProgressToken> {
+        self.progress_token.as_ref()
+    }
+
+    /// Send an informational progress notification for the current request.
+    ///
+    /// Progress is best-effort: missing tokens and bounded-queue failures are ignored.
+    pub fn send_progress(&self, message: &str) {
+        let (Some(token), Some(counter)) = (&self.progress_token, &self.progress_counter) else {
+            return;
+        };
+        let progress = counter.fetch_add(1, Ordering::Relaxed) + 1;
+        drop(self.notify(schema::ServerNotification::progress(
+            token.clone(),
+            progress as f64,
+            None,
+            Some(message.to_owned()),
+        )));
     }
 
     /// Return per-request transport extensions.
