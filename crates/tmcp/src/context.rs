@@ -1,11 +1,18 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    collections::{HashMap, HashSet},
+    future::pending,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use http::Extensions;
 use serde::de::DeserializeOwned;
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::{
+    Notify,
+    mpsc::{self, error::TrySendError},
+};
 
 use crate::{
     error::{Error, Result},
@@ -84,6 +91,10 @@ pub struct ServerCtx {
     progress_token: Option<schema::ProgressToken>,
     /// Shared progress counter for all clones derived from the same request context.
     progress_counter: Option<Arc<AtomicU64>>,
+    /// Request IDs cancelled by the client on this connection.
+    cancelled_requests: Arc<Mutex<HashSet<schema::RequestId>>>,
+    /// Notifiers for request-scoped cancellation waiters.
+    cancellation_notifiers: Arc<Mutex<HashMap<schema::RequestId, Arc<Notify>>>>,
 }
 
 impl ServerCtx {
@@ -99,6 +110,8 @@ impl ServerCtx {
             extensions: Extensions::new(),
             progress_token: None,
             progress_counter: None,
+            cancelled_requests: Arc::new(Mutex::new(HashSet::new())),
+            cancellation_notifiers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -115,6 +128,46 @@ impl ServerCtx {
         let mut ctx = self.clone();
         ctx.request_id = Some(request_id);
         ctx
+    }
+
+    /// Return whether the current request has been cancelled by the client.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        let Some(request_id) = &self.request_id else {
+            return false;
+        };
+        self.is_request_cancelled(request_id)
+    }
+
+    /// Return whether a specific request has been cancelled by the client.
+    pub(crate) fn is_request_cancelled(&self, request_id: &schema::RequestId) -> bool {
+        self.cancelled_requests
+            .lock()
+            .expect("cancelled request lock")
+            .contains(request_id)
+    }
+
+    /// Wait until the current request is cancelled by the client.
+    pub async fn cancelled(&self) {
+        let Some(request_id) = &self.request_id else {
+            pending::<()>().await;
+            return;
+        };
+        if self.is_cancelled() {
+            return;
+        }
+        let notifier = {
+            let mut notifiers = self
+                .cancellation_notifiers
+                .lock()
+                .expect("cancellation notifier lock");
+            Arc::clone(
+                notifiers
+                    .entry(request_id.clone())
+                    .or_insert_with(|| Arc::new(Notify::new())),
+            )
+        };
+        notifier.notified().await;
     }
 
     /// Create a new context with a specific progress token.
@@ -158,6 +211,35 @@ impl ServerCtx {
         let mut ctx = self.clone();
         ctx.extensions = extensions;
         ctx
+    }
+
+    /// Mark one request ID as cancelled and wake any waiters.
+    pub(crate) fn mark_cancelled(&self, request_id: &schema::RequestId) {
+        self.cancelled_requests
+            .lock()
+            .expect("cancelled request lock")
+            .insert(request_id.clone());
+        let notifier = self
+            .cancellation_notifiers
+            .lock()
+            .expect("cancellation notifier lock")
+            .get(request_id)
+            .cloned();
+        if let Some(notifier) = notifier {
+            notifier.notify_waiters();
+        }
+    }
+
+    /// Clear stored cancellation state for one completed request.
+    pub(crate) fn clear_cancelled(&self, request_id: &schema::RequestId) {
+        self.cancelled_requests
+            .lock()
+            .expect("cancelled request lock")
+            .remove(request_id);
+        self.cancellation_notifiers
+            .lock()
+            .expect("cancellation notifier lock")
+            .remove(request_id);
     }
 
     /// Send a request to the client and wait for response

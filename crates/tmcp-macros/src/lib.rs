@@ -2,9 +2,11 @@
 //!
 //! Using the #[mcp_server] macro on an impl block, this crate will pick up all methods
 //! marked with #[tool] and derive the necessary ServerHandler::call_tool, ServerHandler::list_tools and
-//! ServerHandler::initialize methods. The name of the server is derived from the name of the struct
-//! converted to snake_case (e.g., MyServer becomes my_server), and the description is derived
-//! from the doc comment on the impl block. The version is set to "0.1.0" by default.
+//! ServerHandler::initialize methods. Resource callbacks can be wired into the same generated
+//! ServerHandler implementation for servers whose resources are discovered dynamically. The name of
+//! the server is derived from the name of the struct converted to snake_case (e.g., MyServer becomes
+//! my_server), and the description is derived from the doc comment on the impl block. The version is
+//! set to "0.1.0" by default.
 //!
 //! The macro supports customization through attributes:
 //! - `initialize_fn`: Specify a custom initialize function instead of using the default
@@ -13,6 +15,10 @@
 //! - `instructions`: Override the server instructions used in initialization
 //! - `protocol_version`: Control protocol version negotiation ("latest" or "client")
 //! - `toolset`: Use a ToolSet field for progressive discovery
+//! - `resources_fn`: Forward `resources/list` to an async method
+//! - `read_resource_fn`: Forward `resources/read` to an async method
+//! - `resource_templates_fn`: Forward `resources/templates/list` to an async method
+//! - `shutdown_fn`: Forward shutdown handling to an async method
 //!
 //! All tool methods must be async and have one of the following signatures:
 //!
@@ -33,6 +39,30 @@
 //!
 //! The parameter struct (ToolParams in this example) must implement `schemars::JsonSchema` and
 //! `serde::Deserialize`.
+//!
+//! Resource callback methods must use these signatures:
+//!
+//! ```ignore
+//! async fn resources(
+//!     &self,
+//!     context: &ServerCtx,
+//!     cursor: Option<schema::Cursor>,
+//! ) -> Result<schema::ListResourcesResult>
+//!
+//! async fn read_resource(
+//!     &self,
+//!     context: &ServerCtx,
+//!     uri: String,
+//! ) -> Result<schema::ReadResourceResult>
+//!
+//! async fn resource_templates(
+//!     &self,
+//!     context: &ServerCtx,
+//!     cursor: Option<schema::Cursor>,
+//! ) -> Result<schema::ListResourceTemplatesResult>
+//!
+//! async fn shutdown(&self) -> Result<()>
+//! ```
 //!
 //! The `#[tool]` attribute can also accept metadata that feeds into tool annotations and execution
 //! hints. Supported arguments:
@@ -258,6 +288,14 @@ struct ServerInfo {
 struct ServerMacroArgs {
     /// Optional custom initialize function name.
     initialize_fn: Option<syn::Ident>,
+    /// Optional function used to list dynamic resources.
+    resources_fn: Option<syn::Ident>,
+    /// Optional function used to read dynamic resources.
+    read_resource_fn: Option<syn::Ident>,
+    /// Optional function used to list dynamic resource templates.
+    resource_templates_fn: Option<syn::Ident>,
+    /// Optional function called when the server shuts down.
+    shutdown_fn: Option<syn::Ident>,
     /// Optional server name override.
     name: Option<Expr>,
     /// Optional server version override.
@@ -281,6 +319,18 @@ impl Parse for ServerMacroArgs {
             if ident == "initialize_fn" {
                 let fn_name: syn::Ident = input.parse()?;
                 args.initialize_fn = Some(fn_name);
+            } else if ident == "resources_fn" {
+                let fn_name: syn::Ident = input.parse()?;
+                args.resources_fn = Some(fn_name);
+            } else if ident == "read_resource_fn" {
+                let fn_name: syn::Ident = input.parse()?;
+                args.read_resource_fn = Some(fn_name);
+            } else if ident == "resource_templates_fn" {
+                let fn_name: syn::Ident = input.parse()?;
+                args.resource_templates_fn = Some(fn_name);
+            } else if ident == "shutdown_fn" {
+                let fn_name: syn::Ident = input.parse()?;
+                args.shutdown_fn = Some(fn_name);
             } else if ident == "name" {
                 let expr: Expr = input.parse()?;
                 args.name = Some(expr);
@@ -309,6 +359,20 @@ impl Parse for ServerMacroArgs {
         }
 
         Ok(args)
+    }
+}
+
+impl ServerMacroArgs {
+    /// Return true if any resource protocol method should be generated.
+    fn has_resource_callbacks(&self) -> bool {
+        self.resources_fn.is_some()
+            || self.read_resource_fn.is_some()
+            || self.resource_templates_fn.is_some()
+    }
+
+    /// Return true if resource listing capability should report list changes.
+    fn resources_list_changed(&self) -> bool {
+        self.resources_fn.is_some() || self.resource_templates_fn.is_some()
     }
 }
 
@@ -1422,7 +1486,8 @@ fn generate_initialize(
         }
     } else {
         // Use the default implementation
-        generate_default_initialize(info, args, has_tools(info))
+        let tools_list_changed = has_tools(info).then_some(true);
+        generate_default_initialize(info, args, tools_list_changed)
     }
 }
 
@@ -1435,17 +1500,17 @@ fn has_tools(info: &ServerInfo) -> bool {
 fn generate_default_initialize(
     info: &ServerInfo,
     args: &ServerMacroArgs,
-    list_changed: bool,
+    tools_list_changed: Option<bool>,
 ) -> TokenStream {
     let prologue = quote! {};
-    generate_default_initialize_with_prologue(info, args, list_changed, &prologue)
+    generate_default_initialize_with_prologue(info, args, tools_list_changed, &prologue)
 }
 
 /// Generate the default initialize implementation with a custom prologue.
 fn generate_default_initialize_with_prologue(
     info: &ServerInfo,
     args: &ServerMacroArgs,
-    list_changed: bool,
+    tools_list_changed: Option<bool>,
     prologue: &TokenStream,
 ) -> TokenStream {
     let snake_case_name = info.struct_name.to_snake_case();
@@ -1483,6 +1548,17 @@ fn generate_default_initialize_with_prologue(
         _ => (quote! { _protocol_version: String }, quote! {}),
     };
 
+    let tools_capability_setter = tools_list_changed
+        .map(|list_changed| quote! { init = init.with_tools(#list_changed); })
+        .unwrap_or_default();
+
+    let resources_capability_setter = if args.has_resource_callbacks() {
+        let list_changed = args.resources_list_changed();
+        quote! { init = init.with_resources(false, #list_changed); }
+    } else {
+        quote! {}
+    };
+
     quote! {
         async fn initialize(
             &self,
@@ -1493,8 +1569,9 @@ fn generate_default_initialize_with_prologue(
         ) -> tmcp::Result<tmcp::schema::InitializeResult> {
             #prologue
             let mut init = tmcp::schema::InitializeResult::new(#name_expr)
-                .with_version(#version_expr)
-                .with_tools(#list_changed);
+                .with_version(#version_expr);
+            #tools_capability_setter
+            #resources_capability_setter
             #instructions_setter
             #protocol_version_setter
             Ok(init)
@@ -1665,7 +1742,7 @@ fn generate_toolset_initialize(
         let prologue = quote! {
             self.__ensure_tools_registered();
         };
-        generate_default_initialize_with_prologue(info, args, true, &prologue)
+        generate_default_initialize_with_prologue(info, args, Some(true), &prologue)
     }
 }
 
@@ -1748,6 +1825,85 @@ fn generate_group_dispatch_impl(info: &ServerInfo) -> TokenStream {
     }
 }
 
+/// Generate the ServerHandler::list_resources implementation if requested.
+fn generate_list_resources(args: &ServerMacroArgs) -> TokenStream {
+    if let Some(resources_fn) = &args.resources_fn {
+        quote! {
+            async fn list_resources(
+                &self,
+                context: &tmcp::ServerCtx,
+                cursor: Option<tmcp::schema::Cursor>,
+            ) -> tmcp::Result<tmcp::schema::ListResourcesResult> {
+                self.#resources_fn(context, cursor).await
+            }
+        }
+    } else {
+        quote! {}
+    }
+}
+
+/// Generate the ServerHandler::read_resource implementation if requested.
+fn generate_read_resource(args: &ServerMacroArgs) -> TokenStream {
+    if let Some(read_resource_fn) = &args.read_resource_fn {
+        quote! {
+            async fn read_resource(
+                &self,
+                context: &tmcp::ServerCtx,
+                uri: String,
+            ) -> tmcp::Result<tmcp::schema::ReadResourceResult> {
+                self.#read_resource_fn(context, uri).await
+            }
+        }
+    } else {
+        quote! {}
+    }
+}
+
+/// Generate the ServerHandler::list_resource_templates implementation if requested.
+fn generate_list_resource_templates(args: &ServerMacroArgs) -> TokenStream {
+    if let Some(resource_templates_fn) = &args.resource_templates_fn {
+        quote! {
+            async fn list_resource_templates(
+                &self,
+                context: &tmcp::ServerCtx,
+                cursor: Option<tmcp::schema::Cursor>,
+            ) -> tmcp::Result<tmcp::schema::ListResourceTemplatesResult> {
+                self.#resource_templates_fn(context, cursor).await
+            }
+        }
+    } else {
+        quote! {}
+    }
+}
+
+/// Generate the ServerHandler::on_shutdown implementation if requested.
+fn generate_on_shutdown(args: &ServerMacroArgs) -> TokenStream {
+    if let Some(shutdown_fn) = &args.shutdown_fn {
+        quote! {
+            async fn on_shutdown(&self) -> tmcp::Result<()> {
+                self.#shutdown_fn().await
+            }
+        }
+    } else {
+        quote! {}
+    }
+}
+
+/// Generate all optional ServerHandler forwarding methods.
+fn generate_server_forwarders(args: &ServerMacroArgs) -> TokenStream {
+    let list_resources = generate_list_resources(args);
+    let read_resource = generate_read_resource(args);
+    let list_resource_templates = generate_list_resource_templates(args);
+    let on_shutdown = generate_on_shutdown(args);
+
+    quote! {
+        #on_shutdown
+        #list_resources
+        #read_resource
+        #list_resource_templates
+    }
+}
+
 /// Expand a #[group] impl block into dispatch and registration logic.
 fn expand_group_impl(input: &TokenStream) -> Result<TokenStream> {
     let impl_block = syn::parse2::<ItemImpl>(input.clone())?;
@@ -1769,76 +1925,312 @@ fn expand_group_impl(input: &TokenStream) -> Result<TokenStream> {
     })
 }
 
-/// Validate the signature of a custom initialize function.
-fn validate_custom_initialize_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
-    // Find the method in the impl block
-    let method = impl_block.items.iter().find_map(|item| {
-        if let ImplItem::Fn(method) = item {
-            if method.sig.ident == *fn_name {
+/// Find a named method in an impl block for a macro forwarding hook.
+fn find_impl_method<'a>(
+    impl_block: &'a ItemImpl,
+    fn_name: &syn::Ident,
+    role: &str,
+) -> Result<&'a syn::ImplItemFn> {
+    impl_block
+        .items
+        .iter()
+        .find_map(|item| {
+            if let ImplItem::Fn(method) = item
+                && method.sig.ident == *fn_name
+            {
                 Some(method)
             } else {
                 None
             }
-        } else {
-            None
+        })
+        .ok_or_else(|| {
+            syn::Error::new(
+                fn_name.span(),
+                format!("{role} function '{fn_name}' not found in impl block"),
+            )
+        })
+}
+
+/// Validate that the first callback parameter is a shared self receiver.
+fn validate_shared_self_receiver(arg: &syn::FnArg) -> Result<()> {
+    match arg {
+        syn::FnArg::Receiver(receiver)
+            if receiver.reference.is_some() && receiver.mutability.is_none() =>
+        {
+            Ok(())
         }
-    });
+        _ => Err(syn::Error::new(arg.span(), "first parameter must be &self")),
+    }
+}
 
-    let method = method.ok_or_else(|| {
-        syn::Error::new(
-            fn_name.span(),
-            format!("Custom initialize function '{fn_name}' not found in impl block"),
-        )
-    })?;
-
-    // Validate it's async
+/// Validate common callback shape and return the parsed parameter list.
+fn validate_callback_signature<'a>(
+    method: &'a syn::ImplItemFn,
+    role: &str,
+    expected_param_count: usize,
+) -> Result<Vec<&'a syn::FnArg>> {
     if method.sig.asyncness.is_none() {
         return Err(syn::Error::new(
             method.sig.span(),
-            "Custom initialize function must be async",
+            format!("{role} function must be async"),
         ));
     }
 
-    // Validate parameters
     let params: Vec<_> = method.sig.inputs.iter().collect();
-    if params.len() != 5 {
+    if params.len() != expected_param_count {
         return Err(syn::Error::new(
             method.sig.inputs.span(),
-            "Custom initialize function must have exactly 5 parameters: &self, context: &ServerCtx, protocol_version: String, capabilities: ClientCapabilities, client_info: Implementation",
+            format!("{role} function must have exactly {expected_param_count} parameters"),
         ));
     }
 
-    // Validate &self
-    match params[0] {
-        syn::FnArg::Receiver(_) => {}
-        _ => {
-            return Err(syn::Error::new(
-                params[0].span(),
-                "First parameter must be &self",
-            ));
-        }
-    }
+    validate_shared_self_receiver(params[0])?;
+    Ok(params)
+}
 
-    // Validate return type exists
-    match &method.sig.output {
-        syn::ReturnType::Type(_, _) => {
-            // We just check it exists, full type validation would be complex
-        }
-        _ => {
-            return Err(syn::Error::new(
-                method.sig.output.span(),
-                "Custom initialize function must return Result<InitializeResult>",
-            ));
-        }
+/// Return the final path segment identifier for a type.
+fn type_path_last_ident(ty: &syn::Type) -> Option<&syn::Ident> {
+    match ty {
+        syn::Type::Reference(reference) => type_path_last_ident(&reference.elem),
+        syn::Type::Path(type_path) => type_path.path.segments.last().map(|segment| &segment.ident),
+        _ => None,
     }
+}
 
+/// Return true when a type's final path segment matches the expected name.
+fn type_path_ends_with(ty: &syn::Type, expected: &str) -> bool {
+    type_path_last_ident(ty)
+        .map(|ident| ident == expected)
+        .unwrap_or(false)
+}
+
+/// Return true when a type is `String`.
+fn is_string_type(ty: &syn::Type) -> bool {
+    type_path_ends_with(ty, "String")
+}
+
+/// Return true when a type is `Option<Cursor>`.
+fn is_option_cursor_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+    if segment.ident != "Option" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+
+    arguments.args.iter().any(|argument| {
+        matches!(
+            argument,
+            syn::GenericArgument::Type(ty) if type_path_ends_with(ty, "Cursor")
+        )
+    })
+}
+
+/// Validate a callback parameter's type.
+fn validate_callback_arg_type(
+    arg: &syn::FnArg,
+    role: &str,
+    expected: &str,
+    is_expected: fn(&syn::Type) -> bool,
+) -> Result<()> {
+    let syn::FnArg::Typed(pat_type) = arg else {
+        return Err(syn::Error::new(
+            arg.span(),
+            format!("{role} parameter must be {expected}"),
+        ));
+    };
+    if is_expected(pat_type.ty.as_ref()) {
+        Ok(())
+    } else {
+        Err(syn::Error::new(
+            pat_type.ty.span(),
+            format!("{role} parameter must be {expected}"),
+        ))
+    }
+}
+
+/// Return the successful payload type from a `Result<T>` return type.
+fn result_inner_type<'a>(output: &'a syn::ReturnType, role: &str) -> Result<&'a syn::Type> {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return Err(syn::Error::new(
+            output.span(),
+            format!("{role} function must return Result<T>"),
+        ));
+    };
+    let syn::Type::Path(type_path) = ty.as_ref() else {
+        return Err(syn::Error::new(
+            ty.span(),
+            format!("{role} function must return Result<T>"),
+        ));
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return Err(syn::Error::new(
+            ty.span(),
+            format!("{role} function must return Result<T>"),
+        ));
+    };
+    if segment.ident != "Result" {
+        return Err(syn::Error::new(
+            segment.ident.span(),
+            format!("{role} function must return Result<T>"),
+        ));
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return Err(syn::Error::new(
+            segment.arguments.span(),
+            format!("{role} function must return Result<T>"),
+        ));
+    };
+
+    arguments
+        .args
+        .iter()
+        .find_map(|argument| {
+            if let syn::GenericArgument::Type(ty) = argument {
+                Some(ty)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            syn::Error::new(
+                segment.arguments.span(),
+                format!("{role} function must return Result<T>"),
+            )
+        })
+}
+
+/// Validate a callback result payload type.
+fn validate_result_payload(
+    method: &syn::ImplItemFn,
+    role: &str,
+    expected_payload: &str,
+) -> Result<()> {
+    let inner = result_inner_type(&method.sig.output, role)?;
+    if type_path_ends_with(inner, expected_payload) {
+        Ok(())
+    } else {
+        Err(syn::Error::new(
+            inner.span(),
+            format!("{role} function must return Result<{expected_payload}>"),
+        ))
+    }
+}
+
+/// Validate that a callback returns `Result<()>`.
+fn validate_unit_result(method: &syn::ImplItemFn, role: &str) -> Result<()> {
+    let inner = result_inner_type(&method.sig.output, role)?;
+    if is_unit_type(inner) {
+        Ok(())
+    } else {
+        Err(syn::Error::new(
+            inner.span(),
+            format!("{role} function must return Result<()>"),
+        ))
+    }
+}
+
+/// Validate the signature of a custom initialize function.
+fn validate_custom_initialize_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "initialize_fn")?;
+
+    let params = validate_callback_signature(method, "initialize_fn", 5)?;
+    validate_callback_arg_type(params[1], "initialize_fn", "&ServerCtx", is_server_ctx_type)?;
+    validate_callback_arg_type(params[2], "initialize_fn", "String", is_string_type)?;
+    validate_callback_arg_type(params[3], "initialize_fn", "ClientCapabilities", |ty| {
+        type_path_ends_with(ty, "ClientCapabilities")
+    })?;
+    validate_callback_arg_type(params[4], "initialize_fn", "Implementation", |ty| {
+        type_path_ends_with(ty, "Implementation")
+    })?;
+    validate_result_payload(method, "initialize_fn", "InitializeResult")
+}
+
+/// Validate the signature of a list resources callback.
+fn validate_resources_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "resources_fn")?;
+    let params = validate_callback_signature(method, "resources_fn", 3)?;
+    validate_callback_arg_type(params[1], "resources_fn", "&ServerCtx", is_server_ctx_type)?;
+    validate_callback_arg_type(
+        params[2],
+        "resources_fn",
+        "Option<Cursor>",
+        is_option_cursor_type,
+    )?;
+    validate_result_payload(method, "resources_fn", "ListResourcesResult")
+}
+
+/// Validate the signature of a read resource callback.
+fn validate_read_resource_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "read_resource_fn")?;
+    let params = validate_callback_signature(method, "read_resource_fn", 3)?;
+    validate_callback_arg_type(
+        params[1],
+        "read_resource_fn",
+        "&ServerCtx",
+        is_server_ctx_type,
+    )?;
+    validate_callback_arg_type(params[2], "read_resource_fn", "String", is_string_type)?;
+    validate_result_payload(method, "read_resource_fn", "ReadResourceResult")
+}
+
+/// Validate the signature of a list resource templates callback.
+fn validate_resource_templates_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "resource_templates_fn")?;
+    let params = validate_callback_signature(method, "resource_templates_fn", 3)?;
+    validate_callback_arg_type(
+        params[1],
+        "resource_templates_fn",
+        "&ServerCtx",
+        is_server_ctx_type,
+    )?;
+    validate_callback_arg_type(
+        params[2],
+        "resource_templates_fn",
+        "Option<Cursor>",
+        is_option_cursor_type,
+    )?;
+    validate_result_payload(
+        method,
+        "resource_templates_fn",
+        "ListResourceTemplatesResult",
+    )
+}
+
+/// Validate the signature of a shutdown callback.
+fn validate_shutdown_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "shutdown_fn")?;
+    validate_callback_signature(method, "shutdown_fn", 1)?;
+    validate_unit_result(method, "shutdown_fn")
+}
+
+/// Validate all optional ServerHandler forwarding callbacks.
+fn validate_server_forwarders(impl_block: &ItemImpl, args: &ServerMacroArgs) -> Result<()> {
+    if let Some(ref resources_fn) = args.resources_fn {
+        validate_resources_fn(impl_block, resources_fn)?;
+    }
+    if let Some(ref read_resource_fn) = args.read_resource_fn {
+        validate_read_resource_fn(impl_block, read_resource_fn)?;
+    }
+    if let Some(ref resource_templates_fn) = args.resource_templates_fn {
+        validate_resource_templates_fn(impl_block, resource_templates_fn)?;
+    }
+    if let Some(ref shutdown_fn) = args.shutdown_fn {
+        validate_shutdown_fn(impl_block, shutdown_fn)?;
+    }
     Ok(())
 }
 
 /// Parse the #[mcp_server] macro inputs and emit the expanded tokens.
 fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStream> {
     // Parse macro attributes
-    let args = syn::parse2::<ServerMacroArgs>(attr).unwrap_or_default();
+    let args = syn::parse2::<ServerMacroArgs>(attr)?;
     let (impl_block, info) = parse_impl_block(input)?;
 
     if args.toolset.is_none() && !info.groups.is_empty() {
@@ -1848,10 +2240,10 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
         ));
     }
 
-    if args.toolset.is_none() && info.tools.is_empty() {
+    if args.toolset.is_none() && info.tools.is_empty() && !args.has_resource_callbacks() {
         return Err(syn::Error::new(
             input.span(),
-            "No tool methods found. Use #[tool] to mark methods as MCP tools",
+            "No tool methods or resource callbacks found. Use #[tool] or a resource callback argument",
         ));
     }
 
@@ -1859,6 +2251,7 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
     if let Some(ref init_fn) = args.initialize_fn {
         validate_custom_initialize_fn(&impl_block, init_fn)?;
     }
+    validate_server_forwarders(&impl_block, &args)?;
 
     let struct_name = syn::Ident::new(&info.struct_name, proc_macro2::Span::call_site());
     let toolset_field = args.toolset.as_ref();
@@ -1877,6 +2270,7 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
     } else {
         generate_initialize(&info, &args, args.initialize_fn.as_ref())
     };
+    let server_forwarders = generate_server_forwarders(&args);
     let flat_structs = generate_flat_arg_structs(&info);
 
     if let Some(toolset_field) = toolset_field {
@@ -1892,6 +2286,7 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
             #[async_trait::async_trait]
             impl tmcp::ServerHandler for #struct_name {
                 #initialize
+                #server_forwarders
                 #list_tools
                 #call_tool
             }
@@ -1904,6 +2299,7 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
             #[async_trait::async_trait]
             impl tmcp::ServerHandler for #struct_name {
                 #initialize
+                #server_forwarders
                 #list_tools
                 #call_tool
             }
@@ -2646,6 +3042,62 @@ mod tests {
     }
 
     #[test]
+    fn test_full_macro_expansion_dynamic_resources() {
+        let input = quote! {
+            /// Test server
+            impl TestServer {
+                async fn docs(
+                    &self,
+                    context: &ServerCtx,
+                    cursor: Option<schema::Cursor>,
+                ) -> Result<schema::ListResourcesResult> {
+                    Ok(schema::ListResourcesResult::new())
+                }
+
+                async fn doc(
+                    &self,
+                    context: &ServerCtx,
+                    uri: String,
+                ) -> Result<schema::ReadResourceResult> {
+                    Ok(schema::ReadResourceResult::new())
+                }
+
+                async fn doc_templates(
+                    &self,
+                    context: &ServerCtx,
+                    cursor: Option<schema::Cursor>,
+                ) -> Result<schema::ListResourceTemplatesResult> {
+                    Ok(schema::ListResourceTemplatesResult::new())
+                }
+
+                async fn shutdown(&self) -> Result<()> {
+                    Ok(())
+                }
+            }
+        };
+
+        let attrs = quote! {
+            resources_fn = docs,
+            read_resource_fn = doc,
+            resource_templates_fn = doc_templates,
+            shutdown_fn = shutdown
+        };
+        let result = inner_mcp_server(attrs, &input).unwrap();
+        let result_str = result.to_string();
+
+        assert!(result_str.contains("async fn list_resources"));
+        assert!(result_str.contains("self . docs (context , cursor) . await"));
+        assert!(result_str.contains("async fn read_resource"));
+        assert!(result_str.contains("self . doc (context , uri) . await"));
+        assert!(result_str.contains("async fn list_resource_templates"));
+        assert!(result_str.contains("self . doc_templates (context , cursor) . await"));
+        assert!(result_str.contains("async fn on_shutdown"));
+        assert!(result_str.contains("self . shutdown () . await"));
+        assert!(result_str.contains("with_resources"));
+        assert!(!result_str.contains("with_tools"));
+    }
+
+    #[test]
     fn test_full_macro_expansion_flat_args() {
         let input = quote! {
             impl TestServer {
@@ -2680,7 +3132,27 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("No tool methods found")
+                .contains("No tool methods or resource callbacks found")
+        );
+    }
+
+    #[test]
+    fn test_missing_resource_callback_error() {
+        let input = quote! {
+            impl TestServer {
+                async fn helper(&self) -> Result<()> {
+                    Ok(())
+                }
+            }
+        };
+
+        let result = inner_mcp_server(quote! { resources_fn = docs }, &input);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("resources_fn function 'docs' not found")
         );
     }
 

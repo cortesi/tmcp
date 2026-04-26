@@ -28,10 +28,13 @@
 //!
 //! ### The `#[mcp_server]` Macro
 //!
-//! Best for simple servers that primarily expose tools. The macro automatically:
+//! Best for servers that primarily expose derived tools and optionally forward resource handling to
+//! dynamic methods. The macro automatically:
 //! - Generates [`ServerHandler`] trait implementation
 //! - Derives tool schemas from function signatures using `schemars`
 //! - Registers tools in `list_tools` and routes calls in `call_tool`
+//! - Forwards resource protocol methods configured with `resources_fn`, `read_resource_fn`, or
+//!   `resource_templates_fn`
 //! - Provides sensible defaults for `initialize`
 //!
 //! ```ignore
@@ -61,7 +64,7 @@
 //! Use the trait directly when you need:
 //! - **Custom initialization**: Validate clients, negotiate capabilities, or reject connections
 //! - **Per-connection state**: Access to `ServerCtx` in all methods for client-specific data
-//! - **Resources and prompts**: Full access to MCP features beyond tools
+//! - **Prompts or uncommon protocol hooks**: Full access to MCP features beyond tools and resources
 //! - **Fine-grained error handling**: Custom error responses and logging
 //!
 //! ```ignore

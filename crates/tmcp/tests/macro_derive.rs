@@ -281,4 +281,113 @@ mod tests {
             _ => panic!("Expected text content"),
         }
     }
+
+    #[derive(Debug)]
+    struct DynamicResourceServer {
+        docs: HashMap<String, String>,
+    }
+
+    impl Default for DynamicResourceServer {
+        fn default() -> Self {
+            Self {
+                docs: HashMap::from([(
+                    "tmcp://api/echo.d.luau".to_string(),
+                    "declare function echo(message: string): string".to_string(),
+                )]),
+            }
+        }
+    }
+
+    #[mcp_server(
+        resources_fn = list_docs,
+        read_resource_fn = read_doc,
+        resource_templates_fn = list_doc_templates
+    )]
+    /// Server with dynamic resources only
+    impl DynamicResourceServer {
+        async fn list_docs(
+            &self,
+            _ctx: &ServerCtx,
+            _cursor: Option<Cursor>,
+        ) -> Result<ListResourcesResult> {
+            Ok(
+                ListResourcesResult::new().with_resources(self.docs.keys().map(|uri| {
+                    Resource::new("Luau API", uri).with_mime_type("application/luau-definitions")
+                })),
+            )
+        }
+
+        async fn read_doc(&self, _ctx: &ServerCtx, uri: String) -> Result<ReadResourceResult> {
+            let Some(source) = self.docs.get(&uri) else {
+                return Err(Error::ResourceNotFound { uri });
+            };
+
+            Ok(
+                ReadResourceResult::new().with_content(ResourceContents::Text(
+                    TextResourceContents::new(uri, source.clone())
+                        .with_mime_type("application/luau-definitions"),
+                )),
+            )
+        }
+
+        async fn list_doc_templates(
+            &self,
+            _ctx: &ServerCtx,
+            _cursor: Option<Cursor>,
+        ) -> Result<ListResourceTemplatesResult> {
+            Ok(ListResourceTemplatesResult::new().with_resource_template(
+                ResourceTemplate::new("Luau API", "tmcp://api/{tool}.d.luau")
+                    .with_mime_type("application/luau-definitions"),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_resource_callbacks() {
+        let server = DynamicResourceServer::default();
+        let ctx = TestServerContext::new();
+
+        let init = server
+            .initialize(
+                ctx.ctx(),
+                "1.0.0".to_string(),
+                ClientCapabilities::default(),
+                Implementation::new("test-client", "1.0.0"),
+            )
+            .await
+            .unwrap();
+
+        assert!(init.capabilities.tools.is_none());
+        let resources_cap = init.capabilities.resources.unwrap();
+        assert_eq!(resources_cap.subscribe, Some(false));
+        assert_eq!(resources_cap.list_changed, Some(true));
+
+        let resources = server.list_resources(ctx.ctx(), None).await.unwrap();
+        assert_eq!(resources.resources.len(), 1);
+        assert_eq!(resources.resources[0].uri, "tmcp://api/echo.d.luau");
+
+        let templates = server
+            .list_resource_templates(ctx.ctx(), None)
+            .await
+            .unwrap();
+        assert_eq!(templates.resource_templates.len(), 1);
+        assert_eq!(
+            templates.resource_templates[0].uri_template,
+            "tmcp://api/{tool}.d.luau"
+        );
+
+        let doc = server
+            .read_resource(ctx.ctx(), "tmcp://api/echo.d.luau".to_string())
+            .await
+            .unwrap();
+        match &doc.contents[0] {
+            ResourceContents::Text(text) => {
+                assert_eq!(text.text, "declare function echo(message: string): string");
+            }
+            _ => panic!("Expected text resource"),
+        }
+
+        let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
+        assert!(tools.tools.is_empty());
+    }
 }

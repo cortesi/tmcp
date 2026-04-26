@@ -12,7 +12,7 @@
 //!   curl -X POST http://127.0.0.1:8080/mcp                    # → 401
 //!   curl http://127.0.0.1:8080/.well-known/oauth-protected-resource/mcp  # → metadata
 
-use std::sync::Arc;
+use std::{result::Result as StdResult, sync::Arc};
 
 use async_trait::async_trait;
 use tmcp::{
@@ -23,6 +23,7 @@ use tmcp::{
         ListToolsResult, ServerCapabilities, TaskMetadata, Tool, ToolSchema,
     },
 };
+use tracing_subscriber::fmt;
 
 /// Application-specific token validator.
 ///
@@ -31,7 +32,7 @@ struct AppTokenValidator;
 
 #[async_trait]
 impl TokenValidator for AppTokenValidator {
-    async fn validate(&self, token: &str) -> std::result::Result<AuthInfo, AuthError> {
+    async fn validate(&self, token: &str) -> StdResult<AuthInfo, AuthError> {
         if token == "demo-admin-token" {
             Ok(AuthInfo {
                 subject: "admin@example.com".to_string(),
@@ -99,7 +100,7 @@ impl ServerHandler for AppMcpServer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    fmt::init();
 
     let validator: Arc<dyn TokenValidator> = Arc::new(AppTokenValidator);
 

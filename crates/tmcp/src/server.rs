@@ -766,12 +766,18 @@ fn spawn_request_handler(
     let tx = response_tx;
 
     tokio::spawn(async move {
-        let response_message = handle_request(&**conn, request.clone(), &ctx).await;
-        tracing::info!("Server sending response: {:?}", response_message);
-
-        if let Err(e) = tx.send(response_message).await {
-            error!("Failed to queue response: {}", e);
+        let request_id = request.id.clone();
+        let response_message = handle_request(&**conn, request, &ctx).await;
+        let is_cancelled = ctx.is_request_cancelled(&request_id);
+        if is_cancelled {
+            tracing::info!("Server suppressing response for cancelled request: {request_id:?}");
+        } else {
+            tracing::info!("Server sending response: {:?}", response_message);
+            if let Err(e) = tx.send(response_message).await {
+                error!("Failed to queue response: {}", e);
+            }
         }
+        ctx.clear_cancelled(&request_id);
         in_flight_requests.fetch_sub(1, Ordering::SeqCst);
     });
 }
@@ -1021,7 +1027,18 @@ async fn handle_notification(
     let value = serde_json::Value::Object(object);
 
     match serde_json::from_value::<ClientNotification>(value) {
-        Ok(typed) => connection.notification(context, typed).await,
+        Ok(typed) => {
+            if let ClientNotification::Cancelled {
+                request_id,
+                reason: _,
+                _meta: _,
+            } = &typed
+                && let Some(request_id) = request_id.clone()
+            {
+                context.mark_cancelled(&request_id);
+            }
+            connection.notification(context, typed).await
+        }
         Err(e) => {
             warn!("Failed to deserialize client notification: {}", e);
             Ok(())
