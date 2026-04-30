@@ -405,4 +405,85 @@ mod tests {
 
         tx.send(()).ok();
     }
+
+    #[tokio::test]
+    async fn test_reactive_refresh_skips_when_another_task_refreshed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::{Json, Router, extract::State, routing::post};
+        use tokio::{net::TcpListener, sync::oneshot};
+
+        #[derive(Clone)]
+        struct Ctx {
+            counter: Arc<AtomicUsize>,
+        }
+
+        async fn token_handler(State(ctx): State<Ctx>) -> Json<serde_json::Value> {
+            ctx.counter.fetch_add(1, Ordering::SeqCst);
+            Json(serde_json::json!({
+                "access_token": "refreshed_access_token",
+                "token_type": "Bearer",
+                "refresh_token": "new_refresh_token",
+                "expires_in": 3600
+            }))
+        }
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let router = Router::new().route(
+            "/token",
+            post(token_handler).with_state(Ctx {
+                counter: counter.clone(),
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    rx.await.ok();
+                })
+                .await
+                .unwrap();
+        });
+
+        let config = OAuth2Config {
+            client_id: "client".to_string(),
+            client_secret: Some("secret".to_string()),
+            auth_url: format!("http://{addr}/auth"),
+            token_url: format!("http://{addr}/token"),
+            redirect_url: "http://localhost:1/callback".to_string(),
+            resource: "http://resource".to_string(),
+            scopes: vec![],
+        };
+
+        let oauth_client = OAuth2Client::new(config).unwrap();
+        oauth_client
+            .set_token(OAuth2Token {
+                access_token: "new_access_token".to_string(),
+                refresh_token: Some("rt".to_string()),
+                expires_in: Some(Duration::from_secs(3600)),
+                expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+            })
+            .await;
+
+        let token = oauth_client
+            .refresh_access_token_if_current("old_access_token")
+            .await
+            .unwrap();
+
+        assert_eq!(token, "new_access_token");
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        let token = oauth_client
+            .refresh_access_token_if_current("new_access_token")
+            .await
+            .unwrap();
+
+        assert_eq!(token, "refreshed_access_token");
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        tx.send(()).ok();
+    }
 }

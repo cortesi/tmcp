@@ -323,6 +323,27 @@ impl OAuth2Client {
             ))
         }
     }
+
+    /// Refresh the access token if the cached token still matches the caller's token.
+    pub async fn refresh_access_token_if_current(
+        &self,
+        current_access_token: &str,
+    ) -> Result<String, Error> {
+        let _refresh_guard = self.refresh_lock.lock().await;
+        let token = self.token.read().await.clone().ok_or_else(|| {
+            Error::AuthorizationFailed("No token available for refresh".to_string())
+        })?;
+
+        if token.access_token != current_access_token {
+            return Ok(token.access_token);
+        }
+
+        let refresh_token = token
+            .refresh_token
+            .ok_or_else(|| Error::AuthorizationFailed("No refresh token available".to_string()))?;
+        self.refresh_token_inner(&refresh_token).await
+    }
+
     /// Refresh the access token using a refresh token.
     async fn refresh_token_inner(&self, refresh_token: &str) -> Result<String, Error> {
         let refresh_token_obj = RefreshToken::new(refresh_token.to_string());

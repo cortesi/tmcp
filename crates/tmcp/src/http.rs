@@ -489,11 +489,7 @@ impl HttpClientTransport {
         // Add OAuth authorization header if available
         if let Some(oauth_client) = &context.oauth_client {
             let token = oauth_client.get_valid_token().await?;
-            headers.insert(
-                header::AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {token}"))
-                    .map_err(|_| Error::Transport("Invalid authorization token".into()))?,
-            );
+            headers.insert(header::AUTHORIZATION, bearer_header(&token)?);
         }
 
         let response = context
@@ -674,50 +670,61 @@ impl Transport for HttpClientTransport {
             while let Some(msg) = http_rx.next().await {
                 debug!("HTTP client sending message: {:?}", msg);
 
-                let mut headers = static_headers.clone();
-                headers.insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json"),
-                );
-                headers.insert(
-                    header::ACCEPT,
-                    HeaderValue::from_static("application/json, text/event-stream"),
-                );
-                headers.insert(
-                    "MCP-Protocol-Version",
-                    HeaderValue::from_static(LATEST_PROTOCOL_VERSION),
-                );
+                // Check if this is an initialize request to capture session ID
+                let is_initialize = matches!(&msg, JSONRPCMessage::Request(req) if req.request.method == "initialize");
 
-                if let Some(ref sid) = *session_id.lock().await {
-                    headers.insert("Mcp-Session-Id", HeaderValue::from_str(sid).unwrap());
-                }
+                let request = match outbound_post_request(
+                    &static_headers,
+                    &session_id,
+                    oauth_client.as_ref(),
+                )
+                .await
+                {
+                    Ok(request) => request,
+                    Err(error) => {
+                        error!("Failed to prepare HTTP request headers: {}", error);
+                        continue;
+                    }
+                };
+                let mut response_result =
+                    send_http_message(&client, &endpoint, request.headers, &msg).await;
 
-                // Add OAuth authorization header if available
-                if let Some(oauth_client) = &oauth_client {
-                    match oauth_client.get_valid_token().await {
-                        Ok(token) => {
-                            headers.insert(
-                                header::AUTHORIZATION,
-                                HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-                            );
+                if matches!(&response_result, Ok(response) if response.status() == StatusCode::UNAUTHORIZED)
+                    && let (Some(oauth), Some(sent_token)) =
+                        (oauth_client.as_ref(), request.access_token.as_deref())
+                {
+                    match oauth.refresh_access_token_if_current(sent_token).await {
+                        Ok(_) => {
+                            match outbound_post_request(&static_headers, &session_id, Some(oauth))
+                                .await
+                            {
+                                Ok(request) => {
+                                    response_result = send_http_message(
+                                        &client,
+                                        &endpoint,
+                                        request.headers,
+                                        &msg,
+                                    )
+                                    .await;
+                                }
+                                Err(error) => {
+                                    error!(
+                                        "Failed to prepare retried HTTP request headers: {}",
+                                        error
+                                    );
+                                }
+                            }
                         }
-                        Err(e) => {
-                            error!("Failed to get OAuth token: {}", e);
-                            continue;
+                        Err(error) => {
+                            error!(
+                                "OAuth token refresh failed after HTTP 401; re-authentication required: {}",
+                                error
+                            );
                         }
                     }
                 }
 
-                // Check if this is an initialize request to capture session ID
-                let is_initialize = matches!(&msg, JSONRPCMessage::Request(req) if req.request.method == "initialize");
-
-                match client
-                    .post(&endpoint)
-                    .headers(headers)
-                    .json(&msg)
-                    .send()
-                    .await
-                {
+                match response_result {
                     Ok(response) => {
                         debug!("HTTP response status: {}", response.status());
                         update_session_id(is_initialize, response.headers(), &session_id).await;
@@ -752,6 +759,76 @@ impl Transport for HttpClientTransport {
     fn remote_addr(&self) -> String {
         self.endpoint.clone()
     }
+}
+
+/// HTTP POST request data for one outbound JSON-RPC message.
+struct OutboundPostRequest {
+    /// Headers attached to the request.
+    headers: HeaderMap,
+    /// Access token attached to the request, if OAuth is configured.
+    access_token: Option<String>,
+}
+
+/// Builds HTTP POST request data for one outbound JSON-RPC message.
+async fn outbound_post_request(
+    static_headers: &HeaderMap,
+    session_id: &Arc<Mutex<Option<String>>>,
+    oauth_client: Option<&Arc<OAuth2Client>>,
+) -> Result<OutboundPostRequest> {
+    let mut headers = static_headers.clone();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        header::ACCEPT,
+        HeaderValue::from_static("application/json, text/event-stream"),
+    );
+    headers.insert(
+        "MCP-Protocol-Version",
+        HeaderValue::from_static(LATEST_PROTOCOL_VERSION),
+    );
+
+    if let Some(ref sid) = *session_id.lock().await {
+        headers.insert(
+            "Mcp-Session-Id",
+            HeaderValue::from_str(sid)
+                .map_err(|_| Error::Transport("Invalid session ID".into()))?,
+        );
+    }
+
+    let mut access_token = None;
+    if let Some(oauth_client) = oauth_client {
+        let token = oauth_client.get_valid_token().await?;
+        headers.insert(header::AUTHORIZATION, bearer_header(&token)?);
+        access_token = Some(token);
+    }
+
+    Ok(OutboundPostRequest {
+        headers,
+        access_token,
+    })
+}
+
+/// Builds an authorization header without exposing token material through logs.
+fn bearer_header(token: &str) -> Result<HeaderValue> {
+    HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| Error::Transport("Invalid authorization token".into()))
+}
+
+/// Sends one outbound JSON-RPC message over HTTP.
+async fn send_http_message(
+    client: &HttpClient,
+    endpoint: &str,
+    headers: HeaderMap,
+    msg: &JSONRPCMessage,
+) -> reqwest::Result<reqwest::Response> {
+    client
+        .post(endpoint)
+        .headers(headers)
+        .json(msg)
+        .send()
+        .await
 }
 
 impl HttpServerTransport {
