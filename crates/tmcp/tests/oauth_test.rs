@@ -203,6 +203,7 @@ mod tests {
         let token = OAuth2Token {
             access_token: "test_access_token".to_string(),
             refresh_token: Some("test_refresh_token".to_string()),
+            expires_in: Some(Duration::from_secs(3600)),
             expires_at: Some(Instant::now() + Duration::from_secs(3600)),
         };
         oauth_client.set_token(token).await;
@@ -310,6 +311,7 @@ mod tests {
         let token = OAuth2Token {
             access_token: "expired_token".to_string(),
             refresh_token: Some("refresh_token".to_string()),
+            expires_in: Some(Duration::from_secs(3600)),
             expires_at: Some(Instant::now() - Duration::from_secs(1)), // Already expired
         };
         oauth_client.set_token(token).await;
@@ -381,6 +383,7 @@ mod tests {
             .set_token(OAuth2Token {
                 access_token: "expired".to_string(),
                 refresh_token: Some("rt".to_string()),
+                expires_in: Some(Duration::from_secs(3600)),
                 expires_at: Some(Instant::now() - Duration::from_secs(1)),
             })
             .await;

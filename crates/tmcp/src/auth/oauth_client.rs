@@ -1,4 +1,9 @@
-use std::{future::Future, str, sync::Arc, time::Instant};
+use std::{
+    future::Future,
+    str,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet,
@@ -46,6 +51,8 @@ pub struct OAuth2Token {
     pub access_token: String,
     /// Optional refresh token value.
     pub refresh_token: Option<String>,
+    /// Optional token lifetime.
+    pub expires_in: Option<Duration>,
     /// Optional expiration instant.
     pub expires_at: Option<Instant>,
 }
@@ -266,12 +273,12 @@ impl OAuth2Client {
                 Error::AuthorizationFailed(format!("Token exchange failed: {e}"))
             })?;
 
+        let expires_in = token_result.expires_in();
         let oauth_token = OAuth2Token {
             access_token: token_result.access_token().secret().clone(),
             refresh_token: token_result.refresh_token().map(|t| t.secret().clone()),
-            expires_at: token_result
-                .expires_in()
-                .map(|duration| Instant::now() + duration),
+            expires_in,
+            expires_at: expires_in.map(|duration| Instant::now() + duration),
         };
 
         *self.token.write().await = Some(oauth_token.clone());
@@ -328,12 +335,12 @@ impl OAuth2Client {
             .await
             .map_err(|e| Error::AuthorizationFailed(format!("Token refresh failed: {e}")))?;
 
+        let expires_in = token_result.expires_in();
         let oauth_token = OAuth2Token {
             access_token: token_result.access_token().secret().clone(),
             refresh_token: token_result.refresh_token().map(|t| t.secret().clone()),
-            expires_at: token_result
-                .expires_in()
-                .map(|duration| Instant::now() + duration),
+            expires_in,
+            expires_at: expires_in.map(|duration| Instant::now() + duration),
         };
 
         let access_token = oauth_token.access_token.clone();
