@@ -52,6 +52,9 @@ pub struct AuthorizationServerMetadata {
     /// Token endpoint URL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_endpoint: Option<String>,
+    /// Revocation endpoint URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revocation_endpoint: Option<String>,
     /// Dynamic client registration endpoint URL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registration_endpoint: Option<String>,
