@@ -452,7 +452,7 @@ impl HttpClientTransport {
 
     /// Attach static headers to every POST and SSE request.
     pub fn with_static_headers(mut self, headers: HeaderMap) -> Self {
-        self.static_headers = headers;
+        self.static_headers = sensitive_header_map(headers);
         self
     }
 
@@ -812,8 +812,18 @@ async fn outbound_post_request(
 
 /// Builds an authorization header without exposing token material through logs.
 fn bearer_header(token: &str) -> Result<HeaderValue> {
-    HeaderValue::from_str(&format!("Bearer {token}"))
-        .map_err(|_| Error::Transport("Invalid authorization token".into()))
+    let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| Error::Transport("Invalid authorization token".into()))?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
+/// Marks caller-supplied static headers as sensitive before attaching them.
+fn sensitive_header_map(mut headers: HeaderMap) -> HeaderMap {
+    for value in headers.values_mut() {
+        value.set_sensitive(true);
+    }
+    headers
 }
 
 /// Sends one outbound JSON-RPC message over HTTP.
@@ -1554,6 +1564,26 @@ mod tests {
             transport.static_headers.get("X-Verber-Auth"),
             Some(&HeaderValue::from_static("secret"))
         );
+    }
+
+    #[test]
+    fn test_http_client_transport_static_headers_are_debug_redacted() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Verber-Auth", HeaderValue::from_static("secret"));
+
+        let transport =
+            HttpClientTransport::new("http://localhost:8080").with_static_headers(headers);
+        let debug = format!("{:?}", transport.static_headers);
+
+        assert!(!debug.contains("secret"));
+    }
+
+    #[test]
+    fn bearer_header_debug_redacts_token() {
+        let header = bearer_header("secret-token").unwrap();
+        let debug = format!("{header:?}");
+
+        assert!(!debug.contains("secret-token"));
     }
 
     #[tokio::test]

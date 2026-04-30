@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 use super::discovery::AuthorizationDiscoveryClient;
@@ -197,7 +198,7 @@ impl DynamicRegistrationClient {
 
         // Add authorization header if provided (for protected registration endpoints)
         if let Some(token) = access_token {
-            request = request.header("Authorization", format!("Bearer {token}"));
+            request = request.header(AUTHORIZATION, bearer_header(token)?);
         }
 
         let response = request
@@ -244,6 +245,14 @@ impl DynamicRegistrationClient {
             .await?;
         Ok(metadata.registration_endpoint)
     }
+}
+
+/// Builds an authorization header without exposing token material through logs.
+fn bearer_header(token: &str) -> Result<HeaderValue, Error> {
+    let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| Error::Transport("Invalid authorization token".into()))?;
+    value.set_sensitive(true);
+    Ok(value)
 }
 
 use super::oauth_client::OAuth2Config;
@@ -311,5 +320,13 @@ mod tests {
         assert!(json.contains("\"client_name\":\"Test Client\""));
         assert!(json.contains("\"redirect_uris\":[\"http://localhost:8080/callback\"]"));
         assert!(json.contains("\"grant_types\":[\"authorization_code\"]"));
+    }
+
+    #[test]
+    fn bearer_header_debug_redacts_token() {
+        let header = bearer_header("secret-token").unwrap();
+        let debug = format!("{header:?}");
+
+        assert!(!debug.contains("secret-token"));
     }
 }
