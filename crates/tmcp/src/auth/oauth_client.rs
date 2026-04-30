@@ -91,40 +91,34 @@ impl OAuth2Client {
         scopes: Vec<String>,
         registration_endpoint: Option<String>,
     ) -> Result<Self, Error> {
-        let registration_client = DynamicRegistrationClient::default();
-
-        // Try to discover registration endpoint if not provided
-        let reg_endpoint = if let Some(endpoint) = registration_endpoint {
-            endpoint
-        } else {
-            // Extract issuer from auth URL
-            let auth_url_parsed = Url::parse(&auth_url)
-                .map_err(|e| Error::InvalidConfiguration(format!("Invalid auth URL: {e}")))?;
-            let issuer = format!(
-                "{}://{}",
-                auth_url_parsed.scheme(),
-                auth_url_parsed.host_str().unwrap_or("")
-            );
-
-            // Try to discover registration endpoint
-            match registration_client
-                .discover_registration_endpoint(&issuer)
-                .await?
-            {
-                Some(endpoint) => endpoint,
-                None => {
-                    return Err(Error::InvalidConfiguration(
-                        "No registration endpoint found in OAuth metadata".to_string(),
-                    ));
-                }
-            }
-        };
-
         // Create client metadata
         let metadata = ClientMetadata::new(&client_name, &redirect_url)
             .with_resource(&resource)
             .with_scopes(&scopes)
             .with_software_info("tmcp", env!("CARGO_PKG_VERSION"));
+
+        Self::register_dynamic_with_metadata(
+            auth_url,
+            token_url,
+            resource,
+            metadata,
+            registration_endpoint,
+        )
+        .await
+    }
+
+    /// Perform dynamic client registration with caller-supplied client metadata.
+    pub async fn register_dynamic_with_metadata(
+        auth_url: String,
+        token_url: String,
+        resource: String,
+        metadata: ClientMetadata,
+        registration_endpoint: Option<String>,
+    ) -> Result<Self, Error> {
+        let registration_client = DynamicRegistrationClient::default();
+        let reg_endpoint =
+            Self::registration_endpoint(&registration_client, &auth_url, registration_endpoint)
+                .await?;
 
         // Register the client
         let registration = registration_client
@@ -136,6 +130,34 @@ impl OAuth2Client {
 
         // Create the OAuth2Client
         Self::new(config)
+    }
+
+    /// Resolve a dynamic registration endpoint from explicit input or discovery.
+    async fn registration_endpoint(
+        registration_client: &DynamicRegistrationClient,
+        auth_url: &str,
+        registration_endpoint: Option<String>,
+    ) -> Result<String, Error> {
+        if let Some(endpoint) = registration_endpoint {
+            return Ok(endpoint);
+        }
+
+        let auth_url_parsed = Url::parse(auth_url)
+            .map_err(|e| Error::InvalidConfiguration(format!("Invalid auth URL: {e}")))?;
+        let issuer = format!(
+            "{}://{}",
+            auth_url_parsed.scheme(),
+            auth_url_parsed.host_str().unwrap_or("")
+        );
+
+        registration_client
+            .discover_registration_endpoint(&issuer)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidConfiguration(
+                    "No registration endpoint found in OAuth metadata".to_string(),
+                )
+            })
     }
 
     /// Create a new OAuth2 client from configuration.

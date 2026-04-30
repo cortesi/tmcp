@@ -156,6 +156,8 @@ pub struct HttpClientTransport {
     session_id: Arc<Mutex<Option<String>>>,
     /// Last observed SSE event id.
     last_event_id: Arc<Mutex<Option<String>>>,
+    /// Headers attached to every HTTP request.
+    static_headers: HeaderMap,
     /// Sender half for outbound JSON-RPC messages.
     sender: Option<mpsc::UnboundedSender<JSONRPCMessage>>,
     /// Receiver half for inbound JSON-RPC messages.
@@ -433,6 +435,7 @@ impl HttpClientTransport {
                 .expect("Failed to create HTTP client"),
             session_id: Arc::new(Mutex::new(None)),
             last_event_id: Arc::new(Mutex::new(None)),
+            static_headers: HeaderMap::new(),
             sender: None,
             receiver: None,
             sse_state: Arc::new(HttpSseState::new()),
@@ -447,21 +450,19 @@ impl HttpClientTransport {
         self
     }
 
+    /// Attach static headers to every POST and SSE request.
+    pub fn with_static_headers(mut self, headers: HeaderMap) -> Self {
+        self.static_headers = headers;
+        self
+    }
+
     /// Connect to SSE stream for receiving server messages
-    async fn connect_sse(
-        client: HttpClient,
-        endpoint: String,
-        session_id: Arc<Mutex<Option<String>>>,
-        last_event_id: Arc<Mutex<Option<String>>>,
-        sender: mpsc::UnboundedSender<JSONRPCMessage>,
-        oauth_client: Option<Arc<OAuth2Client>>,
-        shutdown: CancellationToken,
-    ) -> Result<SseOutcome> {
-        let Some(session_id_value) = session_id.lock().await.clone() else {
+    async fn connect_sse(context: SseConnectContext) -> Result<SseOutcome> {
+        let Some(session_id_value) = context.session_id.lock().await.clone() else {
             return Ok(SseOutcome::NoSession);
         };
 
-        let mut headers = HeaderMap::new();
+        let mut headers = context.static_headers;
         headers.insert(
             header::ACCEPT,
             HeaderValue::from_static("text/event-stream"),
@@ -477,7 +478,7 @@ impl HttpClientTransport {
                 .map_err(|_| Error::Transport("Invalid session ID".into()))?,
         );
 
-        if let Some(last_event_id_value) = last_event_id.lock().await.clone() {
+        if let Some(last_event_id_value) = context.last_event_id.lock().await.clone() {
             headers.insert(
                 "Last-Event-ID",
                 HeaderValue::from_str(&last_event_id_value)
@@ -486,7 +487,7 @@ impl HttpClientTransport {
         }
 
         // Add OAuth authorization header if available
-        if let Some(oauth_client) = &oauth_client {
+        if let Some(oauth_client) = &context.oauth_client {
             let token = oauth_client.get_valid_token().await?;
             headers.insert(
                 header::AUTHORIZATION,
@@ -495,8 +496,9 @@ impl HttpClientTransport {
             );
         }
 
-        let response = client
-            .get(&endpoint)
+        let response = context
+            .client
+            .get(&context.endpoint)
             .headers(headers)
             .send()
             .await
@@ -518,18 +520,18 @@ impl HttpClientTransport {
         futures::pin_mut!(stream);
         loop {
             tokio::select! {
-                _ = shutdown.cancelled() => break,
+                _ = context.shutdown.cancelled() => break,
                 event = stream.next() => {
                     match event {
                         Some(Ok(event)) => {
                             let event_id = event.id;
                             if !event_id.is_empty() {
-                                let mut guard = last_event_id.lock().await;
+                                let mut guard = context.last_event_id.lock().await;
                                 *guard = Some(event_id);
                             }
                             let data = event.data;
                             if let Ok(msg) = serde_json::from_str::<JSONRPCMessage>(&data)
-                                && sender.unbounded_send(msg).is_err()
+                                && context.sender.unbounded_send(msg).is_err()
                             {
                                 break;
                             }
@@ -548,6 +550,26 @@ impl HttpClientTransport {
     }
 }
 
+/// Context required for one SSE connection attempt.
+struct SseConnectContext {
+    /// HTTP client used for SSE connection.
+    client: HttpClient,
+    /// Endpoint URL for the SSE stream.
+    endpoint: String,
+    /// Session id for streamable HTTP.
+    session_id: Arc<Mutex<Option<String>>>,
+    /// Most recent SSE event id observed.
+    last_event_id: Arc<Mutex<Option<String>>>,
+    /// Headers attached to the SSE request.
+    static_headers: HeaderMap,
+    /// Sender for forwarding JSON-RPC messages.
+    sender: mpsc::UnboundedSender<JSONRPCMessage>,
+    /// OAuth client for auth headers, if configured.
+    oauth_client: Option<Arc<OAuth2Client>>,
+    /// Cancellation token to stop SSE processing.
+    shutdown: CancellationToken,
+}
+
 /// Context required to start or restart an SSE stream.
 struct SseStartContext {
     /// HTTP client used for SSE connection.
@@ -558,6 +580,8 @@ struct SseStartContext {
     session_id: Arc<Mutex<Option<String>>>,
     /// Most recent SSE event id observed.
     last_event_id: Arc<Mutex<Option<String>>>,
+    /// Headers attached to every SSE request.
+    static_headers: HeaderMap,
     /// Sender for forwarding JSON-RPC messages.
     sender: mpsc::UnboundedSender<JSONRPCMessage>,
     /// OAuth client for auth headers, if configured.
@@ -579,15 +603,16 @@ fn maybe_start_sse(context: SseStartContext) {
     }
 
     tokio::spawn(async move {
-        let outcome = HttpClientTransport::connect_sse(
-            context.client,
-            context.endpoint,
-            context.session_id,
-            context.last_event_id,
-            context.sender,
-            context.oauth_client,
-            context.shutdown,
-        )
+        let outcome = HttpClientTransport::connect_sse(SseConnectContext {
+            client: context.client,
+            endpoint: context.endpoint,
+            session_id: context.session_id,
+            last_event_id: context.last_event_id,
+            static_headers: context.static_headers,
+            sender: context.sender,
+            oauth_client: context.oauth_client,
+            shutdown: context.shutdown,
+        })
         .await;
 
         match outcome {
@@ -637,6 +662,7 @@ impl Transport for HttpClientTransport {
         let client = self.client.clone();
         let session_id = self.session_id.clone();
         let last_event_id = self.last_event_id.clone();
+        let static_headers = self.static_headers.clone();
         let oauth_client = self.oauth_client.clone();
         let sse_state = self.sse_state.clone();
         let sse_shutdown = self.sse_shutdown.clone();
@@ -648,7 +674,7 @@ impl Transport for HttpClientTransport {
             while let Some(msg) = http_rx.next().await {
                 debug!("HTTP client sending message: {:?}", msg);
 
-                let mut headers = HeaderMap::new();
+                let mut headers = static_headers.clone();
                 headers.insert(
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("application/json"),
@@ -701,6 +727,7 @@ impl Transport for HttpClientTransport {
                             endpoint: endpoint.clone(),
                             session_id: session_id.clone(),
                             last_event_id: last_event_id.clone(),
+                            static_headers: static_headers.clone(),
                             sender: sender_clone.clone(),
                             oauth_client: oauth_client.clone(),
                             sse_state: sse_state.clone(),
@@ -1436,6 +1463,20 @@ mod tests {
     async fn test_http_client_transport_creation() {
         let transport = HttpClientTransport::new("http://localhost:8080");
         assert_eq!(transport.endpoint, "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_http_client_transport_static_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Verber-Auth", HeaderValue::from_static("secret"));
+
+        let transport =
+            HttpClientTransport::new("http://localhost:8080").with_static_headers(headers);
+
+        assert_eq!(
+            transport.static_headers.get("X-Verber-Auth"),
+            Some(&HeaderValue::from_static("secret"))
+        );
     }
 
     #[tokio::test]

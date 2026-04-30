@@ -2,9 +2,14 @@
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Instant};
+    use std::{
+        sync::{Arc, Mutex as StdMutex},
+        time::Instant,
+    };
 
-    use tmcp::auth::{OAuth2CallbackServer, OAuth2Client, OAuth2Config, OAuth2Token};
+    use tmcp::auth::{
+        ClientMetadata, OAuth2CallbackServer, OAuth2Client, OAuth2Config, OAuth2Token,
+    };
     use tokio::{
         net::TcpStream,
         task::yield_now,
@@ -177,6 +182,81 @@ mod tests {
 
         // The actual HTTP transport integration is tested in the examples
         // This test focuses on the OAuth client functionality
+    }
+
+    #[tokio::test]
+    async fn test_register_dynamic_with_caller_metadata() {
+        use axum::{Json, Router, extract::State, routing::post};
+        use serde_json::Value;
+        use tokio::{net::TcpListener, sync::oneshot};
+
+        #[derive(Clone)]
+        struct Ctx {
+            captured: Arc<StdMutex<Option<Value>>>,
+        }
+
+        async fn registration_handler(
+            State(ctx): State<Ctx>,
+            Json(body): Json<Value>,
+        ) -> Json<Value> {
+            *ctx.captured.lock().expect("captured registration body") = Some(body.clone());
+
+            let mut response = body.as_object().cloned().unwrap_or_default();
+            response.insert(
+                "client_id".to_string(),
+                Value::String("registered".to_string()),
+            );
+            Json(Value::Object(response))
+        }
+
+        let captured = Arc::new(StdMutex::new(None));
+        let router = Router::new()
+            .route("/register", post(registration_handler))
+            .with_state(Ctx {
+                captured: captured.clone(),
+            });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    rx.await.ok();
+                })
+                .await
+                .unwrap();
+        });
+
+        let mut metadata = ClientMetadata::new("Custom", "http://localhost/callback")
+            .with_resource("http://resource")
+            .with_token_endpoint_auth_method("none");
+        metadata.additional.insert(
+            "software_statement".to_string(),
+            Value::String("signed-statement".to_string()),
+        );
+
+        let oauth_client = OAuth2Client::register_dynamic_with_metadata(
+            format!("http://{addr}/authorize"),
+            format!("http://{addr}/token"),
+            "http://resource".to_string(),
+            metadata,
+            Some(format!("http://{addr}/register")),
+        )
+        .await
+        .unwrap();
+
+        let registered = captured
+            .lock()
+            .expect("captured registration body")
+            .take()
+            .unwrap();
+        assert_eq!(registered["client_name"], "Custom");
+        assert_eq!(registered["software_statement"], "signed-statement");
+        assert_eq!(registered["token_endpoint_auth_method"], "none");
+
+        drop(oauth_client);
+        tx.send(()).ok();
     }
 
     #[tokio::test]

@@ -5,11 +5,14 @@
 
 use std::{
     collections::HashMap,
+    future::Future,
+    pin::Pin,
     result::Result as StdResult,
     sync::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -44,6 +47,40 @@ pub type TransportSink = Arc<TokioMutex<SplitSink<Box<dyn TransportStream>, JSON
 struct PendingRequest {
     /// Channel to send the response back to the caller.
     response_tx: oneshot::Sender<JSONRPCResponse>,
+}
+
+/// A typed response future for an outbound JSON-RPC request.
+pub struct Pending<Res> {
+    /// Future waiting for and decoding the response.
+    inner: Pin<Box<dyn Future<Output = Result<Res>> + Send + 'static>>,
+    /// Cleanup state for removing the request slot if the future is dropped.
+    cleanup: PendingCleanup,
+}
+
+/// State needed to clean up a dropped pending request.
+struct PendingCleanup {
+    /// Shared handler that owns pending request storage.
+    handler: RequestHandler,
+    /// Request id to remove on drop.
+    id: RequestId,
+}
+
+impl<Res> Future for Pending<Res> {
+    type Output = Result<Res>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.inner.as_mut().poll(cx)
+    }
+}
+
+impl<Res> Drop for Pending<Res> {
+    fn drop(&mut self) {
+        self.cleanup
+            .handler
+            .inner
+            .pending_requests
+            .remove(&self.cleanup.id);
+    }
 }
 
 /// Common request/response handling functionality shared between Client and ServerCtx.
@@ -117,15 +154,36 @@ impl RequestHandler {
     pub async fn request<Req, Res>(&self, request: Req) -> Result<Res>
     where
         Req: serde::Serialize + RequestMethod,
-        Res: DeserializeOwned,
+        Res: DeserializeOwned + Send + 'static,
+    {
+        let (_, pending) = self.request_pending(request).await?;
+        pending.await
+    }
+
+    /// Send a request and return its id plus a typed response future.
+    pub async fn request_pending<Req, Res>(&self, request: Req) -> Result<(RequestId, Pending<Res>)>
+    where
+        Req: serde::Serialize + RequestMethod,
+        Res: DeserializeOwned + Send + 'static,
     {
         let id = self.next_request_id();
+        let method = request.method().to_string();
 
         // Store and send the request
         let response_rx = self.store_and_send_request(id.clone(), &request).await?;
+        let handler = self.clone();
+        let pending_id = id.clone();
+        let cleanup = PendingCleanup {
+            handler: self.clone(),
+            id: id.clone(),
+        };
+        let inner = Box::pin(async move {
+            handler
+                .await_response(pending_id, &method, response_rx)
+                .await
+        });
 
-        // Wait for response with timeout and cancellation
-        self.await_response(id, request.method(), response_rx).await
+        Ok((id, Pending { inner, cleanup }))
     }
 
     /// Store a pending request and send it over the transport.
@@ -386,6 +444,8 @@ pub trait RequestMethod {
 
 #[cfg(test)]
 mod tests {
+    use futures::future::pending;
+
     use super::*;
 
     #[test]
@@ -407,5 +467,29 @@ mod tests {
 
         let num_id = RequestId::Number(123);
         assert_eq!(format!("{num_id}"), "123");
+    }
+
+    #[test]
+    fn test_pending_drop_cleans_request_slot() {
+        let handler = RequestHandler::new(None, "test".to_string());
+        let id = handler.next_request_id();
+        let (response_tx, _response_rx) = oneshot::channel();
+
+        handler
+            .inner
+            .pending_requests
+            .insert(id.clone(), PendingRequest { response_tx });
+
+        let pending: Pending<serde_json::Value> = Pending {
+            inner: Box::pin(pending()),
+            cleanup: PendingCleanup {
+                handler: handler.clone(),
+                id,
+            },
+        };
+
+        assert_eq!(handler.inner.pending_requests.len(), 1);
+        drop(pending);
+        assert!(handler.inner.pending_requests.is_empty());
     }
 }

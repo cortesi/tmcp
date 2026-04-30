@@ -17,7 +17,7 @@ use crate::{
     error::{Error, Result},
     http::HttpClientTransport,
     jsonrpc::{create_jsonrpc_notification, result_to_jsonrpc_response},
-    request_handler::RequestHandler,
+    request_handler::{Pending, RequestHandler},
     schema::*,
     transport::{
         GenericDuplex, StdioTransport, StreamTransport, TcpClientTransport, Transport,
@@ -204,6 +204,17 @@ where
         self.init().await
     }
 
+    /// Connect via HTTP/HTTPS with static headers and initialize the connection.
+    pub async fn connect_http_with_headers(
+        &mut self,
+        endpoint: impl Into<String>,
+        headers: ::http::HeaderMap,
+    ) -> Result<InitializeResult> {
+        let transport = Box::new(HttpClientTransport::new(endpoint).with_static_headers(headers));
+        self.connect(transport).await?;
+        self.init().await
+    }
+
     /// Connect via HTTP/HTTPS with OAuth authentication and initialize the connection
     ///
     /// This method creates an HTTP transport with OAuth authentication support.
@@ -219,6 +230,22 @@ where
         oauth_client: Arc<OAuth2Client>,
     ) -> Result<InitializeResult> {
         let transport = Box::new(HttpClientTransport::new(endpoint).with_oauth(oauth_client));
+        self.connect(transport).await?;
+        self.init().await
+    }
+
+    /// Connect via HTTP/HTTPS with OAuth authentication plus static headers.
+    pub async fn connect_http_with_oauth_and_headers(
+        &mut self,
+        endpoint: impl Into<String>,
+        oauth_client: Arc<OAuth2Client>,
+        headers: ::http::HeaderMap,
+    ) -> Result<InitializeResult> {
+        let transport = Box::new(
+            HttpClientTransport::new(endpoint)
+                .with_static_headers(headers)
+                .with_oauth(oauth_client),
+        );
         self.connect(transport).await?;
         self.init().await
     }
@@ -322,10 +349,25 @@ where
         Ok(child)
     }
 
-    /// Send a request and wait for response
-    async fn request<T>(&self, request: ClientRequest) -> Result<T>
+    /// Send a request and return its id plus a typed response future.
+    pub async fn request<T>(&self, request: ClientRequest) -> Result<(RequestId, Pending<T>)>
     where
-        T: DeserializeOwned,
+        T: DeserializeOwned + Send + 'static,
+    {
+        self.request_handler.request_pending(request).await
+    }
+
+    /// Notify the server that an in-flight request is cancelled.
+    pub async fn cancel(&self, request_id: RequestId) -> Result<()> {
+        let params = serde_json::json!({ "requestId": request_id });
+        self.send_notification("notifications/cancelled", Some(params))
+            .await
+    }
+
+    /// Send a request and wait for response.
+    async fn request_and_wait<T>(&self, request: ClientRequest) -> Result<T>
+    where
+        T: DeserializeOwned + Send + 'static,
     {
         self.request_handler.request(request).await
     }
@@ -487,7 +529,7 @@ where
     ) -> Result<InitializeResult> {
         let request = ClientRequest::initialize(protocol_version, capabilities, client_info);
 
-        let result: InitializeResult = self.request(request).await?;
+        let result: InitializeResult = self.request_and_wait(request).await?;
 
         // Send the initialized notification to complete the handshake
         self.send_notification("notifications/initialized", None)
@@ -500,7 +542,7 @@ where
 
     /// Respond to ping requests
     pub async fn ping(&mut self) -> Result<()> {
-        let _: EmptyResult = self.request(ClientRequest::ping()).await?;
+        let _: EmptyResult = self.request_and_wait(ClientRequest::ping()).await?;
         Ok(())
     }
 
@@ -509,7 +551,8 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListToolsResult> {
-        self.request(ClientRequest::list_tools(cursor.into())).await
+        self.request_and_wait(ClientRequest::list_tools(cursor.into()))
+            .await
     }
 
     /// Call a tool with the given name and arguments.
@@ -541,7 +584,7 @@ where
     ) -> Result<CallToolResult> {
         let args = crate::Arguments::from_struct(arguments)?;
         let request = ClientRequest::call_tool(name, Some(args), None);
-        self.request(request).await
+        self.request_and_wait(request).await
     }
 
     /// Call a tool with arguments and task metadata.
@@ -555,7 +598,7 @@ where
     ) -> Result<CallToolResult> {
         let args = crate::Arguments::from_struct(arguments)?;
         let request = ClientRequest::call_tool(name, Some(args), task);
-        self.request(request).await
+        self.request_and_wait(request).await
     }
 
     /// Call a tool and deserialize the JSON text response into a typed result.
@@ -638,7 +681,7 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListResourcesResult> {
-        self.request(ClientRequest::list_resources(cursor.into()))
+        self.request_and_wait(ClientRequest::list_resources(cursor.into()))
             .await
     }
 
@@ -647,7 +690,7 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListResourceTemplatesResult> {
-        self.request(ClientRequest::list_resource_templates(cursor.into()))
+        self.request_and_wait(ClientRequest::list_resource_templates(cursor.into()))
             .await
     }
 
@@ -656,18 +699,21 @@ where
         &mut self,
         uri: impl Into<String> + Send,
     ) -> Result<ReadResourceResult> {
-        self.request(ClientRequest::read_resource(uri)).await
+        self.request_and_wait(ClientRequest::read_resource(uri))
+            .await
     }
 
     /// Subscribe to resource updates
     pub async fn resources_subscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
-        let _: EmptyResult = self.request(ClientRequest::subscribe(uri)).await?;
+        let _: EmptyResult = self.request_and_wait(ClientRequest::subscribe(uri)).await?;
         Ok(())
     }
 
     /// Unsubscribe from resource updates
     pub async fn resources_unsubscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
-        let _: EmptyResult = self.request(ClientRequest::unsubscribe(uri)).await?;
+        let _: EmptyResult = self
+            .request_and_wait(ClientRequest::unsubscribe(uri))
+            .await?;
         Ok(())
     }
 
@@ -676,7 +722,7 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListPromptsResult> {
-        self.request(ClientRequest::list_prompts(cursor.into()))
+        self.request_and_wait(ClientRequest::list_prompts(cursor.into()))
             .await
     }
 
@@ -686,7 +732,7 @@ where
         name: impl Into<String> + Send,
         arguments: Option<HashMap<String, String>>,
     ) -> Result<GetPromptResult> {
-        self.request(ClientRequest::get_prompt(name, arguments))
+        self.request_and_wait(ClientRequest::get_prompt(name, arguments))
             .await
     }
 
@@ -697,19 +743,22 @@ where
         argument: ArgumentInfo,
         context: Option<CompleteContext>,
     ) -> Result<CompleteResult> {
-        self.request(ClientRequest::complete(reference, argument, context))
+        self.request_and_wait(ClientRequest::complete(reference, argument, context))
             .await
     }
 
     /// Set the logging level
     pub async fn set_level(&mut self, level: LoggingLevel) -> Result<()> {
-        let _: EmptyResult = self.request(ClientRequest::set_level(level)).await?;
+        let _: EmptyResult = self
+            .request_and_wait(ClientRequest::set_level(level))
+            .await?;
         Ok(())
     }
 
     /// Retrieve the state of a task.
     pub async fn get_task(&mut self, task_id: impl Into<String> + Send) -> Result<GetTaskResult> {
-        self.request(ClientRequest::get_task(task_id)).await
+        self.request_and_wait(ClientRequest::get_task(task_id))
+            .await
     }
 
     /// Retrieve the result of a completed task.
@@ -717,7 +766,8 @@ where
         &mut self,
         task_id: impl Into<String> + Send,
     ) -> Result<GetTaskPayloadResult> {
-        self.request(ClientRequest::get_task_payload(task_id)).await
+        self.request_and_wait(ClientRequest::get_task_payload(task_id))
+            .await
     }
 
     /// List tasks with optional pagination.
@@ -725,7 +775,8 @@ where
         &mut self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListTasksResult> {
-        self.request(ClientRequest::list_tasks(cursor.into())).await
+        self.request_and_wait(ClientRequest::list_tasks(cursor.into()))
+            .await
     }
 
     /// Cancel a task by ID.
@@ -733,7 +784,8 @@ where
         &mut self,
         task_id: impl Into<String> + Send,
     ) -> Result<CancelTaskResult> {
-        self.request(ClientRequest::cancel_task(task_id)).await
+        self.request_and_wait(ClientRequest::cancel_task(task_id))
+            .await
     }
 }
 

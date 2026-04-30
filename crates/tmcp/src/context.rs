@@ -245,7 +245,7 @@ impl ServerCtx {
     /// Send a request to the client and wait for response
     async fn request<T>(&self, request: schema::ServerRequest) -> Result<T>
     where
-        T: DeserializeOwned,
+        T: DeserializeOwned + Send + 'static,
     {
         self.request_handler.request(request).await
     }
