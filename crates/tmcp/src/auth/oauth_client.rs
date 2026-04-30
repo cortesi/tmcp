@@ -25,6 +25,9 @@ use url::{Url, form_urlencoded};
 use super::dynamic_registration::{ClientMetadata, DynamicRegistrationClient};
 use crate::error::Error;
 
+/// Time before expiration at which tokens are proactively refreshed.
+const TOKEN_REFRESH_LEEWAY: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone)]
 /// OAuth2 client configuration values.
 pub struct OAuth2Config {
@@ -291,7 +294,7 @@ impl OAuth2Client {
         {
             let token_guard = self.token.read().await;
             if let Some(token) = &*token_guard
-                && token.expires_at.map(|exp| exp > now).unwrap_or(true)
+                && token_is_fresh(token, now)
             {
                 return Ok(token.access_token.clone());
             }
@@ -303,7 +306,7 @@ impl OAuth2Client {
         let refresh_token_opt = {
             let token_guard = self.token.read().await;
             if let Some(token) = &*token_guard {
-                if token.expires_at.map(|exp| exp > now).unwrap_or(true) {
+                if token_is_fresh(token, now) {
                     return Ok(token.access_token.clone());
                 }
                 token.refresh_token.clone()
@@ -329,6 +332,9 @@ impl OAuth2Client {
         if !self.config.resource.is_empty() {
             refresh_request = refresh_request.add_extra_param("resource", &self.config.resource);
         }
+        for scope in &self.config.scopes {
+            refresh_request = refresh_request.add_scope(Scope::new(scope.clone()));
+        }
 
         let token_result = refresh_request
             .request_async(&Client::new())
@@ -338,7 +344,10 @@ impl OAuth2Client {
         let expires_in = token_result.expires_in();
         let oauth_token = OAuth2Token {
             access_token: token_result.access_token().secret().clone(),
-            refresh_token: token_result.refresh_token().map(|t| t.secret().clone()),
+            refresh_token: token_result
+                .refresh_token()
+                .map(|t| t.secret().clone())
+                .or_else(|| Some(refresh_token.to_string())),
             expires_in,
             expires_at: expires_in.map(|duration| Instant::now() + duration),
         };
@@ -355,6 +364,19 @@ impl OAuth2Client {
             *token_arc.write().await = Some(token);
         }
     }
+
+    /// Return the currently cached token, if one is present.
+    pub async fn current_token(&self) -> Option<OAuth2Token> {
+        self.token.read().await.clone()
+    }
+}
+
+/// Returns whether a token is usable without refreshing.
+fn token_is_fresh(token: &OAuth2Token, now: Instant) -> bool {
+    token
+        .expires_at
+        .map(|expires_at| expires_at > now + TOKEN_REFRESH_LEEWAY)
+        .unwrap_or(true)
 }
 
 /// Maximum length of callback query string accepted by the OAuth callback server.
