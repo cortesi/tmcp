@@ -107,6 +107,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_callback_server_binds_loopback_port() {
+        let server = OAuth2CallbackServer::bind_loopback()
+            .await
+            .expect("callback server");
+        assert_ne!(server.port(), 0);
+        let redirect_url = server.redirect_url();
+
+        let client_task = tokio::spawn(async move {
+            sleep(Duration::from_millis(100)).await;
+
+            let client = reqwest::Client::new();
+            let _response = client
+                .get(format!("{redirect_url}?code=test_code&state=test_state"))
+                .send()
+                .await
+                .expect("callback request failed");
+        });
+
+        let result = timeout(Duration::from_secs(5), server.wait_for_callback()).await;
+
+        match result {
+            Ok(Ok((code, state))) => {
+                assert_eq!(code, "test_code");
+                assert_eq!(state, "test_state");
+            }
+            Ok(Err(e)) => panic!("Callback server error: {e}"),
+            Err(_) => panic!("Callback server timed out"),
+        }
+
+        client_task.await.expect("callback client task failed");
+    }
+
+    #[tokio::test]
     async fn test_callback_server_oversized_request() {
         use tokio::io::AsyncWriteExt;
 

@@ -480,20 +480,53 @@ async fn send_http_response(
 pub struct OAuth2CallbackServer {
     /// Port to bind the callback server on.
     port: u16,
+    /// Pre-bound callback listener, when the OS selected the port.
+    listener: Arc<Mutex<Option<TcpListener>>>,
 }
 
 impl OAuth2CallbackServer {
     /// Create a new callback server bound to the provided port.
     pub fn new(port: u16) -> Self {
-        Self { port }
+        Self {
+            port,
+            listener: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Bind a callback server to `127.0.0.1:0`.
+    pub async fn bind_loopback() -> Result<Self, Error> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| Error::Transport(format!("Failed to bind callback listener: {e}")))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| Error::Transport(format!("Failed to inspect callback listener: {e}")))?
+            .port();
+        Ok(Self {
+            port,
+            listener: Arc::new(Mutex::new(Some(listener))),
+        })
+    }
+
+    /// Return the bound callback port.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Return the redirect URL for this callback server.
+    pub fn redirect_url(&self) -> String {
+        format!("http://127.0.0.1:{}/callback", self.port)
     }
 
     /// Wait for the OAuth redirect callback and return (code, state).
     pub async fn wait_for_callback(&self) -> Result<(String, String), Error> {
         let addr = format!("127.0.0.1:{}", self.port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|e| Error::Transport(format!("Failed to bind to {addr}: {e}")))?;
+        let listener = match self.listener.lock().await.take() {
+            Some(listener) => listener,
+            None => TcpListener::bind(&addr)
+                .await
+                .map_err(|e| Error::Transport(format!("Failed to bind to {addr}: {e}")))?,
+        };
 
         let (mut stream, _) = listener
             .accept()
