@@ -30,9 +30,9 @@ type TimeoutResult<T> = StdResult<StdResult<T, oneshot::error::RecvError>, Elaps
 use crate::{
     error::{Error, Result},
     schema::{
-        INVALID_PARAMS, JSONRPC_VERSION, JSONRPCMessage, JSONRPCNotification, JSONRPCRequest,
-        JSONRPCResponse, METHOD_NOT_FOUND, Notification, NotificationParams, Request, RequestId,
-        RequestMeta, RequestParams,
+        AUTHORIZATION_FAILED, INVALID_PARAMS, JSONRPC_VERSION, JSONRPCMessage, JSONRPCNotification,
+        JSONRPCRequest, JSONRPCResponse, METHOD_NOT_FOUND, Notification, NotificationParams,
+        Request, RequestId, RequestMeta, RequestParams,
     },
     transport::TransportStream,
 };
@@ -390,6 +390,7 @@ impl RequestHandler {
                     "{}: {}",
                     method, error.error.message
                 ))),
+                AUTHORIZATION_FAILED => Err(Error::AuthorizationFailed(error.error.message)),
                 _ => Err(Error::Protocol(format!(
                     "JSON-RPC error {}: {}",
                     error.error.code, error.error.message
@@ -447,6 +448,7 @@ mod tests {
     use futures::future::pending;
 
     use super::*;
+    use crate::schema::{ErrorObject, JSONRPCErrorResponse};
 
     #[test]
     fn test_request_id_to_key_string() {
@@ -491,5 +493,28 @@ mod tests {
         assert_eq!(handler.inner.pending_requests.len(), 1);
         drop(pending);
         assert!(handler.inner.pending_requests.is_empty());
+    }
+
+    #[test]
+    fn authorization_error_response_decodes_to_authorization_failed() {
+        let response = JSONRPCResponse::Error(JSONRPCErrorResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: Some(RequestId::String("1".to_string())),
+            error: ErrorObject {
+                code: AUTHORIZATION_FAILED,
+                message: "Authorization failed: HTTP 401 Unauthorized".to_string(),
+                data: None,
+            },
+        });
+
+        let error = RequestHandler::decode_response::<serde_json::Value>("tools/call", response)
+            .expect_err("authorization error");
+
+        assert!(matches!(error, Error::AuthorizationFailed(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("Authorization failed: HTTP 401 Unauthorized")
+        );
     }
 }

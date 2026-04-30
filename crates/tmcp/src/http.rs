@@ -43,6 +43,7 @@ use crate::{
     auth::{OAuth2Client, server::normalize_endpoint_path},
     error::{Error, Result},
     schema::{
+        AUTHORIZATION_FAILED, ErrorObject, INTERNAL_ERROR, JSONRPC_VERSION, JSONRPCErrorResponse,
         JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
         LATEST_PROTOCOL_VERSION, RequestId,
     },
@@ -321,6 +322,7 @@ async fn handle_http_response(
     last_event_id: &Arc<Mutex<Option<String>>>,
 ) {
     if !validate_status(response.status()) {
+        forward_status_error(msg, response.status(), sender);
         return;
     }
 
@@ -339,6 +341,49 @@ async fn handle_http_response(
         forward_sse_response(response, sender, last_event_id).await;
     } else {
         forward_response(response, sender).await;
+    }
+}
+
+/// Forward an HTTP status failure to a waiting JSON-RPC request, if any.
+fn forward_status_error(
+    msg: &JSONRPCMessage,
+    status: reqwest::StatusCode,
+    sender: &mpsc::UnboundedSender<JSONRPCMessage>,
+) {
+    let code = if status == StatusCode::UNAUTHORIZED {
+        AUTHORIZATION_FAILED
+    } else {
+        INTERNAL_ERROR
+    };
+    let message = if status == StatusCode::UNAUTHORIZED {
+        "Authorization failed: HTTP 401 Unauthorized".to_string()
+    } else {
+        format!("HTTP request failed with status: {status}")
+    };
+    forward_request_error(msg, code, message, sender);
+}
+
+/// Forward a synthetic JSON-RPC error to a waiting request, if any.
+fn forward_request_error(
+    msg: &JSONRPCMessage,
+    code: i32,
+    message: String,
+    sender: &mpsc::UnboundedSender<JSONRPCMessage>,
+) {
+    let JSONRPCMessage::Request(request) = msg else {
+        return;
+    };
+    let response = JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(request.id.clone()),
+        error: ErrorObject {
+            code,
+            message,
+            data: None,
+        },
+    }));
+    if sender.unbounded_send(response).is_err() {
+        error!("Failed to forward synthetic HTTP error response");
     }
 }
 
@@ -683,6 +728,12 @@ impl Transport for HttpClientTransport {
                     Ok(request) => request,
                     Err(error) => {
                         error!("Failed to prepare HTTP request headers: {}", error);
+                        let code = if matches!(error, Error::AuthorizationFailed(_)) {
+                            AUTHORIZATION_FAILED
+                        } else {
+                            INTERNAL_ERROR
+                        };
+                        forward_request_error(&msg, code, error.to_string(), &sender_clone);
                         continue;
                     }
                 };
@@ -1544,7 +1595,7 @@ mod tests {
     use futures::SinkExt;
 
     use super::*;
-    use crate::schema::{JSONRPCNotification, Notification};
+    use crate::schema::{JSONRPCNotification, Notification, Request};
 
     #[tokio::test]
     async fn test_http_client_transport_creation() {
@@ -1584,6 +1635,34 @@ mod tests {
         let debug = format!("{header:?}");
 
         assert!(!debug.contains("secret-token"));
+    }
+
+    #[test]
+    fn unauthorized_status_forwards_authorization_error_response() {
+        let request = JSONRPCMessage::Request(JSONRPCRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: RequestId::String("request-1".to_string()),
+            request: Request {
+                method: "tools/call".to_string(),
+                params: None,
+            },
+        });
+        let (tx, mut rx) = mpsc::unbounded();
+
+        forward_status_error(&request, StatusCode::UNAUTHORIZED, &tx);
+
+        let response = rx.try_next().unwrap().expect("response");
+        let JSONRPCMessage::Response(JSONRPCResponse::Error(error)) = response else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.error.code, AUTHORIZATION_FAILED);
+        assert_eq!(error.id, Some(RequestId::String("request-1".to_string())));
+        assert!(
+            error
+                .error
+                .message
+                .contains("Authorization failed: HTTP 401 Unauthorized")
+        );
     }
 
     #[tokio::test]

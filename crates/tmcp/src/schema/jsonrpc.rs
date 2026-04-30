@@ -220,6 +220,8 @@ pub const INTERNAL_ERROR: i32 = -32603;
 
 /// Implementation-specific JSON-RPC error code indicating URL elicitation is required.
 pub const URL_ELICITATION_REQUIRED: i32 = -32042;
+/// Implementation-specific JSON-RPC error code indicating authorization failed.
+pub const AUTHORIZATION_FAILED: i32 = -32041;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorObject {
