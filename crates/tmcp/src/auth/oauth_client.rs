@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    net::IpAddr,
     str,
     sync::Arc,
     time::{Duration, Instant},
@@ -125,7 +126,9 @@ impl OAuth2Client {
         metadata: ClientMetadata,
         registration_endpoint: Option<String>,
     ) -> Result<Self, Error> {
-        let registration_client = DynamicRegistrationClient::default();
+        let registration_client = DynamicRegistrationClient::for_endpoint(
+            registration_endpoint.as_deref().unwrap_or(&auth_url),
+        )?;
         let reg_endpoint =
             Self::registration_endpoint(&registration_client, &auth_url, registration_endpoint)
                 .await?;
@@ -255,7 +258,7 @@ impl OAuth2Client {
         }
 
         let token_result = token_request
-            .request_async(&Client::new())
+            .request_async(&oauth_http_client(&self.config.token_url)?)
             .await
             .map_err(|e| {
                 // Try to extract OAuth error details from the response
@@ -358,7 +361,7 @@ impl OAuth2Client {
         }
 
         let token_result = refresh_request
-            .request_async(&Client::new())
+            .request_async(&oauth_http_client(&self.config.token_url)?)
             .await
             .map_err(|e| Error::AuthorizationFailed(format!("Token refresh failed: {e}")))?;
 
@@ -398,6 +401,31 @@ fn token_is_fresh(token: &OAuth2Token, now: Instant) -> bool {
         .expires_at
         .map(|expires_at| expires_at > now + TOKEN_REFRESH_LEEWAY)
         .unwrap_or(true)
+}
+
+/// Builds an OAuth HTTP client, bypassing proxy lookup for loopback endpoints.
+fn oauth_http_client(url: &str) -> Result<Client, Error> {
+    let mut builder = Client::builder();
+    if is_loopback_url(url) {
+        builder = builder.no_proxy();
+    }
+    builder
+        .build()
+        .map_err(|error| Error::Transport(format!("Failed to build OAuth HTTP client: {error}")))
+}
+
+/// Returns whether `url` targets this machine.
+fn is_loopback_url(url: &str) -> bool {
+    let Ok(url) = Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host == "localhost"
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 /// Maximum length of callback query string accepted by the OAuth callback server.

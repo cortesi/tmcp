@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, net::IpAddr};
 
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -183,6 +183,18 @@ impl Default for DynamicRegistrationClient {
 }
 
 impl DynamicRegistrationClient {
+    /// Create a registration client for one endpoint.
+    pub fn for_endpoint(endpoint: &str) -> Result<Self, Error> {
+        let mut builder = reqwest::Client::builder();
+        if is_loopback_url(endpoint) {
+            builder = builder.no_proxy();
+        }
+        let http_client = builder.build().map_err(|error| {
+            Error::Transport(format!("Failed to build registration HTTP client: {error}"))
+        })?;
+        Ok(Self { http_client })
+    }
+
     /// Register a client with the authorization server
     pub async fn register(
         &self,
@@ -245,6 +257,20 @@ impl DynamicRegistrationClient {
             .await?;
         Ok(metadata.registration_endpoint)
     }
+}
+
+/// Returns whether `url` targets this machine.
+fn is_loopback_url(url: &str) -> bool {
+    let Ok(url) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host == "localhost"
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 /// Builds an authorization header without exposing token material through logs.

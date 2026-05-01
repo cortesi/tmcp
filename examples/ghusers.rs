@@ -115,6 +115,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let token = OAuth2Token {
             access_token,
             refresh_token: None,
+            expires_in: None,
             expires_at: None, // GitHub tokens don't expire by default
         };
         oauth_client.set_token(token).await;

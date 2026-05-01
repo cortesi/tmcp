@@ -472,12 +472,17 @@ fn build_sse_event(session: &HttpSession, message: &JSONRPCMessage) -> Event {
 impl HttpClientTransport {
     /// Create a new HTTP client transport for the provided endpoint.
     pub fn new(endpoint: impl Into<String>) -> Self {
+        let endpoint = endpoint.into();
+        let mut client = HttpClient::builder().timeout(DEFAULT_TIMEOUT);
+        if endpoint.starts_with("http://127.0.0.1:")
+            || endpoint.starts_with("http://localhost:")
+            || endpoint.starts_with("http://[::1]:")
+        {
+            client = client.no_proxy();
+        }
         Self {
-            endpoint: endpoint.into(),
-            client: HttpClient::builder()
-                .timeout(DEFAULT_TIMEOUT)
-                .build()
-                .expect("Failed to create HTTP client"),
+            endpoint,
+            client: client.build().expect("Failed to create HTTP client"),
             session_id: Arc::new(Mutex::new(None)),
             last_event_id: Arc::new(Mutex::new(None)),
             static_headers: HeaderMap::new(),
