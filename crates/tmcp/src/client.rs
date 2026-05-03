@@ -589,13 +589,14 @@ where
 
     /// Call a tool with arguments and task metadata.
     ///
-    /// Use this when you need to pass task metadata for progress tracking.
+    /// Use this when the call may create a task instead of returning an
+    /// immediate tool result.
     pub async fn call_tool_with_task(
         &mut self,
         name: impl Into<String> + Send,
         arguments: impl Serialize + Send,
         task: Option<TaskMetadata>,
-    ) -> Result<CallToolResult> {
+    ) -> Result<CallToolResponse> {
         let args = crate::Arguments::from_struct(arguments)?;
         let request = ClientRequest::call_tool(name, Some(args), task);
         self.request_and_wait(request).await
@@ -1464,12 +1465,17 @@ mod tests {
                 name: String,
                 _arguments: Option<crate::Arguments>,
                 _task: Option<TaskMetadata>,
-            ) -> Result<CallToolResult> {
+            ) -> Result<CallToolResponse> {
                 if name == "fail" {
                     // Return a tool error (isError: true) with structured content
-                    Ok(CallToolResult::error("ERR", "Tool failed details"))
+                    Ok(CallToolResponse::result(CallToolResult::error(
+                        "ERR",
+                        "Tool failed details",
+                    )))
                 } else {
-                    Ok(CallToolResult::new().with_text_content("{}"))
+                    Ok(CallToolResponse::result(
+                        CallToolResult::new().with_text_content("{}"),
+                    ))
                 }
             }
         }

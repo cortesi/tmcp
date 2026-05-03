@@ -63,19 +63,23 @@ mod tests {
             name: String,
             arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
-        ) -> Result<CallToolResult> {
+        ) -> Result<CallToolResponse> {
             if name != "echo" {
                 return Err(Error::ToolNotFound(name));
             }
 
             let Some(args) = arguments else {
-                return Ok(ToolError::invalid_input("echo: Missing arguments").into());
+                let result: CallToolResult =
+                    ToolError::invalid_input("echo: Missing arguments").into();
+                return Ok(CallToolResponse::result(result));
             };
             let Some(message) = args.get::<String>("message") else {
-                return Ok(ToolError::invalid_input("echo: Missing message parameter").into());
+                let result: CallToolResult =
+                    ToolError::invalid_input("echo: Missing message parameter").into();
+                return Ok(CallToolResponse::result(result));
             };
 
-            Ok(CallToolResult {
+            Ok(CallToolResponse::result(CallToolResult {
                 content: vec![ContentBlock::Text(TextContent {
                     text: message,
                     annotations: None,
@@ -84,7 +88,7 @@ mod tests {
                 is_error: Some(false),
                 structured_content: None,
                 _meta: None,
-            })
+            }))
         }
     }
 

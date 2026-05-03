@@ -97,35 +97,45 @@ impl ServerHandler for TestConnection {
         name: String,
         arguments: Option<Arguments>,
         _task: Option<TaskMetadata>,
-    ) -> Result<CallToolResult> {
+    ) -> Result<CallToolResponse> {
         match name.as_str() {
             "echo" => {
                 let Some(args) = arguments else {
-                    return Ok(ToolError::invalid_input("echo: Missing arguments").into());
+                    let result: CallToolResult =
+                        ToolError::invalid_input("echo: Missing arguments").into();
+                    return Ok(CallToolResponse::result(result));
                 };
                 let Some(message) = args.get::<String>("message") else {
-                    return Ok(ToolError::invalid_input("echo: Missing message parameter").into());
+                    let result: CallToolResult =
+                        ToolError::invalid_input("echo: Missing message parameter").into();
+                    return Ok(CallToolResponse::result(result));
                 };
 
-                Ok(CallToolResult::new().with_text_content(message))
+                Ok(CallToolResponse::result(
+                    CallToolResult::new().with_text_content(message),
+                ))
             }
             "add" => {
                 let Some(args) = arguments else {
-                    return Ok(ToolError::invalid_input("add: Missing arguments").into());
+                    let result: CallToolResult =
+                        ToolError::invalid_input("add: Missing arguments").into();
+                    return Ok(CallToolResponse::result(result));
                 };
 
                 let Some(a) = args.get::<f64>("a") else {
-                    return Ok(
-                        ToolError::invalid_input("add: Missing or invalid 'a' parameter").into(),
-                    );
+                    let result: CallToolResult =
+                        ToolError::invalid_input("add: Missing or invalid 'a' parameter").into();
+                    return Ok(CallToolResponse::result(result));
                 };
                 let Some(b) = args.get::<f64>("b") else {
-                    return Ok(
-                        ToolError::invalid_input("add: Missing or invalid 'b' parameter").into(),
-                    );
+                    let result: CallToolResult =
+                        ToolError::invalid_input("add: Missing or invalid 'b' parameter").into();
+                    return Ok(CallToolResponse::result(result));
                 };
 
-                Ok(CallToolResult::new().with_text_content(format!("{}", a + b)))
+                Ok(CallToolResponse::result(
+                    CallToolResult::new().with_text_content(format!("{}", a + b)),
+                ))
             }
             _ => Err(Error::ToolExecutionFailed {
                 tool: name,
@@ -169,7 +179,9 @@ mod tests {
         let result = conn
             .call_tool(&context, "echo".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(result.content.len(), 1);
         match &result.content[0] {
             ContentBlock::Text(text) => assert_eq!(text.text, "Hello, World!"),
@@ -181,7 +193,9 @@ mod tests {
         let error = conn
             .call_tool(&context, "echo".to_string(), None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(error.is_error, Some(true));
 
         // Test error on missing message field
@@ -191,7 +205,9 @@ mod tests {
         let error = conn
             .call_tool(&context, "echo".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(error.is_error, Some(true));
     }
 
@@ -214,7 +230,9 @@ mod tests {
         let result = conn
             .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(result.content.len(), 1);
         match &result.content[0] {
             ContentBlock::Text(text) => assert_eq!(text.text, "8"),
@@ -229,7 +247,9 @@ mod tests {
         let result = conn
             .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(result.content.len(), 1);
         match &result.content[0] {
             ContentBlock::Text(text) => assert_eq!(text.text, "4"),
@@ -244,7 +264,9 @@ mod tests {
         let result = conn
             .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(result.content.len(), 1);
         match &result.content[0] {
             ContentBlock::Text(text) => assert_eq!(text.text, "-2"),
@@ -256,7 +278,9 @@ mod tests {
         let error = conn
             .call_tool(&context, "add".to_string(), None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(error.is_error, Some(true));
 
         // Test error on missing 'a' field
@@ -266,7 +290,9 @@ mod tests {
         let error = conn
             .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(error.is_error, Some(true));
 
         // Test error on missing 'b' field
@@ -276,7 +302,9 @@ mod tests {
         let error = conn
             .call_tool(&context, "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(error.is_error, Some(true));
     }
 

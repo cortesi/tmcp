@@ -143,7 +143,7 @@ pub use toolset::{
     ActivationHook, Group, GroupConfig, GroupInfo, ToolSet, ToolSetView, Visibility,
 };
 #[doc(hidden)]
-pub use toolset::{GroupDispatch, GroupRegistration, ToolFuture};
+pub use toolset::{GroupDispatch, GroupRegistration, ToolCallFuture, ToolFuture};
 
 // Keep the full macros module available for internal use
 /// Re-exported macros module for internal use.

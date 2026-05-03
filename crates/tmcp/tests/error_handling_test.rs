@@ -99,21 +99,27 @@ mod tests {
                 name: String,
                 arguments: Option<Arguments>,
                 _task: Option<schema::TaskMetadata>,
-            ) -> Result<schema::CallToolResult> {
+            ) -> Result<schema::CallToolResponse> {
                 if name != "test_tool" {
                     return Err(Error::ToolNotFound(name));
                 }
 
                 // Validate arguments
                 let Some(args) = arguments else {
-                    return Ok(ToolError::invalid_input("Missing arguments").into());
+                    let result: schema::CallToolResult =
+                        ToolError::invalid_input("Missing arguments").into();
+                    return Ok(schema::CallToolResponse::result(result));
                 };
 
                 if args.get_value("required_param").is_none() {
-                    return Ok(ToolError::invalid_input("Missing required_param").into());
+                    let result: schema::CallToolResult =
+                        ToolError::invalid_input("Missing required_param").into();
+                    return Ok(schema::CallToolResponse::result(result));
                 }
 
-                Ok(schema::CallToolResult::new().with_text_content("Success"))
+                Ok(schema::CallToolResponse::result(
+                    schema::CallToolResult::new().with_text_content("Success"),
+                ))
             }
         }
 
@@ -124,7 +130,9 @@ mod tests {
         let result = conn
             .call_tool(&context, "test_tool".to_string(), None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(result.is_error, Some(true));
         assert_eq!(
             result
@@ -145,7 +153,9 @@ mod tests {
                 None,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(result.is_error, Some(true));
         assert!(
             result

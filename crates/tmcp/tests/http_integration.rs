@@ -68,16 +68,22 @@ mod tests {
             name: String,
             arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
-        ) -> Result<CallToolResult> {
+        ) -> Result<CallToolResponse> {
             match name.as_str() {
                 "echo" => {
                     let Some(args) = arguments else {
-                        return Ok(ToolError::invalid_input("Missing args").into());
+                        let result: CallToolResult =
+                            ToolError::invalid_input("Missing args").into();
+                        return Ok(CallToolResponse::result(result));
                     };
                     let Some(message) = args.get::<String>("message") else {
-                        return Ok(ToolError::invalid_input("Missing message").into());
+                        let result: CallToolResult =
+                            ToolError::invalid_input("Missing message").into();
+                        return Ok(CallToolResponse::result(result));
                     };
-                    Ok(CallToolResult::new().with_text_content(message))
+                    Ok(CallToolResponse::result(
+                        CallToolResult::new().with_text_content(message),
+                    ))
                 }
                 "extension_echo" => {
                     let extension = context
@@ -85,7 +91,9 @@ mod tests {
                         .get::<InjectedExtension>()
                         .map(|value| value.0)
                         .unwrap_or("missing");
-                    Ok(CallToolResult::new().with_text_content(extension))
+                    Ok(CallToolResponse::result(
+                        CallToolResult::new().with_text_content(extension),
+                    ))
                 }
                 _ => Err(tmcp::Error::ToolNotFound(name)),
             }

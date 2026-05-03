@@ -98,8 +98,8 @@ impl ServerHandler for TimeoutTestConnection {
         name: String,
         _arguments: Option<tmcp::Arguments>,
         _task: Option<schema::TaskMetadata>,
-    ) -> Result<schema::CallToolResult> {
-        match name.as_str() {
+    ) -> Result<schema::CallToolResponse> {
+        let result = match name.as_str() {
             "flakey_operation" => {
                 let count = self.flakey_fail_count.fetch_add(1, Ordering::SeqCst);
 
@@ -138,7 +138,8 @@ impl ServerHandler for TimeoutTestConnection {
                 Ok(schema::CallToolResult::new().with_text_content("Reliable operation completed"))
             }
             _ => Err(Error::ToolNotFound(name)),
-        }
+        };
+        result.map(schema::CallToolResponse::result)
     }
 }
 

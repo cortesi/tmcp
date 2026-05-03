@@ -134,21 +134,25 @@ mod tests {
             name: String,
             _arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
-        ) -> Result<CallToolResult> {
+        ) -> Result<CallToolResponse> {
             self.track_call(&format!("tool_{name}"));
 
             match name.as_str() {
                 "ping_client" => {
                     let ctx = context.clone();
                     ctx.ping().await?;
-                    Ok(CallToolResult::new().with_text_content("Client pinged"))
+                    Ok(CallToolResponse::result(
+                        CallToolResult::new().with_text_content("Client pinged"),
+                    ))
                 }
 
                 "query_client_roots" => {
                     let ctx = context.clone();
                     let roots = ctx.list_roots().await?;
-                    Ok(CallToolResult::new()
-                        .with_text_content(format!("Found {} client roots", roots.roots.len())))
+                    Ok(CallToolResponse::result(
+                        CallToolResult::new()
+                            .with_text_content(format!("Found {} client roots", roots.roots.len())),
+                    ))
                 }
 
                 "ask_client_to_generate" => {
@@ -166,7 +170,9 @@ mod tests {
                             _ => None,
                         })
                         .unwrap_or_else(|| "Non-text response".to_string());
-                    Ok(CallToolResult::new().with_text_content(text))
+                    Ok(CallToolResponse::result(
+                        CallToolResult::new().with_text_content(text),
+                    ))
                 }
 
                 _ => Err(tmcp::Error::ToolExecutionFailed {

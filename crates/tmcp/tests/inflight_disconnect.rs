@@ -7,9 +7,9 @@ mod tests {
     use tmcp::{
         Arguments, Result, Server, ServerCtx, ServerHandler,
         schema::{
-            CallToolResult, ClientCapabilities, Cursor, Implementation, InitializeResult,
-            LATEST_PROTOCOL_VERSION, ListToolsResult, ServerCapabilities, TaskMetadata, Tool,
-            ToolSchema,
+            CallToolResponse, CallToolResult, ClientCapabilities, Cursor, Implementation,
+            InitializeResult, LATEST_PROTOCOL_VERSION, ListToolsResult, ServerCapabilities,
+            TaskMetadata, Tool, ToolSchema,
         },
         testutils::make_duplex_pair,
     };
@@ -48,10 +48,12 @@ mod tests {
             name: String,
             _arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
-        ) -> Result<CallToolResult> {
+        ) -> Result<CallToolResponse> {
             assert_eq!(name, "slow_echo");
             sleep(Duration::from_millis(50)).await;
-            Ok(CallToolResult::new().with_text_content("ok"))
+            Ok(CallToolResponse::result(
+                CallToolResult::new().with_text_content("ok"),
+            ))
         }
     }
 

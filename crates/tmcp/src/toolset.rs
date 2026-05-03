@@ -8,7 +8,10 @@ use tokio::sync::Mutex;
 
 use crate::{
     Arguments, Error, Result, ServerCtx,
-    schema::{CallToolResult, Cursor, ListToolsResult, ServerNotification, Tool, ToolSchema},
+    schema::{
+        CallToolResponse, CallToolResult, Cursor, ListToolsResult, ServerNotification,
+        TaskMetadata, Tool, ToolSchema,
+    },
 };
 
 /// Read-only view used by visibility predicates.
@@ -20,6 +23,10 @@ pub struct ToolSetView<'a> {
 /// Boxed future type returned by tool handlers.
 #[doc(hidden)]
 pub type ToolFuture<'a> = BoxFuture<'a, Result<CallToolResult>>;
+
+/// Boxed future type returned by generated tool-call dispatch.
+#[doc(hidden)]
+pub type ToolCallFuture<'a> = BoxFuture<'a, Result<CallToolResponse>>;
 
 impl ToolSetView<'_> {
     /// Check whether a group is active in the current snapshot.
@@ -114,7 +121,8 @@ pub trait GroupDispatch {
         ctx: &'a ServerCtx,
         name: &'a str,
         arguments: Option<Arguments>,
-    ) -> ToolFuture<'a>;
+        task: Option<TaskMetadata>,
+    ) -> ToolCallFuture<'a>;
 }
 
 /// Internal helper for overriding group path segments during registration.
@@ -337,18 +345,25 @@ impl ToolSet {
         ctx: &ServerCtx,
         name: &str,
         arguments: Option<Arguments>,
+        task: Option<TaskMetadata>,
         dispatch: F,
-    ) -> Result<CallToolResult>
+    ) -> Result<CallToolResponse>
     where
-        F: for<'a> Fn(&'a H, &'a ServerCtx, &'a str, Option<Arguments>) -> ToolFuture<'a>,
+        F: for<'a> Fn(
+            &'a H,
+            &'a ServerCtx,
+            &'a str,
+            Option<Arguments>,
+            Option<TaskMetadata>,
+        ) -> ToolCallFuture<'a>,
     {
         if !self.is_tool_visible(name) {
             return Err(Error::ToolNotFound(name.to_string()));
         }
         if let Some(tool_handler) = self.tool_handler(name) {
-            return tool_handler(ctx, arguments).await;
+            return tool_handler(ctx, arguments).await.map(Into::into);
         }
-        dispatch(handler, ctx, name, arguments).await
+        dispatch(handler, ctx, name, arguments, task).await
     }
 
     /// Register tool metadata without a handler (macro-only).

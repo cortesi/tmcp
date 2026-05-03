@@ -39,11 +39,13 @@ mod tests {
             _name: String,
             _arguments: Option<tmcp::Arguments>,
             _task: Option<schema::TaskMetadata>,
-        ) -> Result<schema::CallToolResult> {
+        ) -> Result<schema::CallToolResponse> {
             ctx.cancelled().await;
             self.observed.notify_one();
             self.release.notified().await;
-            Ok(schema::CallToolResult::new().with_text_content("cancelled"))
+            Ok(schema::CallToolResponse::result(
+                schema::CallToolResult::new().with_text_content("cancelled"),
+            ))
         }
     }
 

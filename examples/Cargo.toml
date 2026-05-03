@@ -77,6 +77,10 @@ name = "stream_connection"
 path = "stream_connection.rs"
 
 [[example]]
+name = "task_probe_server"
+path = "task_probe_server.rs"
+
+[[example]]
 name = "timeout_server"
 path = "timeout_server.rs"
 

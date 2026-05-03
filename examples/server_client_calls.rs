@@ -115,8 +115,8 @@ impl ServerHandler for ClientCallsServer {
         name: String,
         arguments: Option<Arguments>,
         _task: Option<schema::TaskMetadata>,
-    ) -> Result<CallToolResult> {
-        match name.as_str() {
+    ) -> Result<schema::CallToolResponse> {
+        let result = match name.as_str() {
             "ping_client" => {
                 // Ping the client to verify the connection is alive
                 info!("Pinging client...");
@@ -229,7 +229,8 @@ impl ServerHandler for ClientCallsServer {
             }
 
             _ => Err(Error::ToolNotFound(name)),
-        }
+        };
+        result.map(schema::CallToolResponse::result)
     }
 }
 

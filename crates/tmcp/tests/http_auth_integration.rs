@@ -61,7 +61,7 @@ mod tests {
             name: String,
             _arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
-        ) -> Result<CallToolResult> {
+        ) -> Result<CallToolResponse> {
             if name != "whoami" {
                 return Err(tmcp::Error::ToolNotFound(name));
             }
@@ -70,12 +70,14 @@ mod tests {
             let mut scopes = auth.scopes.iter().cloned().collect::<Vec<_>>();
             scopes.sort();
 
-            Ok(CallToolResult::new().with_text_content(format!(
-                "subject={};audiences={};scopes={}",
-                auth.subject,
-                auth.audiences.join(","),
-                scopes.join(","),
-            )))
+            Ok(CallToolResponse::result(
+                CallToolResult::new().with_text_content(format!(
+                    "subject={};audiences={};scopes={}",
+                    auth.subject,
+                    auth.audiences.join(","),
+                    scopes.join(","),
+                )),
+            ))
         }
     }
 

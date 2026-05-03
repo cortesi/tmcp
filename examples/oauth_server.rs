@@ -19,8 +19,8 @@ use tmcp::{
     Arguments, Result, Server, ServerCtx, ServerHandler,
     auth::server::{AuthConfig, AuthError, AuthInfo, TokenValidator},
     schema::{
-        CallToolResult, ClientCapabilities, Cursor, Implementation, InitializeResult,
-        ListToolsResult, ServerCapabilities, TaskMetadata, Tool, ToolSchema,
+        CallToolResponse, CallToolResult, ClientCapabilities, Cursor, Implementation,
+        InitializeResult, ListToolsResult, ServerCapabilities, TaskMetadata, Tool, ToolSchema,
     },
 };
 use tracing_subscriber::fmt;
@@ -82,7 +82,7 @@ impl ServerHandler for AppMcpServer {
         name: String,
         _arguments: Option<Arguments>,
         _task: Option<TaskMetadata>,
-    ) -> Result<CallToolResult> {
+    ) -> Result<CallToolResponse> {
         if name != "status" {
             return Err(tmcp::Error::ToolNotFound(name));
         }
@@ -93,8 +93,10 @@ impl ServerHandler for AppMcpServer {
             .get::<AuthInfo>()
             .expect("auth info present after bearer middleware");
 
-        Ok(CallToolResult::new()
-            .with_text_content(format!("ok — authenticated as {}", auth.subject)))
+        Ok(CallToolResponse::result(
+            CallToolResult::new()
+                .with_text_content(format!("ok — authenticated as {}", auth.subject)),
+        ))
     }
 }
 

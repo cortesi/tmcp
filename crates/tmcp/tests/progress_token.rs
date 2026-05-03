@@ -108,13 +108,15 @@ impl ServerHandler for ProgressTokenRecorder {
         _name: String,
         _arguments: Option<tmcp::Arguments>,
         _task: Option<schema::TaskMetadata>,
-    ) -> Result<schema::CallToolResult> {
+    ) -> Result<schema::CallToolResponse> {
         if let Some(token) = ctx.progress_token().cloned()
             && let Some(tx) = self.tx.lock().expect("token recorder lock").take()
         {
             tx.send(token).ok();
         }
-        Ok(schema::CallToolResult::new().with_text_content("ok"))
+        Ok(schema::CallToolResponse::result(
+            schema::CallToolResult::new().with_text_content("ok"),
+        ))
     }
 }
 

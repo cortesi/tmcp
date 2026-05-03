@@ -128,7 +128,9 @@ mod tests {
         let result = server
             .call_tool(ctx.ctx(), "echo".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         match &result.content[0] {
             ContentBlock::Text(text) => assert_eq!(text.text, "hello"),
             _ => panic!("Expected text content"),
@@ -142,7 +144,9 @@ mod tests {
         let result = server
             .call_tool(ctx.ctx(), "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         match &result.content[0] {
             ContentBlock::Text(text) => assert_eq!(text.text, "6"),
             _ => panic!("Expected text content"),
@@ -156,7 +160,9 @@ mod tests {
         let result = server
             .call_tool(ctx.ctx(), "multiply".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         match &result.content[0] {
             ContentBlock::Text(text) => assert_eq!(text.text, "12"),
             _ => panic!("Expected text content"),
@@ -165,7 +171,9 @@ mod tests {
         let result = server
             .call_tool(ctx.ctx(), "ping".to_string(), None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(
             result.structured_content,
             Some(serde_json::json!({ "message": "pong" }))
@@ -188,7 +196,9 @@ mod tests {
         let result = server
             .call_tool(ctx.ctx(), "echo".to_string(), None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(result.is_error, Some(true));
 
         // Invalid arguments
@@ -199,7 +209,9 @@ mod tests {
         let result = server
             .call_tool(ctx.ctx(), "add".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
         assert_eq!(result.is_error, Some(true));
     }
 
@@ -276,7 +288,9 @@ mod tests {
         let result = server
             .call_tool(ctx.ctx(), "test_tool".to_string(), Some(args.into()), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
 
         match &result.content[0] {
             ContentBlock::Text(text) => assert_eq!(text.text, "Custom: test"),

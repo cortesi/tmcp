@@ -19,11 +19,17 @@
 //! - `read_resource_fn`: Forward `resources/read` to an async method
 //! - `resource_templates_fn`: Forward `resources/templates/list` to an async method
 //! - `shutdown_fn`: Forward shutdown handling to an async method
+//! - `get_task_fn`: Forward `tasks/get` to an async method
+//! - `get_task_payload_fn`: Forward `tasks/result` to an async method
+//! - `list_tasks_fn`: Forward `tasks/list` to an async method
+//! - `cancel_task_fn`: Forward `tasks/cancel` to an async method
 //!
 //! All tool methods must be async and have one of the following signatures:
 //!
 //! ```ignore
 //! async fn tool_name(&self, context: &ServerCtx, params: ToolParams) -> Result<schema::CallToolResult>
+//! async fn task_tool(&self, context: &ServerCtx, task: schema::TaskMetadata, params: ToolParams) -> Result<schema::CreateTaskResult>
+//! async fn maybe_task_tool(&self, context: &ServerCtx, task: Option<schema::TaskMetadata>, params: ToolParams) -> Result<schema::CallToolResponse>
 //! async fn tool_name(&self, context: &ServerCtx, params: ToolParams) -> ToolResult<T>
 //! async fn tool_name(&self, context: &ServerCtx) -> ToolResult<T>
 //! async fn tool_name(&self, params: ToolParams) -> ToolResult<T>
@@ -164,6 +170,8 @@ struct ToolMethod {
     docs: String,
     /// Whether the tool expects a ServerCtx parameter.
     has_ctx: bool,
+    /// Whether the tool expects task metadata.
+    task_param: TaskParamKind,
     /// Parameter type metadata for the tool method.
     params_kind: ParamsKind,
     /// Tool return type kind for call routing.
@@ -209,12 +217,27 @@ enum ParamsKind {
 /// Return type shape for a tool method.
 enum ToolReturnKind {
     /// Tool returns `Result<CallToolResult>` (tmcp::Result).
-    Result,
+    CallResult,
+    /// Tool returns `Result<CreateTaskResult>` (tmcp::Result).
+    TaskResult,
+    /// Tool returns `Result<CallToolResponse>` (tmcp::Result).
+    CallResponse,
     /// Tool returns `ToolResult`.
     ToolResult {
         /// Optional output type for `ToolResult<T>`.
         output: Box<Option<syn::Type>>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Task metadata parameter shape for a tool method.
+enum TaskParamKind {
+    /// The method does not receive task metadata.
+    None,
+    /// The method receives `TaskMetadata` and requires task metadata.
+    Required,
+    /// The method receives `Option<TaskMetadata>`.
+    Optional,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -296,6 +319,14 @@ struct ServerMacroArgs {
     resource_templates_fn: Option<syn::Ident>,
     /// Optional function called when the server shuts down.
     shutdown_fn: Option<syn::Ident>,
+    /// Optional function used to get task status.
+    get_task_fn: Option<syn::Ident>,
+    /// Optional function used to get task results.
+    get_task_payload_fn: Option<syn::Ident>,
+    /// Optional function used to list tasks.
+    list_tasks_fn: Option<syn::Ident>,
+    /// Optional function used to cancel tasks.
+    cancel_task_fn: Option<syn::Ident>,
     /// Optional server name override.
     name: Option<Expr>,
     /// Optional server version override.
@@ -331,6 +362,18 @@ impl Parse for ServerMacroArgs {
             } else if ident == "shutdown_fn" {
                 let fn_name: syn::Ident = input.parse()?;
                 args.shutdown_fn = Some(fn_name);
+            } else if ident == "get_task_fn" {
+                let fn_name: syn::Ident = input.parse()?;
+                args.get_task_fn = Some(fn_name);
+            } else if ident == "get_task_payload_fn" {
+                let fn_name: syn::Ident = input.parse()?;
+                args.get_task_payload_fn = Some(fn_name);
+            } else if ident == "list_tasks_fn" {
+                let fn_name: syn::Ident = input.parse()?;
+                args.list_tasks_fn = Some(fn_name);
+            } else if ident == "cancel_task_fn" {
+                let fn_name: syn::Ident = input.parse()?;
+                args.cancel_task_fn = Some(fn_name);
             } else if ident == "name" {
                 let expr: Expr = input.parse()?;
                 args.name = Some(expr);
@@ -455,13 +498,49 @@ fn is_unit_type(ty: &syn::Type) -> bool {
 
 /// Check whether a type is `schema::CallToolResult`.
 fn is_call_tool_result_type(ty: &syn::Type) -> bool {
+    type_path_last_ident(ty)
+        .map(|ident| ident == "CallToolResult")
+        .unwrap_or(false)
+}
+
+/// Check whether a type is `schema::CreateTaskResult`.
+fn is_create_task_result_type(ty: &syn::Type) -> bool {
+    type_path_last_ident(ty)
+        .map(|ident| ident == "CreateTaskResult")
+        .unwrap_or(false)
+}
+
+/// Check whether a type is `schema::CallToolResponse`.
+fn is_call_tool_response_type(ty: &syn::Type) -> bool {
+    type_path_last_ident(ty)
+        .map(|ident| ident == "CallToolResponse")
+        .unwrap_or(false)
+}
+
+/// Check whether a type is `schema::TaskMetadata`.
+fn is_task_metadata_type(ty: &syn::Type) -> bool {
+    type_path_last_ident(ty)
+        .map(|ident| ident == "TaskMetadata")
+        .unwrap_or(false)
+}
+
+/// Check whether a type is `Option<schema::TaskMetadata>`.
+fn is_option_task_metadata_type(ty: &syn::Type) -> bool {
     match ty {
-        syn::Type::Path(type_path) => type_path
-            .path
-            .segments
-            .last()
-            .map(|segment| segment.ident == "CallToolResult")
-            .unwrap_or(false),
+        syn::Type::Path(type_path) => {
+            let Some(segment) = type_path.path.segments.last() else {
+                return false;
+            };
+            if segment.ident != "Option" {
+                return false;
+            }
+            let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+                return false;
+            };
+            args.args.iter().any(
+                |arg| matches!(arg, syn::GenericArgument::Type(ty) if is_task_metadata_type(ty)),
+            )
+        }
         _ => false,
     }
 }
@@ -813,32 +892,48 @@ fn parse_group_meta(attrs: &[syn::Attribute]) -> Result<GroupMeta> {
 
 /// Determine the tool return type kind.
 fn parse_tool_return(output: &syn::ReturnType) -> Result<ToolReturnKind> {
+    const RETURN_ERROR: &str = "tool methods must return Result<schema::CallToolResult>, \
+        Result<schema::CreateTaskResult>, Result<schema::CallToolResponse>, or ToolResult";
+
     let ty = match output {
         syn::ReturnType::Type(_, ty) => ty.as_ref(),
         _ => {
-            return Err(syn::Error::new(
-                output.span(),
-                "tool methods must return Result<schema::CallToolResult> or ToolResult",
-            ));
+            return Err(syn::Error::new(output.span(), RETURN_ERROR));
         }
     };
 
     let syn::Type::Path(type_path) = ty else {
-        return Err(syn::Error::new(
-            ty.span(),
-            "tool methods must return Result<schema::CallToolResult> or ToolResult",
-        ));
+        return Err(syn::Error::new(ty.span(), RETURN_ERROR));
     };
 
     let Some(segment) = type_path.path.segments.last() else {
-        return Err(syn::Error::new(
-            ty.span(),
-            "tool methods must return Result<schema::CallToolResult> or ToolResult",
-        ));
+        return Err(syn::Error::new(ty.span(), RETURN_ERROR));
     };
 
     match segment.ident.to_string().as_str() {
-        "Result" => Ok(ToolReturnKind::Result),
+        "Result" => {
+            let inner = match &segment.arguments {
+                syn::PathArguments::AngleBracketed(args) => args.args.iter().find_map(|arg| {
+                    if let syn::GenericArgument::Type(ty) = arg {
+                        Some(ty)
+                    } else {
+                        None
+                    }
+                }),
+                _ => None,
+            }
+            .ok_or_else(|| syn::Error::new(segment.span(), RETURN_ERROR))?;
+
+            if is_call_tool_result_type(inner) {
+                Ok(ToolReturnKind::CallResult)
+            } else if is_create_task_result_type(inner) {
+                Ok(ToolReturnKind::TaskResult)
+            } else if is_call_tool_response_type(inner) {
+                Ok(ToolReturnKind::CallResponse)
+            } else {
+                Err(syn::Error::new(inner.span(), RETURN_ERROR))
+            }
+        }
         "ToolResult" => {
             let output = match &segment.arguments {
                 syn::PathArguments::AngleBracketed(args) => args.args.iter().find_map(|arg| {
@@ -854,10 +949,41 @@ fn parse_tool_return(output: &syn::ReturnType) -> Result<ToolReturnKind> {
                 output: Box::new(output),
             })
         }
-        _ => Err(syn::Error::new(
-            segment.ident.span(),
-            "tool methods must return Result<schema::CallToolResult> or ToolResult",
-        )),
+        _ => Err(syn::Error::new(segment.ident.span(), RETURN_ERROR)),
+    }
+}
+
+/// Normalize task-support metadata implied by a task parameter.
+fn normalize_task_support(
+    method: &syn::ImplItemFn,
+    task_param: TaskParamKind,
+    task_support: Option<ToolTaskSupport>,
+) -> Result<Option<ToolTaskSupport>> {
+    match (task_param, task_support) {
+        (TaskParamKind::None, Some(ToolTaskSupport::Forbidden) | None) => Ok(task_support),
+        (TaskParamKind::None, Some(ToolTaskSupport::Optional | ToolTaskSupport::Required)) => {
+            Ok(task_support)
+        }
+        (TaskParamKind::Required, None) => Ok(Some(ToolTaskSupport::Required)),
+        (TaskParamKind::Required, Some(ToolTaskSupport::Required)) => {
+            Ok(Some(ToolTaskSupport::Required))
+        }
+        (TaskParamKind::Required, Some(ToolTaskSupport::Optional | ToolTaskSupport::Forbidden)) => {
+            Err(syn::Error::new(
+                method.sig.span(),
+                "TaskMetadata parameters require task_support = \"required\"",
+            ))
+        }
+        (TaskParamKind::Optional, None) => Ok(Some(ToolTaskSupport::Optional)),
+        (TaskParamKind::Optional, Some(ToolTaskSupport::Optional)) => {
+            Ok(Some(ToolTaskSupport::Optional))
+        }
+        (TaskParamKind::Optional, Some(ToolTaskSupport::Required | ToolTaskSupport::Forbidden)) => {
+            Err(syn::Error::new(
+                method.sig.span(),
+                "Option<TaskMetadata> parameters require task_support = \"optional\"",
+            ))
+        }
     }
 }
 
@@ -918,6 +1044,23 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
             }
         }
     }
+
+    let mut task_param = TaskParamKind::None;
+    if params.len() > start_index
+        && let syn::FnArg::Typed(pat_type) = params[start_index]
+    {
+        let ty = pat_type.ty.as_ref();
+        if is_task_metadata_type(ty) {
+            task_param = TaskParamKind::Required;
+            start_index += 1;
+        } else if is_option_task_metadata_type(ty) {
+            task_param = TaskParamKind::Optional;
+            start_index += 1;
+        }
+    }
+
+    let mut attrs = attrs;
+    attrs.task_support = normalize_task_support(method, task_param, attrs.task_support)?;
 
     let remaining = &params[start_index..];
     let params_kind = if remaining.is_empty() {
@@ -989,6 +1132,7 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
         name,
         docs,
         has_ctx,
+        task_param,
         params_kind,
         return_kind,
         attrs,
@@ -1170,8 +1314,9 @@ fn generate_call_tool(info: &ServerInfo) -> TokenStream {
             context: &tmcp::ServerCtx,
             name: String,
             arguments: Option<tmcp::Arguments>,
-            _task: Option<tmcp::schema::TaskMetadata>,
-        ) -> tmcp::Result<tmcp::schema::CallToolResult> {
+            task: Option<tmcp::schema::TaskMetadata>,
+        ) -> tmcp::Result<tmcp::schema::CallToolResponse> {
+            let _ = &task;
             match name.as_str() {
                 #(#tool_matches)*
                 _ => Err(tmcp::Error::ToolNotFound(name))
@@ -1189,31 +1334,35 @@ fn generate_tool_call_arm(
     let name = &tool.name;
     let method = syn::Ident::new(name, proc_macro2::Span::call_site());
     let defaults = tool.attrs.defaults;
-    let (args_prelude, call_expr) = match (&tool.has_ctx, &tool.params_kind) {
-        (false, ParamsKind::None) => (
+    let ctx_arg = if tool.has_ctx {
+        quote! { context, }
+    } else {
+        quote! {}
+    };
+    let task_prelude = match tool.task_param {
+        TaskParamKind::None => quote! {},
+        TaskParamKind::Required => quote! {
+            let task = task.ok_or_else(|| {
+                tmcp::Error::InvalidParams("tool requires task metadata".to_string())
+            })?;
+        },
+        TaskParamKind::Optional => quote! {},
+    };
+    let task_arg = match tool.task_param {
+        TaskParamKind::None => quote! {},
+        TaskParamKind::Required | TaskParamKind::Optional => quote! { task, },
+    };
+    let (args_prelude, call_expr) = match &tool.params_kind {
+        ParamsKind::None => (
             quote! { let _ = arguments; },
-            quote! { #receiver.#method().await },
+            quote! { #receiver.#method(#ctx_arg #task_arg).await },
         ),
-        (true, ParamsKind::None) => (
+        ParamsKind::Unit => (
             quote! { let _ = arguments; },
-            quote! { #receiver.#method(context).await },
+            quote! { #receiver.#method(#ctx_arg #task_arg ()).await },
         ),
-        (false, ParamsKind::Unit) => (
-            quote! { let _ = arguments; },
-            quote! { #receiver.#method(()).await },
-        ),
-        (true, ParamsKind::Unit) => (
-            quote! { let _ = arguments; },
-            quote! { #receiver.#method(context, ()).await },
-        ),
-        (has_ctx, ParamsKind::Typed(params_type)) => {
+        ParamsKind::Typed(params_type) => {
             let params_type = params_type.as_ref();
-            let call = if *has_ctx {
-                quote! { #receiver.#method(context, params).await }
-            } else {
-                quote! { #receiver.#method(params).await }
-            };
-
             (
                 quote! {
                     let params: #params_type = match tmcp::Arguments::into_tool_params(
@@ -1222,22 +1371,17 @@ fn generate_tool_call_arm(
                     ) {
                         Ok(params) => params,
                         Err(err) => {
-                            return Ok(err.into());
+                            let result: tmcp::schema::CallToolResult = err.into();
+                            return Ok(tmcp::schema::CallToolResponse::Result(result));
                         }
                     };
                 },
-                call,
+                quote! { #receiver.#method(#ctx_arg #task_arg params).await },
             )
         }
-        (has_ctx, ParamsKind::Flat(params)) => {
+        ParamsKind::Flat(params) => {
             let struct_ident = flat_args_struct_ident(owner_name, name);
             let param_idents: Vec<_> = params.iter().map(|param| &param.ident).collect();
-
-            let call = if *has_ctx {
-                quote! { #receiver.#method(context, #(#param_idents),*).await }
-            } else {
-                quote! { #receiver.#method(#(#param_idents),*).await }
-            };
 
             (
                 quote! {
@@ -1247,27 +1391,46 @@ fn generate_tool_call_arm(
                     ) {
                         Ok(params) => params,
                         Err(err) => {
-                            return Ok(err.into());
+                            let result: tmcp::schema::CallToolResult = err.into();
+                            return Ok(tmcp::schema::CallToolResponse::Result(result));
                         }
                     };
                     let #struct_ident { #(#param_idents),* } = params;
                 },
-                call,
+                quote! { #receiver.#method(#ctx_arg #task_arg #(#param_idents),*).await },
             )
         }
     };
 
     let call = match &tool.return_kind {
-        ToolReturnKind::Result => quote! {
+        ToolReturnKind::CallResult => quote! {
             #args_prelude
+            #task_prelude
+            #call_expr.map(tmcp::schema::CallToolResponse::Result)
+        },
+        ToolReturnKind::TaskResult => quote! {
+            #args_prelude
+            #task_prelude
+            #call_expr.map(tmcp::schema::CallToolResponse::Task)
+        },
+        ToolReturnKind::CallResponse => quote! {
+            #args_prelude
+            #task_prelude
             #call_expr
         },
         ToolReturnKind::ToolResult { .. } => quote! {
             #args_prelude
+            #task_prelude
             let result = #call_expr;
             Ok(match result {
-                Ok(value) => value.into(),
-                Err(err) => err.into(),
+                Ok(value) => {
+                    let result: tmcp::schema::CallToolResult = value.into();
+                    tmcp::schema::CallToolResponse::Result(result)
+                }
+                Err(err) => {
+                    let result: tmcp::schema::CallToolResult = err.into();
+                    tmcp::schema::CallToolResponse::Result(result)
+                }
             })
         },
     };
@@ -1500,6 +1663,16 @@ fn has_tools(info: &ServerInfo) -> bool {
     !info.tools.is_empty()
 }
 
+/// Determine if task-augmented tool calls should be advertised.
+fn has_task_tool_calls(info: &ServerInfo) -> bool {
+    info.tools.iter().any(|tool| {
+        matches!(
+            tool.attrs.task_support,
+            Some(ToolTaskSupport::Optional | ToolTaskSupport::Required)
+        )
+    })
+}
+
 /// How the generated initializer should advertise tools.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolCapability {
@@ -1576,6 +1749,24 @@ fn generate_default_initialize_with_prologue(
         quote! {}
     };
 
+    let task_tools_call_setter = if has_task_tool_calls(info) {
+        quote! { init = init.with_task_tools_call(); }
+    } else {
+        quote! {}
+    };
+
+    let task_list_setter = if args.list_tasks_fn.is_some() {
+        quote! { init = init.with_tasks_list(); }
+    } else {
+        quote! {}
+    };
+
+    let task_cancel_setter = if args.cancel_task_fn.is_some() {
+        quote! { init = init.with_tasks_cancel(); }
+    } else {
+        quote! {}
+    };
+
     quote! {
         async fn initialize(
             &self,
@@ -1589,6 +1780,9 @@ fn generate_default_initialize_with_prologue(
                 .with_version(#version_expr);
             #tools_capability_setter
             #resources_capability_setter
+            #task_tools_call_setter
+            #task_list_setter
+            #task_cancel_setter
             #instructions_setter
             #protocol_version_setter
             Ok(init)
@@ -1685,7 +1879,7 @@ fn generate_group_dispatch_chain(groups: &[GroupMethod], receiver: &TokenStream)
                 let segment = #segment_expr;
                 if let Some(rest) = name.strip_prefix(segment.as_str()) {
                     if let Some(rest) = rest.strip_prefix('.') {
-                        return tmcp::GroupDispatch::call_tool(&group, context, rest, arguments)
+                        return tmcp::GroupDispatch::call_tool(&group, context, rest, arguments, task)
                             .await;
                     }
                 }
@@ -1713,11 +1907,11 @@ fn generate_toolset_call_tool(info: &ServerInfo, toolset_field: &syn::Ident) -> 
             context: &tmcp::ServerCtx,
             name: String,
             arguments: Option<tmcp::Arguments>,
-            _task: Option<tmcp::schema::TaskMetadata>,
-        ) -> tmcp::Result<tmcp::schema::CallToolResult> {
+            task: Option<tmcp::schema::TaskMetadata>,
+        ) -> tmcp::Result<tmcp::schema::CallToolResponse> {
             self.__ensure_tools_registered();
             self.#toolset_field
-                .call_tool_with(self, context, &name, arguments, |handler, context, name, arguments| -> tmcp::ToolFuture<'_> {
+                .call_tool_with(self, context, &name, arguments, task, |handler, context, name, arguments, task| -> tmcp::ToolCallFuture<'_> {
                     Box::pin(async move {
                         match name {
                             #(#tool_matches)*
@@ -1727,6 +1921,7 @@ fn generate_toolset_call_tool(info: &ServerInfo, toolset_field: &syn::Ident) -> 
                                     .#toolset_field
                                     .call_dynamic_tool(context, name, arguments)
                                     .await
+                                    .map(Into::into)
                             }
                         }
                     })
@@ -1827,7 +2022,8 @@ fn generate_group_dispatch_impl(info: &ServerInfo) -> TokenStream {
                 context: &'a tmcp::ServerCtx,
                 name: &'a str,
                 arguments: Option<tmcp::Arguments>,
-            ) -> tmcp::ToolFuture<'a> {
+                task: Option<tmcp::schema::TaskMetadata>,
+            ) -> tmcp::ToolCallFuture<'a> {
                 Box::pin(async move {
                     match name {
                         #(#tool_matches)*
@@ -1906,18 +2102,94 @@ fn generate_on_shutdown(args: &ServerMacroArgs) -> TokenStream {
     }
 }
 
+/// Generate the ServerHandler::get_task implementation if requested.
+fn generate_get_task(args: &ServerMacroArgs) -> TokenStream {
+    if let Some(get_task_fn) = &args.get_task_fn {
+        quote! {
+            async fn get_task(
+                &self,
+                context: &tmcp::ServerCtx,
+                task_id: String,
+            ) -> tmcp::Result<tmcp::schema::GetTaskResult> {
+                self.#get_task_fn(context, task_id).await
+            }
+        }
+    } else {
+        quote! {}
+    }
+}
+
+/// Generate the ServerHandler::get_task_payload implementation if requested.
+fn generate_get_task_payload(args: &ServerMacroArgs) -> TokenStream {
+    if let Some(get_task_payload_fn) = &args.get_task_payload_fn {
+        quote! {
+            async fn get_task_payload(
+                &self,
+                context: &tmcp::ServerCtx,
+                task_id: String,
+            ) -> tmcp::Result<tmcp::schema::GetTaskPayloadResult> {
+                self.#get_task_payload_fn(context, task_id).await
+            }
+        }
+    } else {
+        quote! {}
+    }
+}
+
+/// Generate the ServerHandler::list_tasks implementation if requested.
+fn generate_list_tasks(args: &ServerMacroArgs) -> TokenStream {
+    if let Some(list_tasks_fn) = &args.list_tasks_fn {
+        quote! {
+            async fn list_tasks(
+                &self,
+                context: &tmcp::ServerCtx,
+                cursor: Option<tmcp::schema::Cursor>,
+            ) -> tmcp::Result<tmcp::schema::ListTasksResult> {
+                self.#list_tasks_fn(context, cursor).await
+            }
+        }
+    } else {
+        quote! {}
+    }
+}
+
+/// Generate the ServerHandler::cancel_task implementation if requested.
+fn generate_cancel_task(args: &ServerMacroArgs) -> TokenStream {
+    if let Some(cancel_task_fn) = &args.cancel_task_fn {
+        quote! {
+            async fn cancel_task(
+                &self,
+                context: &tmcp::ServerCtx,
+                task_id: String,
+            ) -> tmcp::Result<tmcp::schema::CancelTaskResult> {
+                self.#cancel_task_fn(context, task_id).await
+            }
+        }
+    } else {
+        quote! {}
+    }
+}
+
 /// Generate all optional ServerHandler forwarding methods.
 fn generate_server_forwarders(args: &ServerMacroArgs) -> TokenStream {
     let list_resources = generate_list_resources(args);
     let read_resource = generate_read_resource(args);
     let list_resource_templates = generate_list_resource_templates(args);
     let on_shutdown = generate_on_shutdown(args);
+    let get_task = generate_get_task(args);
+    let get_task_payload = generate_get_task_payload(args);
+    let list_tasks = generate_list_tasks(args);
+    let cancel_task = generate_cancel_task(args);
 
     quote! {
         #on_shutdown
         #list_resources
         #read_resource
         #list_resource_templates
+        #get_task
+        #get_task_payload
+        #list_tasks
+        #cancel_task
     }
 }
 
@@ -2227,6 +2499,57 @@ fn validate_shutdown_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<(
     validate_unit_result(method, "shutdown_fn")
 }
 
+/// Validate the signature of a get task callback.
+fn validate_get_task_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "get_task_fn")?;
+    let params = validate_callback_signature(method, "get_task_fn", 3)?;
+    validate_callback_arg_type(params[1], "get_task_fn", "&ServerCtx", is_server_ctx_type)?;
+    validate_callback_arg_type(params[2], "get_task_fn", "String", is_string_type)?;
+    validate_result_payload(method, "get_task_fn", "GetTaskResult")
+}
+
+/// Validate the signature of a get task payload callback.
+fn validate_get_task_payload_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "get_task_payload_fn")?;
+    let params = validate_callback_signature(method, "get_task_payload_fn", 3)?;
+    validate_callback_arg_type(
+        params[1],
+        "get_task_payload_fn",
+        "&ServerCtx",
+        is_server_ctx_type,
+    )?;
+    validate_callback_arg_type(params[2], "get_task_payload_fn", "String", is_string_type)?;
+    validate_result_payload(method, "get_task_payload_fn", "GetTaskPayloadResult")
+}
+
+/// Validate the signature of a list tasks callback.
+fn validate_list_tasks_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "list_tasks_fn")?;
+    let params = validate_callback_signature(method, "list_tasks_fn", 3)?;
+    validate_callback_arg_type(params[1], "list_tasks_fn", "&ServerCtx", is_server_ctx_type)?;
+    validate_callback_arg_type(
+        params[2],
+        "list_tasks_fn",
+        "Option<Cursor>",
+        is_option_cursor_type,
+    )?;
+    validate_result_payload(method, "list_tasks_fn", "ListTasksResult")
+}
+
+/// Validate the signature of a cancel task callback.
+fn validate_cancel_task_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "cancel_task_fn")?;
+    let params = validate_callback_signature(method, "cancel_task_fn", 3)?;
+    validate_callback_arg_type(
+        params[1],
+        "cancel_task_fn",
+        "&ServerCtx",
+        is_server_ctx_type,
+    )?;
+    validate_callback_arg_type(params[2], "cancel_task_fn", "String", is_string_type)?;
+    validate_result_payload(method, "cancel_task_fn", "CancelTaskResult")
+}
+
 /// Validate all optional ServerHandler forwarding callbacks.
 fn validate_server_forwarders(impl_block: &ItemImpl, args: &ServerMacroArgs) -> Result<()> {
     if let Some(ref resources_fn) = args.resources_fn {
@@ -2240,6 +2563,18 @@ fn validate_server_forwarders(impl_block: &ItemImpl, args: &ServerMacroArgs) -> 
     }
     if let Some(ref shutdown_fn) = args.shutdown_fn {
         validate_shutdown_fn(impl_block, shutdown_fn)?;
+    }
+    if let Some(ref get_task_fn) = args.get_task_fn {
+        validate_get_task_fn(impl_block, get_task_fn)?;
+    }
+    if let Some(ref get_task_payload_fn) = args.get_task_payload_fn {
+        validate_get_task_payload_fn(impl_block, get_task_payload_fn)?;
+    }
+    if let Some(ref list_tasks_fn) = args.list_tasks_fn {
+        validate_list_tasks_fn(impl_block, list_tasks_fn)?;
+    }
+    if let Some(ref cancel_task_fn) = args.cancel_task_fn {
+        validate_cancel_task_fn(impl_block, cancel_task_fn)?;
     }
     Ok(())
 }
@@ -2975,16 +3310,18 @@ mod tests {
                     name: "echo".to_string(),
                     docs: "Echo tool".to_string(),
                     has_ctx: true,
+                    task_param: TaskParamKind::None,
                     params_kind: ParamsKind::Typed(Box::new(syn::parse_quote! { EchoParams })),
-                    return_kind: ToolReturnKind::Result,
+                    return_kind: ToolReturnKind::CallResult,
                     attrs: ToolAttrs::default(),
                 },
                 ToolMethod {
                     name: "ping".to_string(),
                     docs: "Ping tool".to_string(),
                     has_ctx: true,
+                    task_param: TaskParamKind::None,
                     params_kind: ParamsKind::Typed(Box::new(syn::parse_quote! { PingParams })),
-                    return_kind: ToolReturnKind::Result,
+                    return_kind: ToolReturnKind::CallResult,
                     attrs: ToolAttrs::default(),
                 },
             ],
@@ -3011,8 +3348,9 @@ mod tests {
                 name: "echo".to_string(),
                 docs: "Echo tool".to_string(),
                 has_ctx: true,
+                task_param: TaskParamKind::None,
                 params_kind: ParamsKind::Typed(Box::new(syn::parse_quote! { EchoParams })),
-                return_kind: ToolReturnKind::Result,
+                return_kind: ToolReturnKind::CallResult,
                 attrs: ToolAttrs::default(),
             }],
             groups: Vec::new(),

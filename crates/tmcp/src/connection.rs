@@ -9,10 +9,10 @@ use crate::{
     context::{ClientCtx, ServerCtx},
     error::ToolError,
     schema::{
-        self, CallToolResult, ClientRequest, Cursor, ElicitRequestParams, ElicitResult,
-        GetPromptResult, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
-        ListResourcesResult, ListRootsResult, ListTasksResult, ListToolsResult, LoggingLevel,
-        ReadResourceResult, ServerRequest,
+        self, CallToolResponse, CallToolResult, ClientRequest, Cursor, ElicitRequestParams,
+        ElicitResult, GetPromptResult, InitializeResult, ListPromptsResult,
+        ListResourceTemplatesResult, ListResourcesResult, ListRootsResult, ListTasksResult,
+        ListToolsResult, LoggingLevel, ReadResourceResult, ServerRequest,
     },
 };
 
@@ -240,7 +240,7 @@ pub trait ServerHandler: Send + Sync {
         name: String,
         _arguments: Option<crate::Arguments>,
         _task: Option<schema::TaskMetadata>,
-    ) -> Result<schema::CallToolResult> {
+    ) -> Result<CallToolResponse> {
         Err(Error::ToolNotFound(name))
     }
 
@@ -432,7 +432,7 @@ pub trait ServerHandler: Send + Sync {
                     Ok(result) => serialize_result(Ok(result)),
                     Err(Error::InvalidParams(message)) => {
                         let tool_result: CallToolResult = ToolError::invalid_input(message).into();
-                        serialize_result(Ok(tool_result))
+                        serialize_result(Ok(CallToolResponse::from(tool_result)))
                     }
                     Err(err) => Err(err),
                 }

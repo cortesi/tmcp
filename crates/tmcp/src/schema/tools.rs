@@ -203,6 +203,59 @@ impl Default for CallToolResult {
     }
 }
 
+/// The response to a `tools/call` request.
+///
+/// Task-augmented tool calls may create a task instead of returning an immediate
+/// tool result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CallToolResponse {
+    /// The tool completed immediately.
+    Result(CallToolResult),
+    /// The tool created a task for out-of-band completion.
+    Task(CreateTaskResult),
+}
+
+impl CallToolResponse {
+    /// Create an immediate tool-call response.
+    pub fn result(result: CallToolResult) -> Self {
+        Self::Result(result)
+    }
+
+    /// Create a task-created tool-call response.
+    pub fn task(result: CreateTaskResult) -> Self {
+        Self::Task(result)
+    }
+
+    /// Borrow the immediate tool result, if this response completed immediately.
+    pub fn as_result(&self) -> Option<&CallToolResult> {
+        match self {
+            Self::Result(result) => Some(result),
+            Self::Task(_) => None,
+        }
+    }
+
+    /// Consume the response and return the immediate tool result, if present.
+    pub fn into_result(self) -> Option<CallToolResult> {
+        match self {
+            Self::Result(result) => Some(result),
+            Self::Task(_) => None,
+        }
+    }
+}
+
+impl From<CallToolResult> for CallToolResponse {
+    fn from(result: CallToolResult) -> Self {
+        Self::Result(result)
+    }
+}
+
+impl From<CreateTaskResult> for CallToolResponse {
+    fn from(result: CreateTaskResult) -> Self {
+        Self::Task(result)
+    }
+}
+
 /// Additional properties describing a Tool to clients.
 ///
 /// NOTE: all properties in ToolAnnotations are hints.
