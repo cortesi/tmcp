@@ -1,10 +1,11 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{NotificationParams, PaginatedResult, Result};
 use crate::macros::with_meta;
 
 /// The status of a task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Working,
@@ -31,7 +32,7 @@ pub struct RelatedTaskMetadata {
 }
 
 /// Data associated with a task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Task {
     /// The task identifier.
     #[serde(rename = "taskId")]
