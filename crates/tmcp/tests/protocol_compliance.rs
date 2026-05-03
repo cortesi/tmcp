@@ -76,7 +76,7 @@ impl ServerHandler for TestConnection {
     ) -> Result<InitializeResult> {
         Ok(InitializeResult::new("test-server")
             .with_version("1.0.0")
-            .with_tools(true))
+            .with_tools(Some(true)))
     }
 
     async fn list_tools(

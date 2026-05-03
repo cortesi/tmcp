@@ -4,7 +4,8 @@
 mod tests {
     use async_trait::async_trait;
     use tmcp::{
-        Error, Result, ServerCtx, ServerHandler, inspect_server,
+        Error, McpApiRenderOptions, Result, ServerCtx, ServerHandler, inspect_server,
+        render_mcp_api,
         schema::{
             ClientCapabilities, Cursor, Implementation, InitializeResult, ListPromptsResult,
             ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt, Resource,
@@ -29,7 +30,7 @@ mod tests {
         ) -> Result<InitializeResult> {
             Ok(InitializeResult::new("api-server")
                 .with_version("1.2.3")
-                .with_tools(false)
+                .with_tools(Some(false))
                 .with_resources(false, true)
                 .with_prompts(false))
         }
@@ -142,5 +143,20 @@ mod tests {
         assert!(api.resources.is_empty());
         assert!(api.resource_templates.is_empty());
         assert!(api.prompts.is_empty());
+    }
+
+    /// The public renderer formats inspected APIs as human-readable text.
+    #[tokio::test]
+    async fn render_mcp_api_formats_inspected_api() {
+        let api = inspect_server(&ApiServer).await.expect("inspect server");
+
+        let rendered = render_mcp_api(&api, McpApiRenderOptions { color: false });
+
+        assert!(rendered.contains("MCP API"));
+        assert!(rendered.contains("Tools (2)"));
+        assert!(rendered.contains("first_tool"));
+        assert!(rendered.contains("Resource Templates (1)"));
+        assert!(!rendered.contains("No fields."));
+        assert!(!rendered.contains("\x1b["));
     }
 }

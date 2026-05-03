@@ -107,6 +107,8 @@ mod http;
 mod jsonrpc;
 /// Helpers for inspecting a server's MCP API.
 mod mcp_api;
+/// Human-oriented rendering for MCP API snapshots.
+mod mcp_api_render;
 /// Request/response routing and tracking.
 mod request_handler;
 /// Server implementation and handle types.
@@ -132,6 +134,7 @@ pub use error::{
     TOOL_ERROR_TIMEOUT, ToolError, ToolResult,
 };
 pub use mcp_api::{McpApi, McpApiOptions, inspect_server, inspect_server_with};
+pub use mcp_api_render::{McpApiRenderOptions, render_mcp_api};
 pub use schema::ToolResponse;
 pub use server::{EmbeddedHttpServer, HttpBuilder, Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root

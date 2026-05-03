@@ -69,7 +69,7 @@ mod tests {
             ) -> Result<schema::InitializeResult> {
                 Ok(schema::InitializeResult::new("test-server")
                     .with_version("1.0.0")
-                    .with_tools(false))
+                    .with_tools(Some(false)))
             }
 
             async fn list_tools(
@@ -184,7 +184,7 @@ mod tests {
             ) -> Result<schema::InitializeResult> {
                 Ok(schema::InitializeResult::new("test-server")
                     .with_version("1.0.0")
-                    .with_tools(false)
+                    .with_tools(Some(false))
                     .with_resources(true, false))
             }
 

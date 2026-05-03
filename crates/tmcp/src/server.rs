@@ -98,7 +98,7 @@ impl Server<()> {
     ///         // Specify server capabilities here
     ///         Ok(InitializeResult::new("my-server")
     ///             .with_version("1.0.0")
-    ///             .with_tools(true)           // Enable tools capability
+    ///             .with_tools(None)           // Enable static tools capability
     ///             .with_resources(true, true) // Enable resources with subscribe and list_changed
     ///             .with_prompts(true)         // Enable prompts capability
     ///             .with_logging()             // Enable logging capability

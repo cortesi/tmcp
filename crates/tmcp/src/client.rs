@@ -1060,7 +1060,7 @@ mod tests {
                 // Return capabilities that include tools with list_changed
                 Ok(InitializeResult::new("test-server")
                     .with_version("1.0.0")
-                    .with_tools(true))
+                    .with_tools(Some(true)))
             }
         }
 
@@ -1314,7 +1314,7 @@ mod tests {
             ) -> Result<InitializeResult> {
                 Ok(InitializeResult::new("test-server")
                     .with_version("1.0.0")
-                    .with_tools(true))
+                    .with_tools(Some(true)))
             }
         }
 

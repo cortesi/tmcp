@@ -84,11 +84,9 @@ impl InitializeResult {
         self
     }
 
-    /// Enable tools capability
-    pub fn with_tools(mut self, list_changed: bool) -> Self {
-        self.capabilities.tools = Some(ToolsCapability {
-            list_changed: Some(list_changed),
-        });
+    /// Enable tools capability with optional list change notifications.
+    pub fn with_tools(mut self, list_changed: Option<bool>) -> Self {
+        self.capabilities.tools = Some(ToolsCapability { list_changed });
         self
     }
 
@@ -126,7 +124,7 @@ mod tests {
         let result = InitializeResult::new("test-server")
             .with_version("1.2.3")
             .with_logging()
-            .with_tools(true)
+            .with_tools(Some(true))
             .with_tasks_list()
             .with_task_tools_call();
 
@@ -140,5 +138,13 @@ mod tests {
         assert!(tasks.list.is_some());
         assert!(tasks.cancel.is_none());
         assert!(tasks.requests.unwrap().tools.unwrap().call.is_some());
+    }
+
+    #[test]
+    fn test_initialize_result_builder_static_tools() {
+        let result = InitializeResult::new("test-server").with_tools(None);
+
+        let tools = result.capabilities.tools.expect("tools capability");
+        assert_eq!(tools.list_changed, None);
     }
 }

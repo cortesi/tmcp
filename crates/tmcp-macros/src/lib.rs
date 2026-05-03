@@ -1486,8 +1486,12 @@ fn generate_initialize(
         }
     } else {
         // Use the default implementation
-        let tools_list_changed = has_tools(info).then_some(true);
-        generate_default_initialize(info, args, tools_list_changed)
+        let tools_capability = if has_tools(info) {
+            ToolCapability::Static
+        } else {
+            ToolCapability::Omit
+        };
+        generate_default_initialize(info, args, tools_capability)
     }
 }
 
@@ -1496,21 +1500,32 @@ fn has_tools(info: &ServerInfo) -> bool {
     !info.tools.is_empty()
 }
 
+/// How the generated initializer should advertise tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolCapability {
+    /// Do not advertise tools.
+    Omit,
+    /// Advertise a static tool list without list change notifications.
+    Static,
+    /// Advertise a dynamic tool list with list change notifications.
+    Dynamic,
+}
+
 /// Generate the default ServerHandler::initialize implementation.
 fn generate_default_initialize(
     info: &ServerInfo,
     args: &ServerMacroArgs,
-    tools_list_changed: Option<bool>,
+    tools_capability: ToolCapability,
 ) -> TokenStream {
     let prologue = quote! {};
-    generate_default_initialize_with_prologue(info, args, tools_list_changed, &prologue)
+    generate_default_initialize_with_prologue(info, args, tools_capability, &prologue)
 }
 
 /// Generate the default initialize implementation with a custom prologue.
 fn generate_default_initialize_with_prologue(
     info: &ServerInfo,
     args: &ServerMacroArgs,
-    tools_list_changed: Option<bool>,
+    tools_capability: ToolCapability,
     prologue: &TokenStream,
 ) -> TokenStream {
     let snake_case_name = info.struct_name.to_snake_case();
@@ -1548,9 +1563,11 @@ fn generate_default_initialize_with_prologue(
         _ => (quote! { _protocol_version: String }, quote! {}),
     };
 
-    let tools_capability_setter = tools_list_changed
-        .map(|list_changed| quote! { init = init.with_tools(#list_changed); })
-        .unwrap_or_default();
+    let tools_capability_setter = match tools_capability {
+        ToolCapability::Omit => quote! {},
+        ToolCapability::Static => quote! { init = init.with_tools(None); },
+        ToolCapability::Dynamic => quote! { init = init.with_tools(Some(true)); },
+    };
 
     let resources_capability_setter = if args.has_resource_callbacks() {
         let list_changed = args.resources_list_changed();
@@ -1742,7 +1759,7 @@ fn generate_toolset_initialize(
         let prologue = quote! {
             self.__ensure_tools_registered();
         };
-        generate_default_initialize_with_prologue(info, args, Some(true), &prologue)
+        generate_default_initialize_with_prologue(info, args, ToolCapability::Dynamic, &prologue)
     }
 }
 
@@ -3207,6 +3224,6 @@ mod tests {
         assert!(!result_str.contains("with_instructions"));
         assert!(result_str.contains("InitializeResult :: new"));
         assert!(result_str.contains("with_version"));
-        assert!(result_str.contains("with_tools"));
+        assert!(result_str.contains("with_tools (None)"));
     }
 }

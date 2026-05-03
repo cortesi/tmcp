@@ -80,7 +80,7 @@ impl ServerHandler for ClientCallsServer {
 
         Ok(InitializeResult::new("server-client-calls-demo")
             .with_version(env!("CARGO_PKG_VERSION"))
-            .with_tools(true))
+            .with_tools(Some(true)))
     }
 
     async fn list_tools(

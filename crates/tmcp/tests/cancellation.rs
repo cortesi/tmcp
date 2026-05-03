@@ -30,7 +30,7 @@ mod tests {
             _capabilities: schema::ClientCapabilities,
             _client_info: schema::Implementation,
         ) -> Result<schema::InitializeResult> {
-            Ok(schema::InitializeResult::new("cancellation-server").with_tools(false))
+            Ok(schema::InitializeResult::new("cancellation-server").with_tools(Some(false)))
         }
 
         async fn call_tool(

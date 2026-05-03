@@ -80,6 +80,8 @@ mod tests {
             result.instructions,
             Some("Test server with echo and add tools".to_string())
         );
+        let tools_cap = result.capabilities.tools.expect("tools capability");
+        assert_eq!(tools_cap.list_changed, None);
     }
 
     #[tokio::test]
@@ -217,7 +219,7 @@ mod tests {
         ) -> Result<InitializeResult> {
             Ok(InitializeResult::new("custom_init_server")
                 .with_version("2.0.0")
-                .with_tools(true)
+                .with_tools(Some(true))
                 .with_instructions("Custom initialized server"))
         }
 

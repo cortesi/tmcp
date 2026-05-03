@@ -71,7 +71,7 @@ impl WeatherServer {
     ) -> Result<InitializeResult> {
         let mut init = InitializeResult::new("weather_server")
             .with_version(env!("CARGO_PKG_VERSION"))
-            .with_tools(true)
+            .with_tools(Some(true))
             .with_logging()
             .with_instructions("Minimal weather server example");
         if !protocol_version.is_empty() {
