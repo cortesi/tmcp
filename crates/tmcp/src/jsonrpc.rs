@@ -103,6 +103,7 @@ where
                 id,
                 result: schema::JSONRpcResult {
                     _meta: None,
+                    _extra: Default::default(),
                     other: if let Some(obj) = json_value.as_object() {
                         obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                     } else {

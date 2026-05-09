@@ -1,6 +1,6 @@
 //! Resource types and helpers.
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, result::Result as StdResult};
 
 use base64::{Engine, engine::general_purpose::STANDARD as Base64Standard};
 use mime_guess::mime::{APPLICATION, TEXT};
@@ -106,6 +106,7 @@ impl ReadResourceResult {
         Self {
             contents: Vec::new(),
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -192,6 +193,7 @@ impl Resource {
             name: name.into(),
             title: None,
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -277,6 +279,7 @@ impl ResourceTemplate {
             name: name.into(),
             title: None,
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -323,6 +326,7 @@ impl ResourceContents {
             mime_type: None,
             text: text.into(),
             _meta: None,
+            _extra: Default::default(),
         })
     }
 
@@ -333,6 +337,7 @@ impl ResourceContents {
             mime_type: None,
             blob: blob.into(),
             _meta: None,
+            _extra: Default::default(),
         })
     }
 
@@ -344,6 +349,7 @@ impl ResourceContents {
             mime_type: Some("application/json".to_string()),
             text: json_text,
             _meta: None,
+            _extra: Default::default(),
         }))
     }
 
@@ -374,6 +380,7 @@ impl ResourceContents {
                                 mime_type: Some(mime_type.to_string()),
                                 text,
                                 _meta: None,
+                                _extra: Default::default(),
                             }))
                         } else {
                             // Binary application type
@@ -382,6 +389,7 @@ impl ResourceContents {
                                 mime_type: Some(mime_type.to_string()),
                                 blob: Base64Standard.encode(text.as_bytes()),
                                 _meta: None,
+                                _extra: Default::default(),
                             }))
                         }
                     }
@@ -392,6 +400,7 @@ impl ResourceContents {
                             mime_type: Some(mime_type.to_string()),
                             blob: Base64Standard.encode(&contents),
                             _meta: None,
+                            _extra: Default::default(),
                         }))
                     }
                 }
@@ -403,6 +412,7 @@ impl ResourceContents {
                     mime_type: Some(mime_type.to_string()),
                     blob: Base64Standard.encode(&contents),
                     _meta: None,
+                    _extra: Default::default(),
                 }))
             }
         }
@@ -430,6 +440,7 @@ impl TextResourceContents {
             mime_type: None,
             text: text.into(),
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -461,6 +472,7 @@ impl BlobResourceContents {
             mime_type: None,
             blob: blob.into(),
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -468,5 +480,30 @@ impl BlobResourceContents {
     pub fn with_mime_type(mut self, mime_type: impl Into<String>) -> Self {
         self.mime_type = Some(mime_type.into());
         self
+    }
+
+    /// Decode the base64 blob data.
+    pub fn blob_bytes(&self) -> StdResult<Vec<u8>, base64::DecodeError> {
+        Base64Standard.decode(&self.blob)
+    }
+
+    /// Replace blob data with base64-encoded bytes.
+    pub fn with_blob_bytes(mut self, data: &[u8]) -> Self {
+        self.blob = Base64Standard.encode(data);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blob_resource_helpers_encode_and_decode_bytes() {
+        let bytes = b"\x00resource bytes";
+
+        let content = BlobResourceContents::new("tmcp://blob", "").with_blob_bytes(bytes);
+
+        assert_eq!(content.blob_bytes().expect("decode blob"), bytes);
     }
 }

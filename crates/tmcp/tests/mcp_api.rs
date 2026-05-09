@@ -159,4 +159,17 @@ mod tests {
         assert!(!rendered.contains("No fields."));
         assert!(!rendered.contains("\x1b["));
     }
+
+    /// Surface digests are stable across list ordering but change with schema content.
+    #[tokio::test]
+    async fn surface_digest_is_stable_for_ordering() {
+        let api = inspect_server(&ApiServer).await.expect("inspect server");
+        let mut reordered = api.clone();
+        reordered.tools.reverse();
+
+        assert_eq!(api.surface_digest(), reordered.surface_digest());
+
+        reordered.tools[0].description = Some("Changed description".to_owned());
+        assert_ne!(api.surface_digest(), reordered.surface_digest());
+    }
 }

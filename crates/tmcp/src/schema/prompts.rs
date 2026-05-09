@@ -61,6 +61,7 @@ impl GetPromptResult {
             description: None,
             messages: Vec::new(),
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -115,6 +116,7 @@ impl Prompt {
             name: name.into(),
             title: None,
             _meta: None,
+            _extra: Default::default(),
         }
     }
 

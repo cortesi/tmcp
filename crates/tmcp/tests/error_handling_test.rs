@@ -230,6 +230,7 @@ mod tests {
                         annotations: None,
                         icons: None,
                         _meta: None,
+                        _extra: Default::default(),
                     }),
                 )
             }

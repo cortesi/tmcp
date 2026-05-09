@@ -314,6 +314,7 @@ pub trait ServerHandler: Send + Sync {
                 has_more: None,
             },
             _meta: None,
+            _extra: Default::default(),
         })
     }
 
@@ -327,6 +328,7 @@ pub trait ServerHandler: Send + Sync {
         Ok(ListRootsResult {
             roots: vec![],
             _meta: None,
+            _extra: Default::default(),
         })
     }
 

@@ -113,6 +113,7 @@ impl ListTasksResult {
             page: PaginatedResult {
                 next_cursor: None,
                 _meta: None,
+                _extra: Default::default(),
             },
             tasks: Vec::new(),
         }

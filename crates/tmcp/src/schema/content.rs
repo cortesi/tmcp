@@ -1,7 +1,8 @@
 use std::{slice, vec};
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use base64::{Engine, engine::general_purpose::STANDARD as Base64Standard};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de, de::DeserializeOwned, ser};
+use serde_json::{Map, Value};
 
 use super::{Resource, ResourceContents};
 use crate::{Arguments, macros::with_meta};
@@ -14,19 +15,20 @@ pub enum Role {
 }
 
 /// A content block for prompts, tool results, and resources.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone)]
 pub enum ContentBlock {
-    #[serde(rename = "text")]
+    /// Text content.
     Text(TextContent),
-    #[serde(rename = "image")]
+    /// Base64-encoded image content.
     Image(ImageContent),
-    #[serde(rename = "audio")]
+    /// Base64-encoded audio content.
     Audio(AudioContent),
-    #[serde(rename = "resource_link")]
+    /// Link to an MCP resource.
     ResourceLink(ResourceLink),
-    #[serde(rename = "resource")]
+    /// Embedded resource contents.
     EmbeddedResource(EmbeddedResource),
+    /// Unknown future content block variant.
+    Unknown(UnknownContentBlock),
 }
 
 impl ContentBlock {
@@ -51,24 +53,83 @@ impl ContentBlock {
             resource,
             annotations: None,
             _meta: None,
+            _extra: Default::default(),
         })
     }
 }
 
+impl Serialize for ContentBlock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_content_block(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserialize_content_block(deserializer, known_content_block)
+    }
+}
+
 /// A content block for sampling messages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone)]
 pub enum SamplingMessageContentBlock {
-    #[serde(rename = "text")]
+    /// Text content.
     Text(TextContent),
-    #[serde(rename = "image")]
+    /// Base64-encoded image content.
     Image(ImageContent),
-    #[serde(rename = "audio")]
+    /// Base64-encoded audio content.
     Audio(AudioContent),
-    #[serde(rename = "tool_use")]
+    /// A tool-use request.
     ToolUse(ToolUseContent),
-    #[serde(rename = "tool_result")]
+    /// A tool-use result.
     ToolResult(ToolResultContent),
+    /// Unknown future content block variant.
+    Unknown(UnknownContentBlock),
+}
+
+impl Serialize for SamplingMessageContentBlock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_sampling_content_block(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SamplingMessageContentBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserialize_content_block(deserializer, known_sampling_content_block)
+    }
+}
+
+/// Unknown future content block variant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnknownContentBlock {
+    /// Literal content type string from the wire payload.
+    #[serde(rename = "type")]
+    pub content_type: String,
+    /// Unknown payload fields other than `type`.
+    #[serde(flatten)]
+    pub fields: Map<String, Value>,
+}
+
+impl UnknownContentBlock {
+    /// Create an unknown content block.
+    pub fn new(content_type: impl Into<String>, fields: Map<String, Value>) -> Self {
+        Self {
+            content_type: content_type.into(),
+            fields,
+        }
+    }
 }
 
 /// Container that can represent either a single value or a list.
@@ -228,6 +289,7 @@ impl TextContent {
             text: text.into(),
             annotations: None,
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -254,11 +316,23 @@ impl ImageContent {
             mime_type: mime_type.into(),
             annotations: None,
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
     pub fn with_annotations(mut self, annotations: Annotations) -> Self {
         self.annotations = Some(annotations);
+        self
+    }
+
+    /// Decode the base64 image data.
+    pub fn data_bytes(&self) -> Result<Vec<u8>, base64::DecodeError> {
+        Base64Standard.decode(&self.data)
+    }
+
+    /// Replace image data with base64-encoded bytes.
+    pub fn with_data_bytes(mut self, data: &[u8]) -> Self {
+        self.data = Base64Standard.encode(data);
         self
     }
 }
@@ -280,6 +354,7 @@ impl AudioContent {
             mime_type: mime_type.into(),
             annotations: None,
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -287,6 +362,135 @@ impl AudioContent {
         self.annotations = Some(annotations);
         self
     }
+
+    /// Decode the base64 audio data.
+    pub fn data_bytes(&self) -> Result<Vec<u8>, base64::DecodeError> {
+        Base64Standard.decode(&self.data)
+    }
+
+    /// Replace audio data with base64-encoded bytes.
+    pub fn with_data_bytes(mut self, data: &[u8]) -> Self {
+        self.data = Base64Standard.encode(data);
+        self
+    }
+}
+
+/// Serialize a prompt/tool/resource content block with its `type` tag.
+fn serialize_content_block<S>(block: &ContentBlock, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match block {
+        ContentBlock::Text(content) => serialize_tagged_content("text", content, serializer),
+        ContentBlock::Image(content) => serialize_tagged_content("image", content, serializer),
+        ContentBlock::Audio(content) => serialize_tagged_content("audio", content, serializer),
+        ContentBlock::ResourceLink(content) => {
+            serialize_tagged_content("resource_link", content, serializer)
+        }
+        ContentBlock::EmbeddedResource(content) => {
+            serialize_tagged_content("resource", content, serializer)
+        }
+        ContentBlock::Unknown(content) => content.serialize(serializer),
+    }
+}
+
+/// Serialize a sampling content block with its `type` tag.
+fn serialize_sampling_content_block<S>(
+    block: &SamplingMessageContentBlock,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match block {
+        SamplingMessageContentBlock::Text(content) => {
+            serialize_tagged_content("text", content, serializer)
+        }
+        SamplingMessageContentBlock::Image(content) => {
+            serialize_tagged_content("image", content, serializer)
+        }
+        SamplingMessageContentBlock::Audio(content) => {
+            serialize_tagged_content("audio", content, serializer)
+        }
+        SamplingMessageContentBlock::ToolUse(content) => {
+            serialize_tagged_content("tool_use", content, serializer)
+        }
+        SamplingMessageContentBlock::ToolResult(content) => {
+            serialize_tagged_content("tool_result", content, serializer)
+        }
+        SamplingMessageContentBlock::Unknown(content) => content.serialize(serializer),
+    }
+}
+
+/// Serialize one tagged content payload.
+fn serialize_tagged_content<S>(
+    content_type: &str,
+    content: &impl Serialize,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut value = serde_json::to_value(content).map_err(ser::Error::custom)?;
+    let Value::Object(object) = &mut value else {
+        return Err(ser::Error::custom("content block must serialize as object"));
+    };
+    object.insert("type".to_owned(), Value::String(content_type.to_owned()));
+    value.serialize(serializer)
+}
+
+/// Deserialize one tagged content block using the provided known-variant mapping.
+fn deserialize_content_block<'de, D, T, F>(deserializer: D, known: F) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    F: FnOnce(&str, Map<String, Value>) -> Result<T, serde_json::Error>,
+{
+    let mut object = Map::<String, Value>::deserialize(deserializer)?;
+    let content_type = object
+        .remove("type")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| de::Error::custom("content block missing string `type`"))?;
+    known(&content_type, object).map_err(de::Error::custom)
+}
+
+/// Convert one content-block object to a known content block or unknown fallback.
+fn known_content_block(
+    content_type: &str,
+    object: Map<String, Value>,
+) -> Result<ContentBlock, serde_json::Error> {
+    match content_type {
+        "text" => typed_content(object).map(ContentBlock::Text),
+        "image" => typed_content(object).map(ContentBlock::Image),
+        "audio" => typed_content(object).map(ContentBlock::Audio),
+        "resource_link" => typed_content(object).map(ContentBlock::ResourceLink),
+        "resource" => typed_content(object).map(ContentBlock::EmbeddedResource),
+        _ => Ok(ContentBlock::Unknown(UnknownContentBlock::new(
+            content_type,
+            object,
+        ))),
+    }
+}
+
+/// Convert one content-block object to a known sampling content block or unknown fallback.
+fn known_sampling_content_block(
+    content_type: &str,
+    object: Map<String, Value>,
+) -> Result<SamplingMessageContentBlock, serde_json::Error> {
+    match content_type {
+        "text" => typed_content(object).map(SamplingMessageContentBlock::Text),
+        "image" => typed_content(object).map(SamplingMessageContentBlock::Image),
+        "audio" => typed_content(object).map(SamplingMessageContentBlock::Audio),
+        "tool_use" => typed_content(object).map(SamplingMessageContentBlock::ToolUse),
+        "tool_result" => typed_content(object).map(SamplingMessageContentBlock::ToolResult),
+        _ => Ok(SamplingMessageContentBlock::Unknown(
+            UnknownContentBlock::new(content_type, object),
+        )),
+    }
+}
+
+/// Deserialize a known content object after removing its tag.
+fn typed_content<T: DeserializeOwned>(object: Map<String, Value>) -> Result<T, serde_json::Error> {
+    serde_json::from_value(Value::Object(object))
 }
 
 /// A request from the assistant to call a tool.
@@ -332,5 +536,59 @@ mod tests {
 
         let audio = ContentBlock::audio("data", "audio/mpeg");
         assert!(matches!(audio, ContentBlock::Audio(_)));
+    }
+
+    #[test]
+    fn content_block_preserves_unknown_variants() {
+        let value = serde_json::json!({
+            "type": "video",
+            "data": "AAAA",
+            "mimeType": "video/mp4",
+            "codec": "h264"
+        });
+
+        let block: ContentBlock = serde_json::from_value(value.clone()).expect("unknown block");
+        let ContentBlock::Unknown(unknown) = block else {
+            panic!("expected unknown content block");
+        };
+        assert_eq!(unknown.content_type, "video");
+        assert_eq!(
+            unknown.fields.get("mimeType"),
+            Some(&Value::String("video/mp4".to_owned()))
+        );
+
+        let encoded = serde_json::to_value(ContentBlock::Unknown(unknown)).expect("serialize");
+        assert_eq!(encoded, value);
+    }
+
+    #[test]
+    fn sampling_content_block_preserves_unknown_variants() {
+        let value = serde_json::json!({
+            "type": "transcript",
+            "language": "en",
+            "segments": [{ "start": 0, "text": "hello" }]
+        });
+
+        let block: SamplingMessageContentBlock =
+            serde_json::from_value(value.clone()).expect("unknown sampling block");
+        let SamplingMessageContentBlock::Unknown(unknown) = block else {
+            panic!("expected unknown sampling content block");
+        };
+        assert_eq!(unknown.content_type, "transcript");
+
+        let encoded =
+            serde_json::to_value(SamplingMessageContentBlock::Unknown(unknown)).expect("serialize");
+        assert_eq!(encoded, value);
+    }
+
+    #[test]
+    fn binary_content_helpers_encode_and_decode_bytes() {
+        let bytes = b"\x00tmcp image bytes";
+
+        let image = ImageContent::new("", "image/png").with_data_bytes(bytes);
+        assert_eq!(image.data_bytes().expect("decode image"), bytes);
+
+        let audio = AudioContent::new("", "audio/mpeg").with_data_bytes(bytes);
+        assert_eq!(audio.data_bytes().expect("decode audio"), bytes);
     }
 }

@@ -115,6 +115,7 @@ impl TaskProbeServer {
                 "io.modelcontextprotocol/related-task".to_string(),
                 json!({ "taskId": entry.task.task_id }),
             )])),
+            _extra: Default::default(),
             other: object
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
@@ -164,7 +165,11 @@ impl TaskProbeServer {
                 token: params.token,
             },
         );
-        Ok(CreateTaskResult { task, _meta: None })
+        Ok(CreateTaskResult {
+            task,
+            _meta: None,
+            _extra: Default::default(),
+        })
     }
 
     /// Return current task status.
@@ -178,6 +183,7 @@ impl TaskProbeServer {
         Ok(GetTaskResult {
             task: entry.task.clone(),
             _meta: None,
+            _extra: Default::default(),
         })
     }
 
@@ -228,6 +234,7 @@ impl TaskProbeServer {
         Ok(CancelTaskResult {
             task: entry.task.clone(),
             _meta: None,
+            _extra: Default::default(),
         })
     }
 }

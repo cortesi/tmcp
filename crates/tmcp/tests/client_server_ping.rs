@@ -58,8 +58,10 @@ mod tests {
                     uri: "test://root".into(),
                     name: Some("Test Root".into()),
                     _meta: None,
+                    _extra: Default::default(),
                 }],
                 _meta: None,
+                _extra: Default::default(),
             })
         }
     }

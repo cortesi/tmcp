@@ -23,6 +23,9 @@ pub struct ClientCapabilities {
     /// Present if the client supports task-augmented requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tasks: Option<ClientTasksCapability>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 impl ClientCapabilities {
@@ -41,6 +44,7 @@ impl ClientCapabilities {
     pub fn with_roots_capability(mut self, list_changed: bool) -> Self {
         self.roots = Some(RootsCapability {
             list_changed: Some(list_changed),
+            _extra: Default::default(),
         });
         self
     }
@@ -119,6 +123,9 @@ pub struct RootsCapability {
     /// Whether the client supports notifications for changes to the roots list.
     #[serde(rename = "listChanged", skip_serializing_if = "Option::is_none")]
     pub list_changed: Option<bool>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 /// Capabilities that a server may support. Known capabilities are defined here,
@@ -147,6 +154,9 @@ pub struct ServerCapabilities {
     /// Present if the server supports task-augmented requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tasks: Option<ServerTasksCapability>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 impl ServerCapabilities {
@@ -170,7 +180,10 @@ impl ServerCapabilities {
 
     /// Enable prompts capability with optional list_changed support
     pub fn with_prompts(mut self, list_changed: Option<bool>) -> Self {
-        self.prompts = Some(PromptsCapability { list_changed });
+        self.prompts = Some(PromptsCapability {
+            list_changed,
+            _extra: Default::default(),
+        });
         self
     }
 
@@ -179,13 +192,17 @@ impl ServerCapabilities {
         self.resources = Some(ResourcesCapability {
             subscribe,
             list_changed,
+            _extra: Default::default(),
         });
         self
     }
 
     /// Enable tools capability with optional list_changed support
     pub fn with_tools(mut self, list_changed: Option<bool>) -> Self {
-        self.tools = Some(ToolsCapability { list_changed });
+        self.tools = Some(ToolsCapability {
+            list_changed,
+            _extra: Default::default(),
+        });
         self
     }
 
@@ -226,6 +243,9 @@ pub struct SamplingCapability {
     /// Whether the client supports tool use via tools and toolChoice parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<HashMap<String, Value>>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -236,6 +256,9 @@ pub struct ElicitationCapability {
     /// Support for URL-based elicitation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<HashMap<String, Value>>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -246,6 +269,9 @@ pub struct ClientTasksCapability {
     pub cancel: Option<HashMap<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requests: Option<ClientTaskRequestsCapability>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -254,18 +280,27 @@ pub struct ClientTaskRequestsCapability {
     pub sampling: Option<ClientTaskSamplingCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elicitation: Option<ClientTaskElicitationCapability>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientTaskSamplingCapability {
     #[serde(rename = "createMessage", skip_serializing_if = "Option::is_none")]
     pub create_message: Option<HashMap<String, Value>>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientTaskElicitationCapability {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub create: Option<HashMap<String, Value>>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -276,18 +311,27 @@ pub struct ServerTasksCapability {
     pub cancel: Option<HashMap<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requests: Option<ServerTaskRequestsCapability>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerTaskRequestsCapability {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ServerTaskToolsCapability>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerTaskToolsCapability {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<HashMap<String, Value>>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +340,9 @@ pub struct PromptsCapability {
     /// list.
     #[serde(rename = "listChanged", skip_serializing_if = "Option::is_none")]
     pub list_changed: Option<bool>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,6 +354,9 @@ pub struct ResourcesCapability {
     /// list.
     #[serde(rename = "listChanged", skip_serializing_if = "Option::is_none")]
     pub list_changed: Option<bool>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,4 +364,66 @@ pub struct ToolsCapability {
     /// Whether this server supports notifications for changes to the tool list.
     #[serde(rename = "listChanged", skip_serializing_if = "Option::is_none")]
     pub list_changed: Option<bool>,
+    /// Unknown or extension fields preserved from the wire.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub _extra: HashMap<String, Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn server_capabilities_preserve_extension_fields() {
+        let capabilities: ServerCapabilities = serde_json::from_value(json!({
+            "tools": {
+                "listChanged": true,
+                "x-tools": { "kind": "dynamic" }
+            },
+            "x-server": { "vendor": "tmcp" }
+        }))
+        .expect("capabilities");
+
+        let tools = capabilities.tools.expect("tools capability");
+        assert_eq!(tools.list_changed, Some(true));
+        assert_eq!(tools._extra["x-tools"], json!({ "kind": "dynamic" }));
+        assert_eq!(capabilities._extra["x-server"], json!({ "vendor": "tmcp" }));
+
+        let encoded = serde_json::to_value(ServerCapabilities {
+            tools: Some(tools),
+            ..ServerCapabilities::default()
+        })
+        .expect("serialize");
+        assert_eq!(encoded["tools"]["x-tools"], json!({ "kind": "dynamic" }));
+    }
+
+    #[test]
+    fn client_capabilities_preserve_nested_extension_fields() {
+        let capabilities: ClientCapabilities = serde_json::from_value(json!({
+            "roots": {
+                "listChanged": false,
+                "x-roots": true
+            },
+            "tasks": {
+                "requests": {
+                    "sampling": {
+                        "createMessage": {},
+                        "x-sampling": 42
+                    }
+                }
+            }
+        }))
+        .expect("capabilities");
+
+        let roots = capabilities.roots.expect("roots capability");
+        assert_eq!(roots.list_changed, Some(false));
+        assert_eq!(roots._extra["x-roots"], json!(true));
+
+        let tasks = capabilities.tasks.expect("tasks capability");
+        let requests = tasks.requests.expect("task requests");
+        let sampling = requests.sampling.expect("task sampling");
+        assert_eq!(sampling._extra["x-sampling"], json!(42));
+    }
 }

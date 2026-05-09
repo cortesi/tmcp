@@ -133,7 +133,7 @@ pub use error::{
     Error, Result, TOOL_ERROR_INTERNAL, TOOL_ERROR_INVALID_INPUT, TOOL_ERROR_NOT_FOUND,
     TOOL_ERROR_TIMEOUT, ToolError, ToolResult,
 };
-pub use mcp_api::{McpApi, McpApiOptions, inspect_server, inspect_server_with};
+pub use mcp_api::{McpApi, McpApiOptions, inspect_client, inspect_server, inspect_server_with};
 pub use mcp_api_render::{McpApiRenderOptions, render_mcp_api};
 pub use schema::ToolResponse;
 pub use server::{EmbeddedHttpServer, HttpBuilder, Server, ServerHandle, TcpServerHandle};

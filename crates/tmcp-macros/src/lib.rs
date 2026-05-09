@@ -2933,17 +2933,22 @@ pub fn derive_group(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expanded.into()
 }
 
-/// Adds a _meta field to a struct with proper serde attributes and builder methods.
+/// Adds extension fields to a struct with proper serde attributes and builder methods.
 ///
-/// This macro adds the following field to the struct:
+/// This macro adds the following fields to the struct:
 /// ```ignore
 /// #[serde(skip_serializing_if = "Option::is_none")]
 /// pub _meta: Option<HashMap<String, Value>>,
+///
+/// #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+/// pub _extra: HashMap<String, Value>,
 /// ```
 ///
 /// And generates these builder methods:
 /// - `with_meta(mut self, meta: HashMap<String, Value>) -> Self`
 /// - `with_meta_entry(mut self, key: impl Into<String>, value: Value) -> Self`
+/// - `with_extra(mut self, extra: HashMap<String, Value>) -> Self`
+/// - `with_extra_entry(mut self, key: impl Into<String>, value: Value) -> Self`
 #[proc_macro_attribute]
 pub fn with_meta(
     _attr: proc_macro::TokenStream,
@@ -2970,15 +2975,21 @@ pub fn with_meta(
         .into();
     };
 
-    // Create the _meta field
+    // Create the extension fields.
     let meta_field: syn::Field = syn::parse_quote! {
         /// Optional metadata field for extensions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub _meta: Option<std::collections::HashMap<String, serde_json::Value>>
     };
+    let extra_field: syn::Field = syn::parse_quote! {
+        /// Unknown protocol fields preserved for forward compatibility.
+        #[serde(flatten, default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        pub _extra: std::collections::HashMap<String, serde_json::Value>
+    };
 
-    // Add the field
+    // Add the fields.
     fields.named.push(meta_field);
+    fields.named.push(extra_field);
 
     // Generate the struct name and generics
     let struct_name = &input.ident;
@@ -3000,6 +3011,18 @@ pub fn with_meta(
                 self._meta
                     .get_or_insert_with(std::collections::HashMap::new)
                     .insert(key.into(), value);
+                self
+            }
+
+            /// Set the preserved extra-field map
+            pub fn with_extra(mut self, extra: std::collections::HashMap<String, serde_json::Value>) -> Self {
+                self._extra = extra;
+                self
+            }
+
+            /// Add a single preserved extra-field entry
+            pub fn with_extra_entry(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+                self._extra.insert(key.into(), value);
                 self
             }
         }

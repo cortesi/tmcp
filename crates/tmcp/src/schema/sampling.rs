@@ -181,6 +181,7 @@ impl SamplingMessage {
             role: Role::User,
             content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent::new(text))),
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -198,6 +199,7 @@ impl SamplingMessage {
             role: Role::Assistant,
             content: OneOrMany::One(SamplingMessageContentBlock::Text(TextContent::new(text))),
             _meta: None,
+            _extra: Default::default(),
         }
     }
 }

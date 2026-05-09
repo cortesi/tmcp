@@ -31,6 +31,7 @@ impl InitializeResult {
             server_info: Implementation::new(name, "0.0.1"),
             instructions: None,
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -71,6 +72,7 @@ impl InitializeResult {
     pub fn with_prompts(mut self, list_changed: bool) -> Self {
         self.capabilities.prompts = Some(PromptsCapability {
             list_changed: Some(list_changed),
+            _extra: Default::default(),
         });
         self
     }
@@ -80,13 +82,17 @@ impl InitializeResult {
         self.capabilities.resources = Some(ResourcesCapability {
             subscribe: Some(subscribe),
             list_changed: Some(list_changed),
+            _extra: Default::default(),
         });
         self
     }
 
     /// Enable tools capability with optional list change notifications.
     pub fn with_tools(mut self, list_changed: Option<bool>) -> Self {
-        self.capabilities.tools = Some(ToolsCapability { list_changed });
+        self.capabilities.tools = Some(ToolsCapability {
+            list_changed,
+            _extra: Default::default(),
+        });
         self
     }
 

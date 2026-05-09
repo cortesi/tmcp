@@ -70,6 +70,7 @@ impl CallToolResult {
             is_error: None,
             structured_content: None,
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -98,6 +99,7 @@ impl CallToolResult {
             text: text.into(),
             annotations: None,
             _meta: None,
+            _extra: Default::default(),
         }));
         self
     }
@@ -116,6 +118,11 @@ impl CallToolResult {
     pub fn mark_as_error(mut self) -> Self {
         self.is_error = Some(true);
         self
+    }
+
+    /// Return whether this result represents an MCP tool error.
+    pub fn is_error(&self) -> bool {
+        self.is_error.unwrap_or(false)
     }
 
     /// Attach structured content to the result.
@@ -176,6 +183,40 @@ impl CallToolResult {
             .as_ref()
             .ok_or_else(|| DeError::custom("no structured content in tool result"))?;
         serde_json::from_value(value.clone())
+    }
+
+    /// Borrow structured content, if present.
+    pub fn structured_content(&self) -> Option<&Value> {
+        self.structured_content.as_ref()
+    }
+
+    /// Return the number of content blocks.
+    pub fn content_len(&self) -> usize {
+        self.content.len()
+    }
+
+    /// Return whether there are no content blocks.
+    pub fn content_is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
+    /// Return a human-oriented error message for an error result.
+    pub fn error_message(&self) -> Option<String> {
+        if !self.is_error() {
+            return None;
+        }
+        if let Some(message) = self
+            .structured_content
+            .as_ref()
+            .and_then(|content| content.get("message"))
+            .and_then(Value::as_str)
+        {
+            return Some(message.to_owned());
+        }
+        if !self.content.is_empty() {
+            return Some(self.all_text());
+        }
+        Some("tool returned an error".to_owned())
     }
 }
 
@@ -337,6 +378,7 @@ impl Tool {
             name: name.into(),
             title: None,
             _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -965,6 +1007,22 @@ mod tests {
             result.structured_content,
             Some(json!({ "code": "BAD_INPUT", "message": "oops" }))
         );
+    }
+
+    #[test]
+    fn call_tool_result_preserves_extension_fields() {
+        let result: CallToolResult = serde_json::from_value(json!({
+            "content": [],
+            "structuredContent": { "answer": 42 },
+            "x-result": { "trace": "abc" }
+        }))
+        .expect("call result");
+
+        assert_eq!(result.structured_content(), Some(&json!({ "answer": 42 })));
+        assert_eq!(result._extra["x-result"], json!({ "trace": "abc" }));
+
+        let encoded = serde_json::to_value(result).expect("serialize");
+        assert_eq!(encoded["x-result"], json!({ "trace": "abc" }));
     }
 
     #[test]
