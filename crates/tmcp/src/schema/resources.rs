@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::{
     Result,
-    macros::{with_basename, with_meta},
+    macros::{with_basename, with_meta, with_open_meta},
 };
 
 /// The server's response to a resources/list request from the client.
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ListResourcesResult {
     /// The list of resources available on the server.
@@ -28,6 +29,8 @@ impl ListResourcesResult {
         Self {
             resources: Vec::new(),
             next_cursor: None,
+            _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -51,6 +54,7 @@ impl ListResourcesResult {
 }
 
 /// The server's response to a resources/templates/list request from the client.
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ListResourceTemplatesResult {
     #[serde(rename = "resourceTemplates")]
@@ -67,6 +71,8 @@ impl ListResourceTemplatesResult {
         Self {
             resource_templates: Vec::new(),
             next_cursor: None,
+            _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -93,7 +99,7 @@ impl ListResourceTemplatesResult {
 }
 
 /// The server's response to a resources/read request from the client.
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReadResourceResult {
     /// The content of the requested resource(s).
@@ -193,7 +199,6 @@ impl Resource {
             name: name.into(),
             title: None,
             _meta: None,
-            _extra: Default::default(),
         }
     }
 
@@ -279,7 +284,6 @@ impl ResourceTemplate {
             name: name.into(),
             title: None,
             _meta: None,
-            _extra: Default::default(),
         }
     }
 
@@ -326,7 +330,6 @@ impl ResourceContents {
             mime_type: None,
             text: text.into(),
             _meta: None,
-            _extra: Default::default(),
         })
     }
 
@@ -337,7 +340,6 @@ impl ResourceContents {
             mime_type: None,
             blob: blob.into(),
             _meta: None,
-            _extra: Default::default(),
         })
     }
 
@@ -349,7 +351,6 @@ impl ResourceContents {
             mime_type: Some("application/json".to_string()),
             text: json_text,
             _meta: None,
-            _extra: Default::default(),
         }))
     }
 
@@ -380,7 +381,6 @@ impl ResourceContents {
                                 mime_type: Some(mime_type.to_string()),
                                 text,
                                 _meta: None,
-                                _extra: Default::default(),
                             }))
                         } else {
                             // Binary application type
@@ -389,7 +389,6 @@ impl ResourceContents {
                                 mime_type: Some(mime_type.to_string()),
                                 blob: Base64Standard.encode(text.as_bytes()),
                                 _meta: None,
-                                _extra: Default::default(),
                             }))
                         }
                     }
@@ -400,7 +399,6 @@ impl ResourceContents {
                             mime_type: Some(mime_type.to_string()),
                             blob: Base64Standard.encode(&contents),
                             _meta: None,
-                            _extra: Default::default(),
                         }))
                     }
                 }
@@ -412,7 +410,6 @@ impl ResourceContents {
                     mime_type: Some(mime_type.to_string()),
                     blob: Base64Standard.encode(&contents),
                     _meta: None,
-                    _extra: Default::default(),
                 }))
             }
         }
@@ -440,7 +437,6 @@ impl TextResourceContents {
             mime_type: None,
             text: text.into(),
             _meta: None,
-            _extra: Default::default(),
         }
     }
 
@@ -472,7 +468,6 @@ impl BlobResourceContents {
             mime_type: None,
             blob: blob.into(),
             _meta: None,
-            _extra: Default::default(),
         }
     }
 
@@ -496,6 +491,8 @@ impl BlobResourceContents {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -505,5 +502,77 @@ mod tests {
         let content = BlobResourceContents::new("tmcp://blob", "").with_blob_bytes(bytes);
 
         assert_eq!(content.blob_bytes().expect("decode blob"), bytes);
+    }
+
+    #[test]
+    fn list_resources_result_preserves_result_extension_fields() {
+        let result: ListResourcesResult = serde_json::from_value(json!({
+            "resources": [],
+            "_meta": { "com.example/trace": "resources" },
+            "com.example/extra": { "value": 1 }
+        }))
+        .expect("deserialize list resources result");
+
+        assert_eq!(
+            serde_json::to_value(&result).expect("serialize list resources result"),
+            json!({
+                "resources": [],
+                "_meta": { "com.example/trace": "resources" },
+                "com.example/extra": { "value": 1 }
+            })
+        );
+    }
+
+    #[test]
+    fn list_resource_templates_result_preserves_result_extension_fields() {
+        let result: ListResourceTemplatesResult = serde_json::from_value(json!({
+            "resourceTemplates": [],
+            "_meta": { "com.example/trace": "templates" },
+            "com.example/extra": true
+        }))
+        .expect("deserialize list resource templates result");
+
+        assert_eq!(
+            serde_json::to_value(&result).expect("serialize list resource templates result"),
+            json!({
+                "resourceTemplates": [],
+                "_meta": { "com.example/trace": "templates" },
+                "com.example/extra": true
+            })
+        );
+    }
+
+    #[test]
+    fn read_resource_result_preserves_result_extension_fields() {
+        let result: ReadResourceResult = serde_json::from_value(json!({
+            "contents": [],
+            "_meta": { "com.example/trace": "read" },
+            "com.example/extra": ["kept"]
+        }))
+        .expect("deserialize read resource result");
+
+        assert_eq!(
+            serde_json::to_value(&result).expect("serialize read resource result"),
+            json!({
+                "contents": [],
+                "_meta": { "com.example/trace": "read" },
+                "com.example/extra": ["kept"]
+            })
+        );
+    }
+
+    #[test]
+    fn resource_uses_meta_without_public_extra_storage() {
+        let resource = Resource::new("Example", "file:///tmp/example")
+            .with_meta_entry("com.example/source", json!("test"));
+
+        assert_eq!(
+            serde_json::to_value(&resource).expect("serialize resource"),
+            json!({
+                "uri": "file:///tmp/example",
+                "name": "Example",
+                "_meta": { "com.example/source": "test" }
+            })
+        );
     }
 }

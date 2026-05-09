@@ -855,7 +855,6 @@ async fn handle_initialize_request(
                             id: request.id,
                             result: schema::JSONRpcResult {
                                 _meta: None,
-                                _extra: Default::default(),
                                 other: if let Some(obj) = value.as_object() {
                                     obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                                 } else {
@@ -921,7 +920,6 @@ async fn handle_request(
                 id: request.id,
                 result: schema::JSONRpcResult {
                     _meta: None,
-                    _extra: Default::default(),
                     other: if let Some(obj) = value.as_object() {
                         obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                     } else {

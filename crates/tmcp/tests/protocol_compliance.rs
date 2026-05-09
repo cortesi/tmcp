@@ -342,7 +342,6 @@ mod tests {
             text: "Hello".to_string(),
             annotations: None,
             _meta: None,
-            _extra: Default::default(),
         });
 
         let json = serde_json::to_value(&text_content).unwrap();

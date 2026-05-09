@@ -55,7 +55,6 @@ mod tests {
                     uri: "file:///test".to_string(),
                     name: Some("Test Root".to_string()),
                     _meta: None,
-                    _extra: Default::default(),
                 }],
                 _meta: None,
                 _extra: Default::default(),

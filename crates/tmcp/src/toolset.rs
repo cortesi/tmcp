@@ -314,11 +314,8 @@ impl ToolSet {
         if offset > tools.len() {
             return Err(Error::InvalidParams("cursor out of range".to_string()));
         }
-        let tools = tools.into_iter().skip(offset).collect();
-        Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-        })
+        let tools = tools.into_iter().skip(offset);
+        Ok(ListToolsResult::new().with_tools(tools))
     }
 
     /// Call a tool by name.

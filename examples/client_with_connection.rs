@@ -75,7 +75,6 @@ impl ClientHandler for MyClientHandler {
                 uri: "file:///home/user/project".to_string(),
                 name: Some("My Project".to_string()),
                 _meta: None,
-                _extra: Default::default(),
             }],
             _meta: None,
             _extra: Default::default(),

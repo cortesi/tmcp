@@ -84,7 +84,6 @@ mod tests {
                     text: message,
                     annotations: None,
                     _meta: None,
-                    _extra: Default::default(),
                 })],
                 is_error: Some(false),
                 structured_content: None,

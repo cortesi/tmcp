@@ -3,9 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::macros::{with_basename, with_meta};
+use crate::macros::{with_basename, with_meta, with_open_meta};
 
 /// The server's response to a prompts/list request from the client.
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ListPromptsResult {
     /// The list of prompts available on the server.
@@ -21,6 +22,8 @@ impl ListPromptsResult {
         Self {
             prompts: Vec::new(),
             next_cursor: None,
+            _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -44,7 +47,7 @@ impl ListPromptsResult {
 }
 
 /// The server's response to a prompts/get request from the client.
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPromptResult {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,7 +119,6 @@ impl Prompt {
             name: name.into(),
             title: None,
             _meta: None,
-            _extra: Default::default(),
         }
     }
 
@@ -142,6 +144,43 @@ impl Prompt {
     pub fn with_icons(mut self, icons: impl IntoIterator<Item = Icon>) -> Self {
         self.icons = Some(icons.into_iter().collect());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn list_prompts_result_preserves_result_extension_fields() {
+        let result: ListPromptsResult = serde_json::from_value(json!({
+            "prompts": [],
+            "nextCursor": "next",
+            "_meta": { "com.example/page": 1 },
+            "x-page": true
+        }))
+        .expect("list prompts");
+
+        assert_eq!(
+            result.next_cursor.as_ref().map(|cursor| cursor.0.as_str()),
+            Some("next")
+        );
+        assert_eq!(result._extra["x-page"], json!(true));
+
+        let encoded = serde_json::to_value(result).expect("serialize");
+        assert_eq!(encoded["_meta"]["com.example/page"], json!(1));
+        assert_eq!(encoded["x-page"], json!(true));
+    }
+
+    #[test]
+    fn prompt_uses_meta_without_public_extra_storage() {
+        let prompt = Prompt::new("review").with_meta_entry("com.example/hint", json!("short"));
+        let encoded = serde_json::to_value(prompt).expect("serialize");
+
+        assert_eq!(encoded["_meta"]["com.example/hint"], json!("short"));
+        assert!(encoded.get("_extra").is_none());
     }
 }
 

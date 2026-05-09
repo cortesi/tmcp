@@ -6,7 +6,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::*;
-use crate::{Arguments, macros::with_meta, request_handler::RequestMethod};
+use crate::{
+    Arguments,
+    macros::{with_meta, with_open_meta},
+    request_handler::RequestMethod,
+};
 
 // Messages sent from the client to the server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1077,7 +1081,7 @@ pub struct PaginatedParams {
 }
 
 /// Base interface for paginated results
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginatedResult {
     /// An opaque token representing the pagination position after the last returned result.
@@ -1458,7 +1462,7 @@ pub struct ElicitSchema {
 }
 
 /// The client's response to an elicitation request.
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElicitResult {
     /// The user action in response to the elicitation.

@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::macros::with_meta;
+use crate::macros::with_open_meta;
 
 /// After receiving an initialize request from the client, the server sends this response.
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitializeResult {
     /// The version of the Model Context Protocol that the server wants to use.

@@ -8,9 +8,10 @@ use serde::{
 use serde_json::{Value, json};
 
 use super::*;
-use crate::macros::{with_basename, with_meta};
+use crate::macros::{with_basename, with_meta, with_open_meta};
 
 /// The server's response to a tools/list request from the client.
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ListToolsResult {
     /// Tool entries returned by the server.
@@ -26,6 +27,8 @@ impl ListToolsResult {
         Self {
             tools: Vec::new(),
             next_cursor: None,
+            _meta: None,
+            _extra: Default::default(),
         }
     }
 
@@ -49,7 +52,7 @@ impl ListToolsResult {
 }
 
 /// The server's response to a tool call.
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallToolResult {
     /// Content returned by the tool call.
@@ -99,7 +102,6 @@ impl CallToolResult {
             text: text.into(),
             annotations: None,
             _meta: None,
-            _extra: Default::default(),
         }));
         self
     }
@@ -378,7 +380,6 @@ impl Tool {
             name: name.into(),
             title: None,
             _meta: None,
-            _extra: Default::default(),
         }
     }
 
@@ -1014,15 +1015,44 @@ mod tests {
         let result: CallToolResult = serde_json::from_value(json!({
             "content": [],
             "structuredContent": { "answer": 42 },
+            "_meta": { "com.example/trace": "abc" },
             "x-result": { "trace": "abc" }
         }))
         .expect("call result");
 
         assert_eq!(result.structured_content(), Some(&json!({ "answer": 42 })));
+        assert_eq!(
+            result
+                ._meta
+                .as_ref()
+                .and_then(|meta| meta.get("com.example/trace")),
+            Some(&json!("abc"))
+        );
         assert_eq!(result._extra["x-result"], json!({ "trace": "abc" }));
 
         let encoded = serde_json::to_value(result).expect("serialize");
         assert_eq!(encoded["x-result"], json!({ "trace": "abc" }));
+    }
+
+    #[test]
+    fn list_tools_result_preserves_result_extension_fields() {
+        let result: ListToolsResult = serde_json::from_value(json!({
+            "tools": [],
+            "nextCursor": "next",
+            "_meta": { "com.example/page": 1 },
+            "x-page": true
+        }))
+        .expect("list result");
+
+        assert_eq!(
+            result.next_cursor.as_ref().map(|cursor| cursor.0.as_str()),
+            Some("next")
+        );
+        assert_eq!(result._extra["x-page"], json!(true));
+
+        let encoded = serde_json::to_value(result).expect("serialize");
+        assert_eq!(encoded["_meta"]["com.example/page"], json!(1));
+        assert_eq!(encoded["x-page"], json!(true));
     }
 
     #[test]

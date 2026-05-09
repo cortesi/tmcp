@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::macros::with_meta;
+use crate::macros::with_open_meta;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArgumentInfo {
@@ -35,7 +35,7 @@ pub struct PromptReference {
     pub title: Option<String>,
 }
 
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompleteResult {
     pub completion: CompletionInfo,

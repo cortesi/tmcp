@@ -53,7 +53,6 @@ impl ContentBlock {
             resource,
             annotations: None,
             _meta: None,
-            _extra: Default::default(),
         })
     }
 }
@@ -289,7 +288,6 @@ impl TextContent {
             text: text.into(),
             annotations: None,
             _meta: None,
-            _extra: Default::default(),
         }
     }
 
@@ -316,7 +314,6 @@ impl ImageContent {
             mime_type: mime_type.into(),
             annotations: None,
             _meta: None,
-            _extra: Default::default(),
         }
     }
 
@@ -354,7 +351,6 @@ impl AudioContent {
             mime_type: mime_type.into(),
             annotations: None,
             _meta: None,
-            _extra: Default::default(),
         }
     }
 

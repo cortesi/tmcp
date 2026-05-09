@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{NotificationParams, PaginatedResult, Result};
-use crate::macros::with_meta;
+use crate::macros::with_open_meta;
 
 /// The status of a task.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -56,7 +56,7 @@ pub struct Task {
 }
 
 /// A response to a task-augmented request.
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTaskResult {
     pub task: Task,
@@ -80,7 +80,7 @@ pub type GetTaskPayloadRequestParams = TaskIdParams;
 pub type CancelTaskRequestParams = TaskIdParams;
 
 /// The response to a tasks/get request.
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetTaskResult {
     #[serde(flatten)]
@@ -91,7 +91,7 @@ pub struct GetTaskResult {
 pub type GetTaskPayloadResult = Result;
 
 /// The response to a tasks/cancel request.
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CancelTaskResult {
     #[serde(flatten)]

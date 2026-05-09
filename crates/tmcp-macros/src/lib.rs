@@ -1586,6 +1586,8 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
             Ok(tmcp::schema::ListToolsResult {
                 tools: vec![#(#tools),*],
                 next_cursor: None,
+                _meta: None,
+                _extra: Default::default(),
             })
         }
     }
@@ -2933,34 +2935,44 @@ pub fn derive_group(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expanded.into()
 }
 
-/// Adds extension fields to a struct with proper serde attributes and builder methods.
+/// Adds the MCP `_meta` field to a struct with proper serde attributes and builder methods.
 ///
 /// This macro adds the following fields to the struct:
 /// ```ignore
 /// #[serde(skip_serializing_if = "Option::is_none")]
 /// pub _meta: Option<HashMap<String, Value>>,
-///
-/// #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
-/// pub _extra: HashMap<String, Value>,
 /// ```
 ///
 /// And generates these builder methods:
 /// - `with_meta(mut self, meta: HashMap<String, Value>) -> Self`
 /// - `with_meta_entry(mut self, key: impl Into<String>, value: Value) -> Self`
-/// - `with_extra(mut self, extra: HashMap<String, Value>) -> Self`
-/// - `with_extra_entry(mut self, key: impl Into<String>, value: Value) -> Self`
 #[proc_macro_attribute]
 pub fn with_meta(
     _attr: proc_macro::TokenStream,
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
+    expand_meta(input, false)
+}
+
+/// Adds MCP `_meta` plus flattened extension fields for protocol objects that inherit
+/// MCP `Result` or are otherwise open in the TypeScript schema.
+#[proc_macro_attribute]
+pub fn with_open_meta(
+    _attr: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    expand_meta(input, true)
+}
+
+/// Expands either closed `_meta` support or open `_meta` plus extension support.
+fn expand_meta(input: proc_macro::TokenStream, open: bool) -> proc_macro::TokenStream {
     let mut input = syn::parse_macro_input!(input as syn::DeriveInput);
 
     // Only process structs
     let syn::Data::Struct(data_struct) = &mut input.data else {
         return syn::Error::new(
             input.ident.span(),
-            "with_meta can only be applied to structs",
+            "with_meta can only be applied to structs with named fields",
         )
         .to_compile_error()
         .into();
@@ -2981,32 +2993,63 @@ pub fn with_meta(
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub _meta: Option<std::collections::HashMap<String, serde_json::Value>>
     };
-    let extra_field: syn::Field = syn::parse_quote! {
-        /// Unknown protocol fields preserved for forward compatibility.
-        #[serde(flatten, default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-        pub _extra: std::collections::HashMap<String, serde_json::Value>
-    };
 
     // Add the fields.
     fields.named.push(meta_field);
-    fields.named.push(extra_field);
+    if open {
+        let extra_field: syn::Field = syn::parse_quote! {
+            /// Unknown protocol fields preserved for forward compatibility on open MCP objects.
+            #[serde(flatten, default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+            pub _extra: std::collections::HashMap<String, serde_json::Value>
+        };
+        fields.named.push(extra_field);
+    }
 
     // Generate the struct name and generics
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    // Generate the output with builder methods
+    let extra_impl = if open {
+        quote! {
+            /// Set the preserved extra-field map.
+            ///
+            /// Only use this for MCP objects whose schema inherits `Result` or is otherwise
+            /// explicitly open to top-level extension fields.
+            pub fn with_extra(mut self, extra: std::collections::HashMap<String, serde_json::Value>) -> Self {
+                self._extra = extra;
+                self
+            }
+
+            /// Add a single preserved extra-field entry.
+            ///
+            /// Only use this for MCP objects whose schema inherits `Result` or is otherwise
+            /// explicitly open to top-level extension fields.
+            pub fn with_extra_entry(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+                self._extra.insert(key.into(), value);
+                self
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let output = quote! {
         #input
 
         impl #impl_generics #struct_name #ty_generics #where_clause {
-            /// Set the metadata map
+            /// Set the MCP `_meta` map.
+            ///
+            /// Third-party extension keys should be namespaced, such as with reverse-DNS keys,
+            /// and must not use MCP-reserved prefixes.
             pub fn with_meta(mut self, meta: std::collections::HashMap<String, serde_json::Value>) -> Self {
                 self._meta = Some(meta);
                 self
             }
 
-            /// Add a single metadata entry
+            /// Add a single MCP `_meta` entry.
+            ///
+            /// Third-party extension keys should be namespaced, such as with reverse-DNS keys,
+            /// and must not use MCP-reserved prefixes.
             pub fn with_meta_entry(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
                 self._meta
                     .get_or_insert_with(std::collections::HashMap::new)
@@ -3014,17 +3057,7 @@ pub fn with_meta(
                 self
             }
 
-            /// Set the preserved extra-field map
-            pub fn with_extra(mut self, extra: std::collections::HashMap<String, serde_json::Value>) -> Self {
-                self._extra = extra;
-                self
-            }
-
-            /// Add a single preserved extra-field entry
-            pub fn with_extra_entry(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
-                self._extra.insert(key.into(), value);
-                self
-            }
+            #extra_impl
         }
     };
 

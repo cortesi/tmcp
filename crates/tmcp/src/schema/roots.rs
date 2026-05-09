@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::macros::with_meta;
+use crate::macros::{with_meta, with_open_meta};
 
-#[with_meta]
+#[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListRootsResult {
     pub roots: Vec<Root>,

@@ -259,10 +259,7 @@ pub trait ServerHandler: Send + Sync {
         _context: &ServerCtx,
         _cursor: Option<Cursor>,
     ) -> Result<ListResourceTemplatesResult> {
-        Ok(ListResourceTemplatesResult {
-            resource_templates: vec![],
-            next_cursor: None,
-        })
+        Ok(ListResourceTemplatesResult::new())
     }
 
     /// Read a resource
