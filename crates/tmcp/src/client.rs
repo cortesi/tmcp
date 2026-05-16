@@ -1,4 +1,4 @@
-use std::{collections::HashMap, process::Stdio, sync::Arc, time::Duration};
+use std::{collections::HashMap, future::Future, process::Stdio, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
@@ -69,6 +69,26 @@ pub struct SpawnedServer {
     ///
     /// Contains the server's name, version, and advertised capabilities.
     pub server_info: InitializeResult,
+}
+
+/// In-flight client request with its assigned JSON-RPC request id.
+pub struct ClientRequestHandle<T> {
+    /// Request id assigned before sending the JSON-RPC request.
+    request_id: RequestId,
+    /// Pending typed response.
+    pending: Pending<T>,
+}
+
+impl<T> ClientRequestHandle<T> {
+    /// Borrow the JSON-RPC request id assigned to this request.
+    pub fn request_id(&self) -> &RequestId {
+        &self.request_id
+    }
+
+    /// Split this handle into its request id and pending response future.
+    pub fn into_parts(self) -> (RequestId, Pending<T>) {
+        (self.request_id, self.pending)
+    }
 }
 
 impl Client<()> {
@@ -355,6 +375,54 @@ where
         T: DeserializeOwned + Send + 'static,
     {
         self.request_handler.request_pending(request).await
+    }
+
+    /// Send a request and return a handle exposing its id and pending response.
+    pub async fn request_handle<T>(&self, request: ClientRequest) -> Result<ClientRequestHandle<T>>
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
+        let (request_id, pending) = self.request(request).await?;
+        Ok(ClientRequestHandle {
+            request_id,
+            pending,
+        })
+    }
+
+    /// Wait for an in-flight request, cancelling it if `cancel` resolves first.
+    ///
+    /// Local cancellation sends `notifications/cancelled`, drops the pending
+    /// response future, and returns [`Error::Cancelled`]. The remote server may
+    /// still continue work after receiving the advisory cancellation notice.
+    pub async fn wait_cancellable<T, F>(
+        &self,
+        handle: ClientRequestHandle<T>,
+        cancel: F,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned + Send + 'static,
+        F: Future<Output = ()> + Send,
+    {
+        let request_id = handle.request_id.clone();
+        let mut pending = handle.pending;
+        tokio::pin!(cancel);
+        tokio::select! {
+            biased;
+            () = &mut cancel => {
+                let cancel_result = self.cancel(request_id.clone()).await;
+                drop(pending);
+                if let Err(error) = cancel_result {
+                    warn!(
+                        request_id = ?request_id,
+                        "failed to notify MCP server request cancellation: {error}"
+                    );
+                }
+                Err(Error::Cancelled {
+                    request_id: request_id.to_string(),
+                })
+            }
+            result = &mut pending => result,
+        }
     }
 
     /// Notify the server that an in-flight request is cancelled.
@@ -907,6 +975,7 @@ async fn handle_server_notification<C: ClientHandler>(
 mod tests {
     use std::{
         collections::HashMap,
+        future::pending,
         sync::{Arc, Mutex as StdMutex},
         time::Instant,
     };
@@ -1289,6 +1358,41 @@ mod tests {
     async fn test_client_ping_server() {
         let (mut client, _server) = setup_client_server().await;
         client.ping().await.expect("Ping failed");
+    }
+
+    #[tokio::test]
+    async fn request_handle_exposes_id_and_waits_for_response() {
+        let (client, _server) = setup_client_server().await;
+
+        let handle: ClientRequestHandle<EmptyResult> = client
+            .request_handle(ClientRequest::ping())
+            .await
+            .expect("request handle");
+        let request_id = handle.request_id().to_string();
+        let result = client.wait_cancellable(handle, pending()).await;
+
+        assert!(result.is_ok());
+        assert!(!request_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wait_cancellable_returns_cancelled_when_cancel_future_wins() {
+        let (client_transport, _server_transport) = TestTransport::create_pair();
+        let mut client = Client::new("test", "1.0");
+        client
+            .connect(client_transport)
+            .await
+            .expect("Failed to connect");
+
+        let handle: ClientRequestHandle<EmptyResult> = client
+            .request_handle(ClientRequest::ping())
+            .await
+            .expect("request handle");
+        let request_id = handle.request_id().to_string();
+
+        let result = client.wait_cancellable(handle, async {}).await;
+
+        assert!(matches!(result, Err(Error::Cancelled { request_id: id }) if id == request_id));
     }
 
     #[tokio::test]

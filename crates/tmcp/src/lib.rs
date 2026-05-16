@@ -126,14 +126,18 @@ pub mod schema;
 pub mod testutils;
 
 pub use arguments::Arguments;
-pub use client::{Client, SpawnedServer};
+pub use client::{Client, ClientRequestHandle, SpawnedServer};
 pub use connection::{ClientHandler, ServerHandler};
 pub use context::{ClientCtx, ServerCtx};
 pub use error::{
     Error, Result, TOOL_ERROR_INTERNAL, TOOL_ERROR_INVALID_INPUT, TOOL_ERROR_NOT_FOUND,
     TOOL_ERROR_TIMEOUT, ToolError, ToolResult,
 };
-pub use mcp_api::{McpApi, McpApiOptions, inspect_client, inspect_server, inspect_server_with};
+pub use mcp_api::{
+    McpApi, McpApiOptions, McpApiRefreshSnapshot, McpApiRefreshState, collect_client_prompts,
+    collect_client_resource_templates, collect_client_resources, collect_client_tools,
+    inspect_client, inspect_server, inspect_server_with,
+};
 pub use mcp_api_render::{McpApiRenderOptions, render_mcp_api};
 pub use schema::ToolResponse;
 pub use server::{EmbeddedHttpServer, HttpBuilder, Server, ServerHandle, TcpServerHandle};

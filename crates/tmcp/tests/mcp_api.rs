@@ -4,13 +4,14 @@
 mod tests {
     use async_trait::async_trait;
     use tmcp::{
-        Error, McpApiRenderOptions, Result, ServerCtx, ServerHandler, inspect_server,
-        render_mcp_api,
+        Error, McpApiRefreshState, McpApiRenderOptions, Result, ServerCtx, ServerHandler,
+        inspect_client, inspect_server, render_mcp_api,
         schema::{
             ClientCapabilities, Cursor, Implementation, InitializeResult, ListPromptsResult,
             ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt, Resource,
-            ResourceTemplate, Tool, ToolSchema,
+            ResourceTemplate, ServerNotification, Tool, ToolSchema,
         },
+        testutils::{connected_client_and_server, shutdown_client_and_server},
     };
 
     /// Server used to exercise each inspected MCP API list.
@@ -129,6 +130,67 @@ mod tests {
         let json = serde_json::to_value(&api).expect("serialize API");
         assert!(json.get("resourceTemplates").is_some());
         assert!(json.get("resource_templates").is_none());
+    }
+
+    /// The connected-client inspector collects the same advertised API over MCP.
+    #[tokio::test]
+    async fn inspect_client_collects_mcp_api() {
+        let (mut client, server) = connected_client_and_server(|| Box::new(ApiServer))
+            .await
+            .expect("connect");
+        let initialize = client.init().await.expect("initialize");
+
+        let api = inspect_client(&client, initialize)
+            .await
+            .expect("inspect client");
+
+        assert_eq!(api.initialize.server_info.name, "api-server");
+        assert_eq!(
+            api.tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first_tool", "second_tool"]
+        );
+        assert_eq!(api.resources[0].uri, "tmcp://guide");
+        assert_eq!(
+            api.resource_templates[0].uri_template,
+            "tmcp://guide/{name}"
+        );
+        assert_eq!(api.prompts[0].name, "summarize");
+
+        shutdown_client_and_server(client, server).await;
+    }
+
+    /// API refresh state coalesces list-change notifications until the next take.
+    #[test]
+    fn api_refresh_state_tracks_list_changed_notifications() {
+        let state = McpApiRefreshState::default();
+
+        state.observe_server_notification(&ServerNotification::tool_list_changed());
+        state.observe_server_notification(&ServerNotification::resource_list_changed());
+
+        let snapshot = state.snapshot();
+        assert!(snapshot.tools);
+        assert!(snapshot.resources);
+        assert!(!snapshot.prompts);
+        assert!(!snapshot.is_empty());
+
+        let taken = state.take();
+        assert_eq!(snapshot, taken);
+        assert!(state.take().is_empty());
+    }
+
+    /// Notifications observed while another snapshot is in progress are not lost.
+    #[test]
+    fn api_refresh_state_preserves_mid_snapshot_notifications() {
+        let state = McpApiRefreshState::default();
+
+        let first = state.take();
+        state.observe_server_notification(&ServerNotification::prompt_list_changed());
+
+        assert!(first.is_empty());
+        assert!(state.take().prompts);
     }
 
     /// The inspector does not call list methods for capabilities the server omits.

@@ -1,5 +1,10 @@
 //! Helpers for inspecting a server's MCP API.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -7,8 +12,10 @@ use tokio::sync::mpsc;
 use crate::{
     Client, ClientHandler, Result, ServerCtx, ServerHandler,
     schema::{
-        ClientCapabilities, Implementation, InitializeResult, LATEST_PROTOCOL_VERSION, Prompt,
-        Resource, ResourceTemplate, Tool,
+        ClientCapabilities, ClientRequest, Implementation, InitializeResult,
+        LATEST_PROTOCOL_VERSION, ListPromptsResult, ListResourceTemplatesResult,
+        ListResourcesResult, ListToolsResult, Prompt, Resource, ResourceTemplate,
+        ServerNotification, Tool,
     },
 };
 
@@ -32,7 +39,13 @@ pub struct McpApi {
 }
 
 impl McpApi {
-    /// Return a stable digest for cache invalidation over the advertised surface.
+    /// Return a digest for cache invalidation over the advertised surface.
+    ///
+    /// The digest canonicalizes ordering by tool name, resource URI, resource
+    /// template URI template, and prompt name before hashing the full serialized
+    /// [`McpApi`], including the initialize response and advertised schemas.
+    /// Treat the value as stable for one tmcp release series; downstream caches
+    /// should tolerate invalidation when tmcp changes the protocol model.
     pub fn surface_digest(&self) -> String {
         let mut api = self.clone();
         api.tools.sort_by(|left, right| left.name.cmp(&right.name));
@@ -46,6 +59,85 @@ impl McpApi {
         let bytes = serde_json::to_vec(&api).expect("McpApi can be serialized to JSON");
         let digest = Sha256::digest(bytes);
         digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+}
+
+/// Coalesced MCP API refresh flags from server list-change notifications.
+#[derive(Default)]
+pub struct McpApiRefreshState {
+    /// Whether the server's tool list changed.
+    tools: AtomicBool,
+    /// Whether the server's resource or resource-template lists changed.
+    resources: AtomicBool,
+    /// Whether the server's prompt list changed.
+    prompts: AtomicBool,
+}
+
+impl McpApiRefreshState {
+    /// Create shared refresh state for one connected server.
+    pub fn shared() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Mark the server's tool list as changed.
+    pub fn mark_tools(&self) {
+        self.tools.store(true, Ordering::Release);
+    }
+
+    /// Mark the server's resource and resource-template lists as changed.
+    pub fn mark_resources(&self) {
+        self.resources.store(true, Ordering::Release);
+    }
+
+    /// Mark the server's prompt list as changed.
+    pub fn mark_prompts(&self) {
+        self.prompts.store(true, Ordering::Release);
+    }
+
+    /// Mark refresh state implied by one server notification.
+    pub fn observe_server_notification(&self, notification: &ServerNotification) {
+        match notification {
+            ServerNotification::ToolListChanged { .. } => self.mark_tools(),
+            ServerNotification::ResourceListChanged { .. } => self.mark_resources(),
+            ServerNotification::PromptListChanged { .. } => self.mark_prompts(),
+            _ => {}
+        }
+    }
+
+    /// Return the current coalesced dirty state.
+    pub fn snapshot(&self) -> McpApiRefreshSnapshot {
+        McpApiRefreshSnapshot {
+            tools: self.tools.load(Ordering::Acquire),
+            resources: self.resources.load(Ordering::Acquire),
+            prompts: self.prompts.load(Ordering::Acquire),
+        }
+    }
+
+    /// Take and clear the current coalesced dirty state.
+    pub fn take(&self) -> McpApiRefreshSnapshot {
+        McpApiRefreshSnapshot {
+            tools: self.tools.swap(false, Ordering::AcqRel),
+            resources: self.resources.swap(false, Ordering::AcqRel),
+            prompts: self.prompts.swap(false, Ordering::AcqRel),
+        }
+    }
+}
+
+/// Snapshot of pending MCP API refresh work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpApiRefreshSnapshot {
+    /// Whether the server's tool list changed.
+    pub tools: bool,
+    /// Whether the server's resource or resource-template lists changed.
+    pub resources: bool,
+    /// Whether the server's prompt list changed.
+    pub prompts: bool,
+}
+
+impl McpApiRefreshSnapshot {
+    /// Return whether no API section is marked dirty.
+    pub fn is_empty(&self) -> bool {
+        !(self.tools || self.resources || self.prompts)
     }
 }
 
@@ -132,12 +224,9 @@ pub async fn inspect_server_with(
 /// # Errors
 ///
 /// Returns any error raised by the remote server's listing methods.
-pub async fn inspect_client<C>(
-    client: &mut Client<C>,
-    initialize: InitializeResult,
-) -> Result<McpApi>
+pub async fn inspect_client<C>(client: &Client<C>, initialize: InitializeResult) -> Result<McpApi>
 where
-    C: ClientHandler + Send + Sync + 'static,
+    C: ClientHandler + Send + 'static,
 {
     let tools = if initialize.capabilities.tools.is_some() {
         collect_client_tools(client).await?
@@ -244,14 +333,17 @@ async fn collect_prompts(
 }
 
 /// Collect every page returned by a remote `tools/list`.
-async fn collect_client_tools<C>(client: &mut Client<C>) -> Result<Vec<Tool>>
+pub async fn collect_client_tools<C>(client: &Client<C>) -> Result<Vec<Tool>>
 where
-    C: ClientHandler + Send + Sync + 'static,
+    C: ClientHandler + Send + 'static,
 {
     let mut cursor = None;
     let mut tools = Vec::new();
     loop {
-        let page = client.list_tools(cursor).await?;
+        let (_, pending) = client
+            .request::<ListToolsResult>(ClientRequest::list_tools(cursor))
+            .await?;
+        let page = pending.await?;
         tools.extend(page.tools);
         let Some(next_cursor) = page.next_cursor else {
             return Ok(tools);
@@ -261,14 +353,17 @@ where
 }
 
 /// Collect every page returned by a remote `resources/list`.
-async fn collect_client_resources<C>(client: &mut Client<C>) -> Result<Vec<Resource>>
+pub async fn collect_client_resources<C>(client: &Client<C>) -> Result<Vec<Resource>>
 where
-    C: ClientHandler + Send + Sync + 'static,
+    C: ClientHandler + Send + 'static,
 {
     let mut cursor = None;
     let mut resources = Vec::new();
     loop {
-        let page = client.list_resources(cursor).await?;
+        let (_, pending) = client
+            .request::<ListResourcesResult>(ClientRequest::list_resources(cursor))
+            .await?;
+        let page = pending.await?;
         resources.extend(page.resources);
         let Some(next_cursor) = page.next_cursor else {
             return Ok(resources);
@@ -278,16 +373,19 @@ where
 }
 
 /// Collect every page returned by a remote `resources/templates/list`.
-async fn collect_client_resource_templates<C>(
-    client: &mut Client<C>,
+pub async fn collect_client_resource_templates<C>(
+    client: &Client<C>,
 ) -> Result<Vec<ResourceTemplate>>
 where
-    C: ClientHandler + Send + Sync + 'static,
+    C: ClientHandler + Send + 'static,
 {
     let mut cursor = None;
     let mut resource_templates = Vec::new();
     loop {
-        let page = client.list_resource_templates(cursor).await?;
+        let (_, pending) = client
+            .request::<ListResourceTemplatesResult>(ClientRequest::list_resource_templates(cursor))
+            .await?;
+        let page = pending.await?;
         resource_templates.extend(page.resource_templates);
         let Some(next_cursor) = page.next_cursor else {
             return Ok(resource_templates);
@@ -297,14 +395,17 @@ where
 }
 
 /// Collect every page returned by a remote `prompts/list`.
-async fn collect_client_prompts<C>(client: &mut Client<C>) -> Result<Vec<Prompt>>
+pub async fn collect_client_prompts<C>(client: &Client<C>) -> Result<Vec<Prompt>>
 where
-    C: ClientHandler + Send + Sync + 'static,
+    C: ClientHandler + Send + 'static,
 {
     let mut cursor = None;
     let mut prompts = Vec::new();
     loop {
-        let page = client.list_prompts(cursor).await?;
+        let (_, pending) = client
+            .request::<ListPromptsResult>(ClientRequest::list_prompts(cursor))
+            .await?;
+        let page = pending.await?;
         prompts.extend(page.prompts);
         let Some(next_cursor) = page.next_cursor else {
             return Ok(prompts);
