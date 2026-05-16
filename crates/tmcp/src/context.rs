@@ -8,7 +8,7 @@ use std::{
 };
 
 use http::Extensions;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{
     Notify,
     mpsc::{self, error::TrySendError},
@@ -189,6 +189,21 @@ impl ServerCtx {
     ///
     /// Progress is best-effort: missing tokens and bounded-queue failures are ignored.
     pub fn send_progress(&self, message: &str) {
+        self.send_progress_update(None, Some(message));
+    }
+
+    /// Send an informational progress notification with a known total.
+    ///
+    /// Progress is best-effort: missing tokens and bounded-queue failures are ignored.
+    pub fn send_progress_with_total(&self, message: &str, total: f64) {
+        self.send_progress_update(Some(total), Some(message));
+    }
+
+    /// Send a progress notification for the current request.
+    ///
+    /// Each call increments the request-local progress counter. Missing progress tokens
+    /// and bounded-queue failures are ignored because MCP progress is advisory.
+    pub fn send_progress_update(&self, total: Option<f64>, message: Option<&str>) {
         let (Some(token), Some(counter)) = (&self.progress_token, &self.progress_counter) else {
             return;
         };
@@ -196,9 +211,50 @@ impl ServerCtx {
         drop(self.notify(schema::ServerNotification::progress(
             token.clone(),
             progress as f64,
-            None,
-            Some(message.to_owned()),
+            total,
+            message.map(str::to_owned),
         )));
+    }
+
+    /// Send a structured logging notification without a logger name.
+    ///
+    /// Unlike progress, logging is not request-scoped. Serialization and notification queue
+    /// failures are returned to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data` cannot be serialized or the notification queue is full.
+    pub fn send_log(&self, level: schema::LoggingLevel, data: impl Serialize) -> Result<()> {
+        self.send_log_inner(level, None, data)
+    }
+
+    /// Send a structured logging notification with a logger name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data` cannot be serialized or the notification queue is full.
+    pub fn send_log_from(
+        &self,
+        level: schema::LoggingLevel,
+        logger: impl Into<String>,
+        data: impl Serialize,
+    ) -> Result<()> {
+        self.send_log_inner(level, Some(logger.into()), data)
+    }
+
+    /// Serialize and emit one structured logging notification.
+    fn send_log_inner(
+        &self,
+        level: schema::LoggingLevel,
+        logger: Option<String>,
+        data: impl Serialize,
+    ) -> Result<()> {
+        let data = serde_json::to_value(data).map_err(|err| Error::JsonParse {
+            message: err.to_string(),
+        })?;
+        self.notify(schema::ServerNotification::logging_message(
+            level, logger, data,
+        ))
     }
 
     /// Return per-request transport extensions.
@@ -349,5 +405,75 @@ fn notification_send_error<T>(err: &TrySendError<T>) -> Error {
     match err {
         TrySendError::Full(_) => Error::Transport("Notification queue full".into()),
         TrySendError::Closed(_) => Error::TransportDisconnected,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::schema::{LoggingLevel, ProgressToken, ServerNotification};
+
+    #[test]
+    fn progress_without_token_is_noop() {
+        let (notification_tx, mut notification_rx) = mpsc::channel(1);
+        let ctx = ServerCtx::new(notification_tx, None);
+
+        ctx.send_progress("hidden");
+
+        assert!(notification_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn progress_with_total_uses_request_token_and_counter() {
+        let (notification_tx, mut notification_rx) = mpsc::channel(2);
+        let ctx = ServerCtx::new(notification_tx, None)
+            .with_progress_token(ProgressToken::String("progress-1".to_owned()));
+
+        ctx.send_progress_with_total("halfway", 2.0);
+
+        let notification = notification_rx.recv().await.expect("notification");
+        let ServerNotification::Progress {
+            progress_token,
+            progress,
+            total,
+            message,
+            _meta: _,
+        } = notification
+        else {
+            panic!("expected progress notification");
+        };
+        assert!(matches!(progress_token, ProgressToken::String(token) if token == "progress-1"));
+        assert_eq!(progress, 1.0);
+        assert_eq!(total, Some(2.0));
+        assert_eq!(message.as_deref(), Some("halfway"));
+    }
+
+    #[tokio::test]
+    async fn send_log_from_emits_structured_logging_message() {
+        let (notification_tx, mut notification_rx) = mpsc::channel(2);
+        let ctx = ServerCtx::new(notification_tx, None);
+
+        ctx.send_log_from(
+            LoggingLevel::Info,
+            "test",
+            serde_json::json!({ "event": "ready" }),
+        )
+        .expect("send log");
+
+        let notification = notification_rx.recv().await.expect("notification");
+        let ServerNotification::LoggingMessage {
+            level,
+            logger,
+            data,
+            _meta: _,
+        } = notification
+        else {
+            panic!("expected logging notification");
+        };
+        assert_eq!(level, LoggingLevel::Info);
+        assert_eq!(logger.as_deref(), Some("test"));
+        assert_eq!(data["event"], "ready");
     }
 }

@@ -587,6 +587,31 @@ where
         self.request_and_wait(request).await
     }
 
+    /// Call a tool with a request-scoped progress token.
+    ///
+    /// Servers may mirror progress with `notifications/progress` while this
+    /// request is in flight. Hosts are not required to display those
+    /// notifications, so callers should still use durable tool APIs when they
+    /// need recoverable progress.
+    pub async fn call_tool_with_progress(
+        &mut self,
+        name: impl Into<String> + Send,
+        arguments: impl Serialize + Send,
+        progress_token: ProgressToken,
+    ) -> Result<CallToolResult> {
+        let args = crate::Arguments::from_struct(arguments)?;
+        let request = ClientRequest::CallTool {
+            name: name.into(),
+            arguments: Some(args),
+            task: None,
+            _meta: Some(RequestMeta {
+                progress_token: Some(progress_token),
+                ..RequestMeta::default()
+            }),
+        };
+        self.request_and_wait(request).await
+    }
+
     /// Call a tool with arguments and task metadata.
     ///
     /// Use this when the call may create a task instead of returning an
