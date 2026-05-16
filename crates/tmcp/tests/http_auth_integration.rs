@@ -14,11 +14,6 @@ mod tests {
         jwk::{Jwk, JwkSet, KeyAlgorithm},
     };
     use reqwest::Client as HttpClient;
-    use rsa::{
-        RsaPrivateKey,
-        pkcs8::{EncodePrivateKey, LineEnding},
-        rand_core::OsRng,
-    };
     use serde_json::{Value, json};
     use tmcp::{
         Arguments, Result, Server, ServerCtx, ServerHandler,
@@ -88,13 +83,10 @@ mod tests {
             .as_secs()
     }
 
+    const TEST_RSA_PEM: &str = include_str!("test_data/rsa_test_key.pem");
+
     fn signing_key(kid: &str) -> (EncodingKey, JwkSet) {
-        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
-        let pem = private_key
-            .to_pkcs8_pem(LineEnding::LF)
-            .unwrap()
-            .to_string();
-        let encoding_key = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
+        let encoding_key = EncodingKey::from_rsa_pem(TEST_RSA_PEM.as_bytes()).unwrap();
         let mut jwk = Jwk::from_encoding_key(&encoding_key, Algorithm::RS256).unwrap();
         jwk.common.key_id = Some(kid.to_string());
         jwk.common.key_algorithm = Some(KeyAlgorithm::RS256);

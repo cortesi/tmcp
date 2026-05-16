@@ -7,6 +7,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     process::{Child, Command},
     sync::{Mutex, mpsc},
+    task::JoinHandle,
 };
 use tracing::{debug, error, info, warn};
 
@@ -53,6 +54,19 @@ where
     client_capabilities: ClientCapabilities,
     /// Tracks whether on_connect has been invoked for this connection.
     on_connect_called: bool,
+    /// Background task driving the inbound message loop for the active connection.
+    message_handler: Option<AbortOnDrop>,
+}
+
+/// Aborts the wrapped tokio task when dropped, ensuring background message
+/// handlers release their transport (and any open SSE connections) as soon as
+/// the owning `Client` goes away.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Handle to an MCP server spawned as a subprocess.
@@ -102,6 +116,7 @@ impl Client<()> {
             version: version.into(),
             client_capabilities: ClientCapabilities::default(),
             on_connect_called: false,
+            message_handler: None,
         }
     }
 
@@ -130,6 +145,7 @@ impl Client<()> {
             version: self.version,
             client_capabilities: self.client_capabilities,
             on_connect_called: self.on_connect_called,
+            message_handler: self.message_handler,
         }
     }
 
@@ -490,8 +506,12 @@ where
         // Clone sink for notification handler
         let notification_sink = tx.clone();
 
+        // Abort any prior handler (e.g., on reconnect) so its transport and
+        // associated background work are released before we install a new one.
+        self.message_handler.take();
+
         // Spawn a task to handle incoming messages
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             debug!("Message handler started");
 
             loop {
@@ -575,6 +595,7 @@ where
 
             info!("Message handler stopped");
         });
+        self.message_handler = Some(AbortOnDrop(handle));
 
         Ok(())
     }

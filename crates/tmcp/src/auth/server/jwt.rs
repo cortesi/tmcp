@@ -357,14 +357,14 @@ mod tests {
         Algorithm, EncodingKey, Header, encode,
         jwk::{Jwk, KeyAlgorithm},
     };
-    use rsa::{
-        RsaPrivateKey,
-        pkcs8::{EncodePrivateKey, LineEnding},
-        rand_core::OsRng,
-    };
     use tokio::net::TcpListener;
 
     use super::*;
+
+    const TEST_RSA_PEM: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test_data/rsa_test_key.pem"
+    ));
 
     #[derive(Clone)]
     struct JwksState {
@@ -390,12 +390,7 @@ mod tests {
     }
 
     fn signing_key(kid: &str) -> (EncodingKey, JwkSet) {
-        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
-        let pem = private_key
-            .to_pkcs8_pem(LineEnding::LF)
-            .unwrap()
-            .to_string();
-        let encoding_key = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
+        let encoding_key = EncodingKey::from_rsa_pem(TEST_RSA_PEM.as_bytes()).unwrap();
         let mut jwk = Jwk::from_encoding_key(&encoding_key, Algorithm::RS256).unwrap();
         jwk.common.key_id = Some(kid.to_string());
         jwk.common.key_algorithm = Some(KeyAlgorithm::RS256);

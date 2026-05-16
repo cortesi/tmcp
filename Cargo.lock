@@ -2707,7 +2707,6 @@ dependencies = [
  "rand 0.10.0",
  "reqwest",
  "rmcp",
- "rsa",
  "schemars",
  "serde",
  "serde_json",
