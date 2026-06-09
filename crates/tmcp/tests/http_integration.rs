@@ -16,12 +16,14 @@ mod tests {
     use reqwest::Client as HttpClient;
     use serde_json::json;
     use tmcp::{
-        Arguments, Client, Result, Server, ServerCtx, ServerHandler, ToolError,
+        Arguments, Client, ClientCtx, ClientHandler, Result, Server, ServerCtx, ServerHandler,
+        ToolError,
         schema::{self, *},
     };
     use tokio::{
         net::TcpListener,
-        time::{Duration, sleep},
+        sync::mpsc,
+        time::{Duration, sleep, timeout},
     };
     use tokio_util::sync::CancellationToken;
     use tracing_subscriber::fmt;
@@ -331,6 +333,80 @@ mod tests {
         drop(client);
         shutdown.cancel();
         server_task.await.unwrap();
+        handle.stop().await.unwrap();
+    }
+
+    /// Server whose initialize advertises tool list-changed notifications.
+    #[derive(Default)]
+    struct NotifyServer;
+
+    #[async_trait]
+    impl ServerHandler for NotifyServer {
+        async fn initialize(
+            &self,
+            _context: &ServerCtx,
+            _protocol_version: String,
+            _capabilities: ClientCapabilities,
+            _client_info: Implementation,
+        ) -> Result<InitializeResult> {
+            Ok(InitializeResult::new("notify-server")
+                .with_version("0.1.0")
+                .with_capabilities(ServerCapabilities::default().with_tools(Some(true))))
+        }
+    }
+
+    /// Client handler that forwards server notifications to a channel.
+    #[derive(Clone)]
+    struct NotificationCapture {
+        tx: mpsc::Sender<ServerNotification>,
+    }
+
+    #[async_trait]
+    impl ClientHandler for NotificationCapture {
+        async fn notification(
+            &self,
+            _context: &ClientCtx,
+            notification: ServerNotification,
+        ) -> Result<()> {
+            self.tx.send(notification).await.ok();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn server_notifications_reach_http_clients_over_sse() {
+        let server = Server::new(NotifyServer::default);
+        let handle = server.serve_http("127.0.0.1:0").await.unwrap();
+        let addr = handle.bound_addr.clone().unwrap();
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut client =
+            Client::new("sse-client", "1.0.0").with_handler(NotificationCapture { tx });
+        client
+            .connect_http(&format!("http://{addr}"))
+            .await
+            .unwrap();
+
+        // The client's SSE stream attaches asynchronously after initialize,
+        // so retry the send until a notification is observed.
+        let received = timeout(Duration::from_secs(10), async {
+            loop {
+                handle.send_server_notification(&ServerNotification::tool_list_changed());
+                if let Ok(Some(notification)) = timeout(Duration::from_millis(100), rx.recv()).await
+                {
+                    return notification;
+                }
+            }
+        })
+        .await
+        .expect("notification was never delivered over SSE");
+
+        assert!(matches!(
+            received,
+            ServerNotification::ToolListChanged { .. }
+        ));
+
+        drop(client);
         handle.stop().await.unwrap();
     }
 
