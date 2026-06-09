@@ -9,17 +9,16 @@
 //! - POSTed requests are correlated to their JSON-RPC response by id and
 //!   answered on the POST itself with `application/json`.
 //! - Server-initiated notifications and requests flow to the standing GET
-//!   SSE stream when one is open, and are dropped otherwise.
+//!   SSE stream when one is open; recent events are retained for
+//!   `Last-Event-ID` replay on reconnect.
 //! - POSTed notifications and responses are forwarded to the connection loop
 //!   and acknowledged with `202 Accepted`.
+//! - DELETE terminates the session.
 
 use std::{
+    collections::VecDeque,
     pin::Pin,
-    result::Result as StdResult,
-    sync::{
-        self, Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{self, Arc},
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -28,30 +27,29 @@ use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use dashmap::DashMap;
-use futures::{Sink, Stream, StreamExt, channel::mpsc};
+use futures::{Sink, SinkExt, Stream, StreamExt, channel::mpsc};
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time::interval};
 use tokio_util::sync::CancellationToken;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use super::validation::{
     parse_jsonrpc_body, read_json_body, validate_json_content_type, validate_origin,
+    validate_protocol_version,
 };
 use crate::{
     connection::ServerHandler,
     error::{Error, Result},
-    schema::{
-        JSONRPCMessage, JSONRPCNotification, JSONRPCResponse, LATEST_PROTOCOL_VERSION, RequestId,
-    },
+    schema::{JSONRPCMessage, JSONRPCNotification, JSONRPCResponse, RequestId},
     server::{NotificationFanout, Server, ServerHandle},
     transport::{IncomingMessage, Transport, TransportStream},
 };
@@ -61,6 +59,57 @@ pub type HandlerFactory = Arc<dyn Fn() -> Box<dyn ServerHandler> + Send + Sync>;
 
 /// Session inactivity timeout (1 hour).
 const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// Maximum number of concurrent sessions before initialize is refused.
+const MAX_SESSIONS: usize = 1024;
+
+/// Messages queued towards a session's connection loop before POSTs wait.
+const SESSION_INCOMING_BUFFER: usize = 64;
+
+/// Events retained per session for `Last-Event-ID` replay.
+const SSE_REPLAY_CAPACITY: usize = 256;
+
+/// Events queued on a live SSE stream before it is considered stalled and
+/// dropped; the client reconnects and resumes via replay.
+const SSE_STREAM_CAPACITY: usize = 1024;
+
+/// Cross-origin policy for the HTTP transport.
+///
+/// Drives both the CORS response headers and Origin header validation.
+#[derive(Debug, Clone, Default)]
+pub enum CorsPolicy {
+    /// Reject cross-origin browser requests: when an Origin header is
+    /// present it must match the request Host. No CORS headers are emitted.
+    #[default]
+    SameOrigin,
+    /// Allow requests from any origin.
+    Permissive,
+    /// Allow only the listed origins (exact match, e.g.
+    /// `https://app.example.com`).
+    AllowList(Vec<String>),
+}
+
+impl CorsPolicy {
+    /// Build the CORS layer matching this policy, if one is needed.
+    fn layer(&self) -> Option<CorsLayer> {
+        match self {
+            Self::SameOrigin => None,
+            Self::Permissive => Some(CorsLayer::permissive()),
+            Self::AllowList(origins) => {
+                let origins: Vec<HeaderValue> = origins
+                    .iter()
+                    .filter_map(|origin| HeaderValue::from_str(origin).ok())
+                    .collect();
+                Some(
+                    CorsLayer::new()
+                        .allow_origin(origins)
+                        .allow_methods(Any)
+                        .allow_headers(Any),
+                )
+            }
+        }
+    }
+}
 
 /// An MCP server exposed over streamable HTTP.
 pub struct HttpServer {
@@ -77,6 +126,8 @@ struct HttpServerState {
     factory: HandlerFactory,
     /// Master shutdown token covering the listener and all sessions.
     shutdown: CancellationToken,
+    /// Cross-origin policy applied to all MCP requests.
+    cors: Arc<CorsPolicy>,
 }
 
 /// A single client session and its running connection loop.
@@ -85,11 +136,9 @@ struct HttpSession {
     /// Timestamp of the last observed activity for the session.
     last_activity: Arc<sync::Mutex<Instant>>,
     /// Sender feeding the session's connection loop.
-    incoming_tx: mpsc::UnboundedSender<IncomingMessage>,
+    incoming_tx: mpsc::Sender<IncomingMessage>,
     /// Outbound routing shared with the session's transport.
     routes: SessionRoutes,
-    /// Monotonic id source for SSE events on the GET stream.
-    event_counter: EventCounter,
     /// Handle to the session's connection loop.
     handle: Arc<ServerHandle>,
 }
@@ -99,32 +148,19 @@ impl HttpSession {
     fn touch(&self) {
         *self.last_activity.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
     }
-}
 
-/// Monotonically increasing SSE event id source.
-#[derive(Clone, Debug, Default)]
-struct EventCounter(Arc<AtomicU64>);
-
-impl EventCounter {
-    /// Return the next event id.
-    fn next(&self) -> u64 {
-        self.0.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    /// Ensure the counter is at least `last_event_id`.
-    fn bump_to(&self, last_event_id: u64) {
-        let mut current = self.0.load(Ordering::Relaxed);
-        while last_event_id > current {
-            match self.0.compare_exchange(
-                current,
-                last_event_id,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(next) => current = next,
-            }
-        }
+    /// Forward a message to the session's connection loop.
+    ///
+    /// Returns false if the connection loop has shut down.
+    async fn forward(&self, message: JSONRPCMessage, extensions: http::Extensions) -> bool {
+        self.incoming_tx
+            .clone()
+            .send(IncomingMessage {
+                message,
+                extensions,
+            })
+            .await
+            .is_ok()
     }
 }
 
@@ -134,8 +170,19 @@ impl EventCounter {
 struct SessionRoutes {
     /// Pending request responses keyed by JSON-RPC request id.
     pending: Arc<DashMap<RequestId, oneshot::Sender<JSONRPCMessage>>>,
-    /// Sender for the standing GET SSE stream, when one is open.
-    stream_tx: Arc<sync::Mutex<Option<mpsc::UnboundedSender<JSONRPCMessage>>>>,
+    /// Standing SSE stream state: live sender, event ids, and replay buffer.
+    stream: Arc<sync::Mutex<StreamState>>,
+}
+
+/// SSE stream state for one session.
+#[derive(Default)]
+struct StreamState {
+    /// Live stream sender, when a GET stream is open.
+    tx: Option<mpsc::Sender<(u64, JSONRPCMessage)>>,
+    /// Id assigned to the most recent event.
+    last_id: u64,
+    /// Recent events retained for `Last-Event-ID` replay.
+    replay: VecDeque<(u64, JSONRPCMessage)>,
 }
 
 impl SessionRoutes {
@@ -156,29 +203,61 @@ impl SessionRoutes {
         self.send_to_stream(message);
     }
 
-    /// Forward a message to the standing SSE stream, if one is open.
+    /// Record a message in the replay buffer and forward it to the standing
+    /// SSE stream, if one is open.
     fn send_to_stream(&self, message: JSONRPCMessage) {
-        let mut guard = self.stream_tx.lock().unwrap_or_else(|e| e.into_inner());
-        match guard.as_ref() {
-            Some(tx) => {
-                if tx.unbounded_send(message).is_err() {
-                    *guard = None;
-                }
-            }
-            None => debug!("No SSE stream open; dropping server-initiated message"),
+        let mut state = self.stream.lock().unwrap_or_else(|e| e.into_inner());
+        state.last_id += 1;
+        let id = state.last_id;
+        state.replay.push_back((id, message.clone()));
+        if state.replay.len() > SSE_REPLAY_CAPACITY {
+            state.replay.pop_front();
+        }
+        if let Some(tx) = state.tx.as_mut()
+            && tx.try_send((id, message)).is_err()
+        {
+            // Stalled or disconnected consumer: drop the stream. The client
+            // reconnects and resumes from its Last-Event-ID via replay.
+            state.tx = None;
         }
     }
 
-    /// Install a new standing SSE stream, replacing any previous one.
-    fn set_stream(&self, tx: mpsc::UnboundedSender<JSONRPCMessage>) {
-        *self.stream_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    /// Install a new standing SSE stream, replacing any previous one, and
+    /// queue replayable events newer than `last_event_id`.
+    fn attach_stream(&self, last_event_id: Option<u64>) -> mpsc::Receiver<(u64, JSONRPCMessage)> {
+        let (mut tx, rx) = mpsc::channel(SSE_STREAM_CAPACITY);
+        let mut state = self.stream.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(last) = last_event_id {
+            for (id, message) in &state.replay {
+                if *id > last {
+                    tx.try_send((*id, message.clone())).ok();
+                }
+            }
+        }
+        state.tx = Some(tx);
+        rx
+    }
+
+    /// Whether a live SSE stream is currently attached.
+    ///
+    /// Clears the stream slot if the consumer has gone away.
+    fn stream_alive(&self) -> bool {
+        let mut state = self.stream.lock().unwrap_or_else(|e| e.into_inner());
+        match state.tx.as_ref() {
+            Some(tx) if tx.is_closed() => {
+                state.tx = None;
+                false
+            }
+            Some(_) => true,
+            None => false,
+        }
     }
 }
 
 /// Transport bridging one HTTP session to its connection loop.
 struct SessionTransport {
     /// Messages POSTed by the client for this session.
-    incoming_rx: Option<mpsc::UnboundedReceiver<IncomingMessage>>,
+    incoming_rx: Option<mpsc::Receiver<IncomingMessage>>,
     /// Outbound routing back to HTTP requests and the SSE stream.
     routes: SessionRoutes,
     /// Session id, used as the connection's remote address.
@@ -210,7 +289,7 @@ impl Transport for SessionTransport {
 /// Stream/sink pair for one session's connection loop.
 struct SessionTransportStream {
     /// Messages POSTed by the client.
-    incoming_rx: mpsc::UnboundedReceiver<IncomingMessage>,
+    incoming_rx: mpsc::Receiver<IncomingMessage>,
     /// Outbound routing back to HTTP requests and the SSE stream.
     routes: SessionRoutes,
 }
@@ -250,7 +329,7 @@ impl TransportStream for SessionTransportStream {}
 
 /// Routers returned when embedding tmcp HTTP handlers into another Axum app.
 pub struct EmbeddedHttpRoutes {
-    /// Router containing only the MCP GET/POST endpoint handlers.
+    /// Router containing only the MCP GET/POST/DELETE endpoint handlers.
     pub(crate) mcp_router: Router,
     /// Auxiliary top-level routes that must be merged at the application root.
     pub(crate) aux_routes: Router,
@@ -258,11 +337,12 @@ pub struct EmbeddedHttpRoutes {
 
 impl HttpServer {
     /// Create a new HTTP server around a per-session handler factory.
-    pub fn new(factory: HandlerFactory) -> Self {
+    pub fn new(factory: HandlerFactory, cors: CorsPolicy) -> Self {
         let state = HttpServerState {
             sessions: Arc::new(DashMap::new()),
             factory,
             shutdown: CancellationToken::new(),
+            cors: Arc::new(cors),
         };
         spawn_session_cleanup(&state);
         spawn_shutdown_watchdog(&state);
@@ -279,15 +359,16 @@ impl HttpServer {
         let mut mcp_router = Router::new()
             .route(mcp_route_path, post(handle_post))
             .route(mcp_route_path, get(handle_get))
+            .route(mcp_route_path, delete(handle_delete))
             .with_state(self.state.clone());
         if let Some(transform) = middleware {
             mcp_router = transform(mcp_router);
         }
-        mcp_router = mcp_router.layer(CorsLayer::permissive());
-
-        let aux_routes = routes
-            .unwrap_or_else(Router::new)
-            .layer(CorsLayer::permissive());
+        let mut aux_routes = routes.unwrap_or_else(Router::new);
+        if let Some(cors_layer) = self.state.cors.layer() {
+            mcp_router = mcp_router.layer(cors_layer.clone());
+            aux_routes = aux_routes.layer(cors_layer);
+        }
 
         EmbeddedHttpRoutes {
             mcp_router,
@@ -351,6 +432,8 @@ fn remove_session(state: &HttpServerState, session_id: &str) {
 }
 
 /// Start the background task that expires inactive HTTP sessions.
+///
+/// Sessions with a live SSE stream are exempt from inactivity expiry.
 fn spawn_session_cleanup(state: &HttpServerState) {
     let state = state.clone();
 
@@ -365,8 +448,11 @@ fn spawn_session_cleanup(state: &HttpServerState) {
                         .sessions
                         .iter()
                         .filter(|entry| {
-                            let last_active = *entry
-                                .value()
+                            let session = entry.value();
+                            if session.routes.stream_alive() {
+                                return false;
+                            }
+                            let last_active = *session
                                 .last_activity
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner());
@@ -398,18 +484,6 @@ fn spawn_shutdown_watchdog(state: &HttpServerState) {
     });
 }
 
-/// Validate the MCP-Protocol-Version header, if present.
-fn validate_protocol_version(headers: &HeaderMap) -> StdResult<(), Box<Response>> {
-    if let Some(version) = headers.get("MCP-Protocol-Version")
-        && version != LATEST_PROTOCOL_VERSION
-    {
-        return Err(Box::new(
-            (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response(),
-        ));
-    }
-    Ok(())
-}
-
 /// Extract the session id header, if present.
 fn session_id_header(headers: &HeaderMap) -> Option<String> {
     headers
@@ -428,13 +502,6 @@ fn cancelled_request_id(notification: &JSONRPCNotification) -> Option<RequestId>
     serde_json::from_value(value.clone()).ok()
 }
 
-/// Build an SSE event with a monotonically increasing id.
-fn build_sse_event(counter: &EventCounter, message: &JSONRPCMessage) -> Event {
-    Event::default()
-        .id(counter.next().to_string())
-        .data(serde_json::to_string(message).expect("serialize JSON-RPC message"))
-}
-
 // HTTP handlers
 
 /// Handle inbound HTTP POST JSON-RPC messages.
@@ -443,7 +510,7 @@ async fn handle_post(State(state): State<HttpServerState>, request: Request) -> 
     let headers = parts.headers;
     let extensions = parts.extensions;
 
-    if let Err(response) = validate_origin(&headers) {
+    if let Err(response) = validate_origin(&headers, &state.cors) {
         return *response;
     }
     if let Err(response) = validate_json_content_type(&headers) {
@@ -486,14 +553,7 @@ async fn handle_post(State(state): State<HttpServerState>, request: Request) -> 
                 .pending
                 .insert(request.id.clone(), response_tx);
 
-            if session
-                .incoming_tx
-                .unbounded_send(IncomingMessage {
-                    message,
-                    extensions,
-                })
-                .is_err()
-            {
+            if !session.forward(message, extensions).await {
                 remove_session(&state, &session_id);
                 return (StatusCode::NOT_FOUND, "Session terminated").into_response();
             }
@@ -511,23 +571,11 @@ async fn handle_post(State(state): State<HttpServerState>, request: Request) -> 
             if let Some(request_id) = cancelled_request_id(notification) {
                 session.routes.pending.remove(&request_id);
             }
-            session
-                .incoming_tx
-                .unbounded_send(IncomingMessage {
-                    message,
-                    extensions,
-                })
-                .ok();
+            session.forward(message, extensions).await;
             StatusCode::ACCEPTED.into_response()
         }
         JSONRPCMessage::Response(_) => {
-            session
-                .incoming_tx
-                .unbounded_send(IncomingMessage {
-                    message,
-                    extensions,
-                })
-                .ok();
+            session.forward(message, extensions).await;
             StatusCode::ACCEPTED.into_response()
         }
     }
@@ -543,8 +591,12 @@ async fn handle_initialize_post(
         return (StatusCode::BAD_REQUEST, "Invalid initialize message").into_response();
     };
 
+    if state.sessions.len() >= MAX_SESSIONS {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Too many sessions").into_response();
+    }
+
     let session_id = Uuid::new_v4().to_string();
-    let (incoming_tx, incoming_rx) = mpsc::unbounded();
+    let (incoming_tx, incoming_rx) = mpsc::channel(SESSION_INCOMING_BUFFER);
     let routes = SessionRoutes::default();
     let (response_tx, response_rx) = oneshot::channel();
     routes.pending.insert(request.id.clone(), response_tx);
@@ -568,18 +620,11 @@ async fn handle_initialize_post(
         last_activity: Arc::new(sync::Mutex::new(Instant::now())),
         incoming_tx,
         routes,
-        event_counter: EventCounter::default(),
         handle: Arc::new(handle),
     };
     state.sessions.insert(session_id.clone(), session.clone());
 
-    session
-        .incoming_tx
-        .unbounded_send(IncomingMessage {
-            message,
-            extensions,
-        })
-        .ok();
+    session.forward(message, extensions).await;
 
     match response_rx.await {
         Ok(response) => {
@@ -608,11 +653,24 @@ async fn handle_initialize_post(
 
 /// Handle inbound HTTP GET requests for the standing SSE stream.
 async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) -> Response {
-    if let Err(response) = validate_origin(&headers) {
+    if let Err(response) = validate_origin(&headers, &state.cors) {
         return *response;
     }
     if let Err(response) = validate_protocol_version(&headers) {
         return *response;
+    }
+
+    let accepts_sse = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/event-stream") || v.contains("*/*"))
+        .unwrap_or(false);
+    if !accepts_sse {
+        return (
+            StatusCode::NOT_ACCEPTABLE,
+            "Accept must include text/event-stream",
+        )
+            .into_response();
     }
 
     let Some(session_id) = session_id_header(&headers) else {
@@ -623,22 +681,19 @@ async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) ->
     };
     session.touch();
 
-    if let Some(last_event_id) = headers
+    let last_event_id = headers
         .get("Last-Event-ID")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-    {
-        session.event_counter.bump_to(last_event_id);
-    }
+        .and_then(|value| value.parse::<u64>().ok());
 
-    // Install the stream; a reconnecting client replaces its previous stream.
-    let (tx, mut rx) = mpsc::unbounded();
-    session.routes.set_stream(tx);
+    // Install the stream; a reconnecting client replaces its previous stream
+    // and receives any retained events newer than its Last-Event-ID.
+    let mut rx = session.routes.attach_stream(last_event_id);
 
-    let event_counter = session.event_counter;
     let stream = async_stream::stream! {
-        while let Some(msg) = rx.next().await {
-            yield Ok::<_, Error>(build_sse_event(&event_counter, &msg));
+        while let Some((id, message)) = rx.next().await {
+            let data = serde_json::to_string(&message).expect("serialize JSON-RPC message");
+            yield Ok::<_, Error>(Event::default().id(id.to_string()).data(data));
         }
     };
 
@@ -647,21 +702,36 @@ async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) ->
         .into_response()
 }
 
+/// Handle session termination via HTTP DELETE.
+async fn handle_delete(State(state): State<HttpServerState>, headers: HeaderMap) -> Response {
+    if let Err(response) = validate_origin(&headers, &state.cors) {
+        return *response;
+    }
+
+    let Some(session_id) = session_id_header(&headers) else {
+        return (StatusCode::BAD_REQUEST, "Missing session ID").into_response();
+    };
+    if state.sessions.contains_key(&session_id) {
+        remove_session(&state, &session_id);
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "Session not found").into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::schema::{JSONRPC_VERSION, JSONRPCResultResponse, JSONRpcResult, Notification};
 
-    #[test]
-    fn event_counter_is_monotonic_and_bumps() {
-        let counter = EventCounter::default();
-        assert_eq!(counter.next(), 1);
-        assert_eq!(counter.next(), 2);
-        counter.bump_to(10);
-        assert_eq!(counter.next(), 11);
-        // Bumping backwards has no effect.
-        counter.bump_to(3);
-        assert_eq!(counter.next(), 12);
+    fn notification(method: &str) -> JSONRPCMessage {
+        JSONRPCMessage::Notification(JSONRPCNotification {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            notification: Notification {
+                method: method.to_string(),
+                params: None,
+            },
+        })
     }
 
     #[test]
@@ -686,21 +756,58 @@ mod tests {
     }
 
     #[test]
-    fn routes_send_notifications_to_stream() {
+    fn routes_send_notifications_to_stream_with_event_ids() {
         let routes = SessionRoutes::default();
-        let (tx, mut rx) = mpsc::unbounded();
-        routes.set_stream(tx);
+        let mut rx = routes.attach_stream(None);
 
-        let notification = JSONRPCMessage::Notification(JSONRPCNotification {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            notification: Notification {
-                method: "notifications/tools/list_changed".to_string(),
-                params: None,
-            },
-        });
-        routes.deliver(notification);
+        routes.deliver(notification("notifications/tools/list_changed"));
+        routes.deliver(notification("notifications/prompts/list_changed"));
 
-        assert!(rx.try_next().unwrap().is_some());
+        let (id1, _) = rx.try_next().unwrap().unwrap();
+        let (id2, _) = rx.try_next().unwrap().unwrap();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+    }
+
+    #[test]
+    fn replay_resumes_from_last_event_id() {
+        let routes = SessionRoutes::default();
+
+        // Events delivered with no stream attached are retained for replay.
+        routes.deliver(notification("notifications/one"));
+        routes.deliver(notification("notifications/two"));
+        routes.deliver(notification("notifications/three"));
+
+        let mut rx = routes.attach_stream(Some(1));
+        let (id2, msg2) = rx.try_next().unwrap().unwrap();
+        let (id3, _) = rx.try_next().unwrap().unwrap();
+        assert_eq!(id2, 2);
+        assert_eq!(id3, 3);
+        let JSONRPCMessage::Notification(n) = msg2 else {
+            panic!("expected notification");
+        };
+        assert_eq!(n.notification.method, "notifications/two");
+    }
+
+    #[test]
+    fn replay_buffer_is_bounded() {
+        let routes = SessionRoutes::default();
+        for _ in 0..(SSE_REPLAY_CAPACITY + 10) {
+            routes.deliver(notification("notifications/n"));
+        }
+        let state = routes.stream.lock().unwrap();
+        assert_eq!(state.replay.len(), SSE_REPLAY_CAPACITY);
+    }
+
+    #[test]
+    fn stream_alive_clears_dropped_consumers() {
+        let routes = SessionRoutes::default();
+        let rx = routes.attach_stream(None);
+        assert!(routes.stream_alive());
+        drop(rx);
+        assert!(!routes.stream_alive());
+        // The dead slot is cleared.
+        assert!(routes.stream.lock().unwrap().tx.is_none());
     }
 
     #[test]

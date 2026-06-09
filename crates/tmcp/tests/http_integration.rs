@@ -335,6 +335,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_lifecycle_over_raw_http() {
+        let server = Server::new(EchoConnection::default);
+        let handle = server.serve_http("127.0.0.1:0").await.unwrap();
+        let addr = handle.bound_addr.clone().unwrap();
+        let base = format!("http://{addr}");
+        let http = HttpClient::new();
+
+        // Initialize with the previous protocol version header is accepted.
+        let response = http
+            .post(&base)
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2025-06-18")
+            .json(&initialize_payload())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let session_id = response
+            .headers()
+            .get("Mcp-Session-Id")
+            .expect("session id header")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // An unsupported protocol version is rejected.
+        let response = http
+            .post(&base)
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "1999-01-01")
+            .header("Mcp-Session-Id", &session_id)
+            .json(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // GET with an Accept header that excludes SSE is rejected.
+        let response = http
+            .get(&base)
+            .header("Accept", "application/json")
+            .header("Mcp-Session-Id", &session_id)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+
+        // DELETE terminates the session.
+        let response = http
+            .delete(&base)
+            .header("Mcp-Session-Id", &session_id)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        // Requests against the terminated session no longer resolve.
+        let response = http
+            .post(&base)
+            .header("Content-Type", "application/json")
+            .header("Mcp-Session-Id", &session_id)
+            .json(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        handle.stop().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn concurrent_clients_with_colliding_request_ids() {
         let server = Server::new(EchoConnection::default);
         let handle = server.serve_http("127.0.0.1:0").await.unwrap();

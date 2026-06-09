@@ -2698,6 +2698,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "http",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "jsonwebtoken",

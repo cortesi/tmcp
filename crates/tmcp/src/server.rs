@@ -24,7 +24,7 @@ use crate::{
     connection::ServerHandler,
     context::ServerCtx,
     error::{Error, Result},
-    http::{EmbeddedHttpRoutes, HttpServer, normalize_endpoint_path},
+    http::{CorsPolicy, EmbeddedHttpRoutes, HttpServer, normalize_endpoint_path},
     jsonrpc::create_jsonrpc_notification,
     schema::{self, *},
     transport::{GenericDuplex, StdioTransport, StreamTransport, Transport},
@@ -50,6 +50,8 @@ pub struct HttpBuilder<F> {
     middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
     /// Additional routes merged outside the middleware scope.
     routes: Option<Router>,
+    /// Cross-origin policy for the MCP routes.
+    cors: CorsPolicy,
 }
 
 /// Result of embedding tmcp HTTP routes into an existing Axum application.
@@ -253,6 +255,7 @@ where
             endpoint_path: "/".to_string(),
             middleware: None,
             routes: None,
+            cors: CorsPolicy::default(),
         }
     }
 
@@ -264,6 +267,7 @@ where
             endpoint_path: "/".to_string(),
             middleware: None,
             routes: None,
+            cors: CorsPolicy::default(),
         }
     }
 
@@ -306,6 +310,15 @@ where
         self
     }
 
+    /// Set the cross-origin policy for the MCP routes.
+    ///
+    /// The default is [`CorsPolicy::SameOrigin`], which rejects cross-origin
+    /// browser requests and emits no CORS headers.
+    pub fn with_cors(mut self, cors: CorsPolicy) -> Self {
+        self.cors = cors;
+        self
+    }
+
     /// Protect the MCP routes with bearer-token auth and expose PRM discovery routes.
     pub fn with_auth(self, config: &AuthConfig) -> Self {
         let middleware = BearerAuthLayer::new(config.validator.clone(), &config.endpoint_path)
@@ -322,7 +335,7 @@ where
                 "HTTP embed builders do not have a bind address; call into_router()".to_string(),
             )
         })?;
-        let http = HttpServer::new(Arc::new(self.server.connection_factory));
+        let http = HttpServer::new(Arc::new(self.server.connection_factory), self.cors);
         let EmbeddedHttpRoutes {
             mcp_router,
             aux_routes,
@@ -340,7 +353,7 @@ where
     /// Build tmcp HTTP routers for embedding into an existing Axum application.
     pub async fn into_router(self) -> Result<EmbeddedHttpServer> {
         let endpoint_path = self.endpoint_path;
-        let http = HttpServer::new(Arc::new(self.server.connection_factory));
+        let http = HttpServer::new(Arc::new(self.server.connection_factory), self.cors);
         let EmbeddedHttpRoutes {
             mcp_router,
             aux_routes,

@@ -133,6 +133,7 @@ pub use error::{
     Error, Result, TOOL_ERROR_INTERNAL, TOOL_ERROR_INVALID_INPUT, TOOL_ERROR_NOT_FOUND,
     TOOL_ERROR_TIMEOUT, ToolError, ToolResult,
 };
+pub use http::CorsPolicy;
 pub use mcp_api::{
     McpApi, McpApiOptions, McpApiRefreshSnapshot, McpApiRefreshState, collect_client_prompts,
     collect_client_resource_templates, collect_client_resources, collect_client_tools,

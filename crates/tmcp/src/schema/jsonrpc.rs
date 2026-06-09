@@ -12,6 +12,9 @@ use super::{ElicitRequestURLParams, TaskMetadata};
 use crate::macros::with_meta;
 
 pub const PREVIOUS_PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// All protocol versions this implementation accepts from peers, newest first.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26"];
 pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 /// JSON-RPC protocol version string.
 pub const JSONRPC_VERSION: &str = "2.0";
