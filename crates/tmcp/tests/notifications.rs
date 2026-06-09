@@ -73,7 +73,11 @@ mod tests {
             _capabilities: schema::ClientCapabilities,
             _client_info: schema::Implementation,
         ) -> Result<schema::InitializeResult> {
-            Ok(schema::InitializeResult::new("notifying-server").with_version("0.1.0"))
+            // Notifications are gated by negotiated capabilities, so the
+            // tool list-changed capability must be advertised.
+            Ok(schema::InitializeResult::new("notifying-server")
+                .with_version("0.1.0")
+                .with_tools(Some(true)))
         }
     }
 

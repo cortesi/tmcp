@@ -95,6 +95,11 @@ pub struct ServerCtx {
     cancelled_requests: Arc<Mutex<HashSet<schema::RequestId>>>,
     /// Notifiers for request-scoped cancellation waiters.
     cancellation_notifiers: Arc<Mutex<HashMap<schema::RequestId, Arc<Notify>>>>,
+    /// Request IDs currently being handled on this connection.
+    ///
+    /// Cancellation notifications for requests that are not in flight are
+    /// ignored, so late cancellations cannot grow state without bound.
+    in_flight: Arc<Mutex<HashSet<schema::RequestId>>>,
 }
 
 impl ServerCtx {
@@ -112,6 +117,7 @@ impl ServerCtx {
             progress_counter: None,
             cancelled_requests: Arc::new(Mutex::new(HashSet::new())),
             cancellation_notifiers: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -269,8 +275,43 @@ impl ServerCtx {
         ctx
     }
 
-    /// Mark one request ID as cancelled and wake any waiters.
+    /// Record that a request has started being handled.
+    pub(crate) fn begin_request(&self, request_id: &schema::RequestId) {
+        self.in_flight
+            .lock()
+            .expect("in-flight request lock")
+            .insert(request_id.clone());
+    }
+
+    /// Record that a request has finished, clearing its cancellation state.
+    pub(crate) fn end_request(&self, request_id: &schema::RequestId) {
+        self.in_flight
+            .lock()
+            .expect("in-flight request lock")
+            .remove(request_id);
+        self.cancelled_requests
+            .lock()
+            .expect("cancelled request lock")
+            .remove(request_id);
+        self.cancellation_notifiers
+            .lock()
+            .expect("cancellation notifier lock")
+            .remove(request_id);
+    }
+
+    /// Mark one in-flight request as cancelled and wake any waiters.
+    ///
+    /// Cancellations for requests that are not in flight (already completed,
+    /// or never seen) are ignored.
     pub(crate) fn mark_cancelled(&self, request_id: &schema::RequestId) {
+        if !self
+            .in_flight
+            .lock()
+            .expect("in-flight request lock")
+            .contains(request_id)
+        {
+            return;
+        }
         self.cancelled_requests
             .lock()
             .expect("cancelled request lock")
@@ -284,18 +325,6 @@ impl ServerCtx {
         if let Some(notifier) = notifier {
             notifier.notify_waiters();
         }
-    }
-
-    /// Clear stored cancellation state for one completed request.
-    pub(crate) fn clear_cancelled(&self, request_id: &schema::RequestId) {
-        self.cancelled_requests
-            .lock()
-            .expect("cancelled request lock")
-            .remove(request_id);
-        self.cancellation_notifiers
-            .lock()
-            .expect("cancellation notifier lock")
-            .remove(request_id);
     }
 
     /// Send a request to the client and wait for response

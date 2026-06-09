@@ -577,6 +577,11 @@ where
                                     }
                                 }
                             }
+                            // A malformed line was consumed by the codec;
+                            // skip it and keep the connection alive.
+                            Some(Err(Error::JsonParse { message })) => {
+                                warn!("Ignoring malformed JSON-RPC message: {}", message);
+                            }
                             Some(Err(e)) => {
                                 error!("Error receiving message: {}", e);
                                 request_handler.shutdown();

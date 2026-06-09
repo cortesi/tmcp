@@ -136,6 +136,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_line_yields_parse_error_and_connection_survives() {
+        use serde_json::json;
+        use tmcp::testutils::WireConnection;
+
+        let mut conn = WireConnection::start(|| Box::new(GoldenServer))
+            .await
+            .expect("start wire server");
+
+        conn.send(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "golden-client", "version": "1.0.0" }
+            }
+        }))
+        .await;
+        conn.recv().await;
+        conn.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .await;
+
+        // A garbage line earns a -32700 with a null id...
+        conn.send_raw("this is not json").await;
+        let response = conn.recv().await;
+        assert_eq!(response["error"]["code"], -32700);
+        assert_eq!(response["id"], serde_json::Value::Null);
+
+        // ...and the connection keeps working afterwards.
+        conn.send(&json!({ "jsonrpc": "2.0", "id": 2, "method": "ping" }))
+            .await;
+        let response = conn.recv().await;
+        assert_eq!(response["id"], 2);
+        assert!(response["result"].is_object());
+
+        // Repeated initialization is rejected without killing the connection.
+        conn.send(&json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "golden-client", "version": "1.0.0" }
+            }
+        }))
+        .await;
+        let response = conn.recv().await;
+        assert_eq!(response["error"]["code"], -32600);
+        assert_eq!(response["id"], 3);
+    }
+
+    #[tokio::test]
     async fn golden_lifecycle() {
         run_wire_fixture(
             || Box::new(GoldenServer),

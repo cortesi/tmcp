@@ -16,7 +16,7 @@ use tokio_util::codec::Framed;
 use tracing::info;
 
 use crate::{
-    codec::JsonRpcCodec,
+    codec::{Frame, JsonRpcCodec},
     error::{Error, Result},
     schema::JSONRPCMessage,
 };
@@ -121,7 +121,7 @@ where
     /// Create a new framed transport adapter.
     fn new(stream: T) -> Self {
         Self {
-            inner: Framed::new(stream, JsonRpcCodec),
+            inner: Framed::new(stream, JsonRpcCodec::default()),
         }
     }
 }
@@ -134,10 +134,17 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(message))) => Poll::Ready(Some(Ok(IncomingMessage {
-                message,
-                extensions: Extensions::new(),
-            }))),
+            Poll::Ready(Some(Ok(Frame::Message(message)))) => {
+                Poll::Ready(Some(Ok(IncomingMessage {
+                    message,
+                    extensions: Extensions::new(),
+                })))
+            }
+            // A consumed malformed line: report it as a recoverable parse
+            // error without terminating the underlying framed stream.
+            Poll::Ready(Some(Ok(Frame::Malformed(message)))) => {
+                Poll::Ready(Some(Err(Error::JsonParse { message })))
+            }
             Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,

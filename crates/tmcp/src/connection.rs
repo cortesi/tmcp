@@ -400,15 +400,12 @@ pub trait ServerHandler: Send + Sync {
         request: ClientRequest,
     ) -> Result<serde_json::Value> {
         match request {
-            ClientRequest::Initialize {
-                protocol_version,
-                capabilities,
-                client_info,
-                _meta: _,
-            } => serialize_result(
-                self.initialize(context, protocol_version, *capabilities, client_info)
-                    .await,
-            ),
+            // Initialization is handled by the connection loop, which needs
+            // to capture the negotiated capabilities; it never reaches this
+            // dispatch, and repeated initializations are rejected there.
+            ClientRequest::Initialize { .. } => Err(Error::InvalidRequest(
+                "initialize is handled by the connection".into(),
+            )),
             ClientRequest::Ping { .. } => {
                 info!("Server received ping request, sending automatic response");
                 empty_result(self.pong(context).await)

@@ -405,14 +405,18 @@ pub struct ServerHandle {
     pub bound_addr: Option<String>,
     /// Public HTTP endpoint path, when the server is exposed over HTTP.
     endpoint_path: Option<String>,
-    /// Capabilities from the handler's initialize response.
-    /// This is set when the client initializes and is used to gate notifications.
-    capabilities: Arc<RwLock<ServerCapabilities>>,
     /// Notification fan-out override used by multi-session (HTTP) listeners.
     ///
     /// When set, `send_server_notification` delegates here instead of the
     /// single-connection notification channel.
     fanout: Option<NotificationFanout>,
+}
+
+impl Drop for ServerHandle {
+    fn drop(&mut self) {
+        // An abandoned handle must not leak its connection loop.
+        self.shutdown_token.cancel();
+    }
 }
 
 impl ServerHandle {
@@ -429,9 +433,11 @@ impl ServerHandle {
         info!("MCP server started");
         let (notification_tx, mut notification_rx) = mpsc::channel(SERVER_NOTIFICATION_BUFFER);
 
-        // Channel for queueing responses to be sent
-        let (response_tx, mut response_rx) =
-            mpsc::channel::<JSONRPCMessage>(SERVER_RESPONSE_BUFFER);
+        // Single ordered queue for loop-transmitted traffic: request responses
+        // (None marks a suppressed response) and gated notifications, in FIFO
+        // order so a notification emitted before a response is sent before it.
+        let (outbound_tx, mut outbound_rx) =
+            mpsc::channel::<Option<JSONRPCMessage>>(SERVER_RESPONSE_BUFFER);
 
         // Wrap the sink in an Arc<Mutex> for sharing
         let sink_tx = Arc::new(Mutex::new(sink_tx));
@@ -449,9 +455,9 @@ impl ServerHandle {
         let shutdown_token = CancellationToken::new();
         let shutdown_token_task = shutdown_token.clone();
 
-        // Shared capabilities - updated when client initializes
+        // Negotiated capabilities - captured from the handler's initialize
+        // response and used to gate notifications.
         let capabilities = Arc::new(RwLock::new(ServerCapabilities::default()));
-        let capabilities_task = capabilities.clone();
 
         // Track whether we've called on_connect after initialization
         let mut initialized = false;
@@ -476,38 +482,42 @@ impl ServerHandle {
                                 let message = incoming.message;
                                 match message {
                                     JSONRPCMessage::Request(request)
-                                        if !initialized && request.request.method == "initialize" =>
+                                        if request.request.method == "initialize" =>
                                     {
-                                        // Handle initialize specially to capture capabilities
-                                        let (response, init_caps) =
-                                            handle_initialize_request(
-                                                connection.as_ref().as_ref(),
-                                                request,
-                                                &context
-                                            ).await;
+                                        let response = if initialized {
+                                            // Re-initialization is a protocol error.
+                                            reinitialize_error_response(request.id)
+                                        } else {
+                                            // Handle initialize specially to capture capabilities
+                                            let (response, init_caps) =
+                                                handle_initialize_request(
+                                                    connection.as_ref().as_ref(),
+                                                    request,
+                                                    &context
+                                                ).await;
 
-                                        let should_connect = init_caps.is_some();
+                                            // Store capabilities from the handler's response
+                                            if let Some(caps) = init_caps {
+                                                {
+                                                    let mut guard = capabilities
+                                                        .write()
+                                                        .unwrap_or_else(|e| e.into_inner());
+                                                    *guard = caps;
+                                                }
 
-                                        // Store capabilities from the handler's response
-                                        if let Some(caps) = init_caps
-                                            && let Ok(mut guard) = capabilities_task.write() {
-                                                *guard = caps;
+                                                if let Err(e) = connection.on_connect(&context, &remote_addr).await {
+                                                    error!("Error during on_connect: {}", e);
+                                                    break;
+                                                }
+                                                initialized = true;
                                             }
+                                            response
+                                        };
 
-                                        {
-                                            let mut sink = sink_tx.lock().await;
-                                            if let Err(e) = sink.send(response).await {
-                                                error!("Error sending initialize response: {}", e);
-                                                break;
-                                            }
-                                        }
-
-                                        if should_connect {
-                                            if let Err(e) = connection.on_connect(&context, &remote_addr).await {
-                                                error!("Error during on_connect: {}", e);
-                                                break;
-                                            }
-                                            initialized = true;
+                                        let mut sink = sink_tx.lock().await;
+                                        if let Err(e) = sink.send(response).await {
+                                            error!("Error sending initialize response: {}", e);
+                                            break;
                                         }
                                     }
                                     JSONRPCMessage::Response(response) => {
@@ -527,7 +537,7 @@ impl ServerHandle {
                                         if let Err(e) = handle_message_with_connection(
                                             connection.clone(),
                                             other,
-                                            response_tx.clone(),
+                                            outbound_tx.clone(),
                                             in_flight_requests.clone(),
                                             &context,
                                         )
@@ -536,6 +546,17 @@ impl ServerHandle {
                                             error!("Error handling message: {}", e);
                                         }
                                     }
+                                }
+                            }
+                            // A malformed line was consumed by the codec; answer
+                            // with a JSON-RPC parse error and keep the connection.
+                            Some(Err(Error::JsonParse { message })) => {
+                                warn!("Malformed JSON-RPC message: {}", message);
+                                let mut sink = sink_tx.lock().await;
+                                if let Err(e) = sink.send(parse_error_response()).await {
+                                    error!("Error sending parse error response: {}", e);
+                                    server_ctx.shutdown_requests();
+                                    break;
                                 }
                             }
                             Some(Err(e)) => {
@@ -551,33 +572,45 @@ impl ServerHandle {
                         }
                     }
 
-                    // Forward internal notifications to client
+                    // Gate and queue internal notifications behind any earlier
+                    // responses, preserving emission order on the wire.
                     Some(notification) = notification_rx.recv() => {
-                        let jsonrpc_notification = create_jsonrpc_notification(&notification);
-                        {
-                            let mut sink = sink_tx.lock().await;
-                            if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
-                                error!("Error sending notification to client: {}", e);
-                                server_ctx.shutdown_requests();
-                                break;
+                        let permitted = {
+                            let caps = capabilities.read().unwrap_or_else(|e| e.into_inner());
+                            notification_permitted(&caps, &notification)
+                        };
+                        if permitted {
+                            let message = JSONRPCMessage::Notification(
+                                create_jsonrpc_notification(&notification),
+                            );
+                            if outbound_tx.try_send(Some(message)).is_err() {
+                                debug!("Outbound queue full; dropping notification");
                             }
+                        } else {
+                            debug!(
+                                "Skipping notification {:?} due to missing capability",
+                                notification
+                            );
                         }
                     }
 
-                    // Send queued responses to client
-                    Some(response) = response_rx.recv() => {
-                        let mut sink = sink_tx.lock().await;
-                        if let Err(e) = sink.send(response).await {
-                            error!("Error sending response to client: {}", e);
-                            server_ctx.shutdown_requests();
-                            break;
+                    // Transmit queued outbound traffic in order. None marks a
+                    // suppressed (cancelled) response and only wakes the loop.
+                    Some(item) = outbound_rx.recv() => {
+                        if let Some(message) = item {
+                            let mut sink = sink_tx.lock().await;
+                            if let Err(e) = sink.send(message).await {
+                                error!("Error sending response to client: {}", e);
+                                server_ctx.shutdown_requests();
+                                break;
+                            }
                         }
                     }
                 }
 
                 if client_disconnected
                     && in_flight_requests.load(Ordering::SeqCst) == 0
-                    && response_rx.is_empty()
+                    && outbound_rx.is_empty()
                 {
                     break;
                 }
@@ -597,7 +630,6 @@ impl ServerHandle {
             shutdown_token,
             bound_addr: None,
             endpoint_path: None,
-            capabilities,
             fanout: None,
         })
     }
@@ -621,7 +653,6 @@ impl ServerHandle {
             shutdown_token,
             bound_addr: None,
             endpoint_path: None,
-            capabilities: Arc::new(RwLock::new(ServerCapabilities::default())),
             fanout: Some(fanout),
         }
     }
@@ -662,8 +693,8 @@ impl ServerHandle {
     }
 
     /// Wait for the server task to finish without signaling shutdown.
-    pub async fn join(self) -> Result<()> {
-        self.handle
+    pub async fn join(mut self) -> Result<()> {
+        (&mut self.handle)
             .await
             .map_err(|e| Error::InternalError(format!("Server task failed: {e}")))?;
         Ok(())
@@ -678,16 +709,12 @@ impl ServerHandle {
     }
 
     /// Send a server notification to connected clients.
+    ///
+    /// Notifications are gated against each connection's negotiated
+    /// capabilities by its connection loop.
     pub fn send_server_notification(&self, notification: &ServerNotification) {
         if let Some(fanout) = &self.fanout {
             fanout(notification);
-            return;
-        }
-        if !self.can_forward_notification(notification) {
-            debug!(
-                "Skipping server notification {:?} due to missing capability",
-                notification
-            );
             return;
         }
         if let Err(e) = self.notification_tx.try_send(notification.clone()) {
@@ -695,37 +722,6 @@ impl ServerHandle {
                 "Failed to send server notification {:?}: {}",
                 notification, e
             );
-        }
-    }
-
-    /// Check whether a notification is supported by the configured capabilities.
-    fn can_forward_notification(&self, notification: &ServerNotification) -> bool {
-        let caps = self.capabilities.read().unwrap_or_else(|e| e.into_inner());
-        match notification {
-            ServerNotification::LoggingMessage { .. } => caps.logging.is_some(),
-            ServerNotification::ResourceUpdated { .. } => caps
-                .resources
-                .as_ref()
-                .and_then(|c| c.subscribe)
-                .unwrap_or(false),
-            ServerNotification::ResourceListChanged { .. } => caps
-                .resources
-                .as_ref()
-                .and_then(|c| c.list_changed)
-                .unwrap_or(false),
-            ServerNotification::ToolListChanged { .. } => caps
-                .tools
-                .as_ref()
-                .and_then(|c| c.list_changed)
-                .unwrap_or(false),
-            ServerNotification::PromptListChanged { .. } => caps
-                .prompts
-                .as_ref()
-                .and_then(|c| c.list_changed)
-                .unwrap_or(false),
-            ServerNotification::ElicitationComplete { .. } => true,
-            ServerNotification::TaskStatus { .. } => caps.tasks.is_some(),
-            ServerNotification::Progress { .. } | ServerNotification::Cancelled { .. } => true,
         }
     }
 }
@@ -761,82 +757,129 @@ impl TcpServerHandle {
     }
 }
 
+/// Build the error response for a repeated initialize request.
+fn reinitialize_error_response(id: RequestId) -> JSONRPCMessage {
+    JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(id),
+        error: ErrorObject {
+            code: INVALID_REQUEST,
+            message: "initialize may only be sent once per connection".to_string(),
+            data: None,
+        },
+    }))
+}
+
+/// Build the JSON-RPC parse error response for a malformed message.
+fn parse_error_response() -> JSONRPCMessage {
+    JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: None,
+        error: ErrorObject {
+            code: PARSE_ERROR,
+            message: "Parse error".to_string(),
+            data: None,
+        },
+    }))
+}
+
+/// Check whether a notification is permitted by the negotiated capabilities.
+fn notification_permitted(caps: &ServerCapabilities, notification: &ServerNotification) -> bool {
+    match notification {
+        ServerNotification::LoggingMessage { .. } => caps.logging.is_some(),
+        ServerNotification::ResourceUpdated { .. } => caps
+            .resources
+            .as_ref()
+            .and_then(|c| c.subscribe)
+            .unwrap_or(false),
+        ServerNotification::ResourceListChanged { .. } => caps
+            .resources
+            .as_ref()
+            .and_then(|c| c.list_changed)
+            .unwrap_or(false),
+        ServerNotification::ToolListChanged { .. } => caps
+            .tools
+            .as_ref()
+            .and_then(|c| c.list_changed)
+            .unwrap_or(false),
+        ServerNotification::PromptListChanged { .. } => caps
+            .prompts
+            .as_ref()
+            .and_then(|c| c.list_changed)
+            .unwrap_or(false),
+        ServerNotification::ElicitationComplete { .. } => true,
+        ServerNotification::TaskStatus { .. } => caps.tasks.is_some(),
+        ServerNotification::Progress { .. } | ServerNotification::Cancelled { .. } => true,
+    }
+}
+
 /// Handle a message using the Connection trait
 async fn handle_message_with_connection(
     connection: Arc<Box<dyn ServerHandler>>,
     message: JSONRPCMessage,
-    response_tx: mpsc::Sender<JSONRPCMessage>,
+    outbound_tx: mpsc::Sender<Option<JSONRPCMessage>>,
     in_flight_requests: Arc<AtomicUsize>,
     context: &ServerCtx,
 ) -> Result<()> {
-    if let JSONRPCMessage::Notification(notification) = message {
-        handle_notification(&**connection, notification, context).await?;
-        return Ok(());
-    }
-
-    handle_message_without_await(
-        &connection,
-        message,
-        response_tx,
-        in_flight_requests,
-        context,
-    );
-    Ok(())
-}
-
-/// Handle messages that do not require awaiting on the connection.
-#[allow(clippy::cognitive_complexity)]
-fn handle_message_without_await(
-    connection: &Arc<Box<dyn ServerHandler>>,
-    message: JSONRPCMessage,
-    response_tx: mpsc::Sender<JSONRPCMessage>,
-    in_flight_requests: Arc<AtomicUsize>,
-    context: &ServerCtx,
-) {
-    if let JSONRPCMessage::Request(request) = message {
-        in_flight_requests.fetch_add(1, Ordering::SeqCst);
-        spawn_request_handler(
-            connection,
-            request,
-            response_tx,
-            in_flight_requests,
-            context,
-        );
-        return;
-    }
-
-    if let JSONRPCMessage::Response(_) = message {
-        // Response handling is done in the main message loop
-        debug!("Response handling delegated to main loop");
+    match message {
+        JSONRPCMessage::Notification(notification) => {
+            handle_notification(&**connection, notification, context).await
+        }
+        JSONRPCMessage::Request(request) => {
+            in_flight_requests.fetch_add(1, Ordering::SeqCst);
+            spawn_request_handler(
+                &connection,
+                request,
+                outbound_tx,
+                in_flight_requests,
+                context,
+            );
+            Ok(())
+        }
+        JSONRPCMessage::Response(_) => {
+            // Response handling is done in the main message loop
+            debug!("Response handling delegated to main loop");
+            Ok(())
+        }
     }
 }
 
-/// Spawn a task to handle a request and send its response.
+/// Spawn a task to handle a request and queue its outcome.
+///
+/// Every request queues exactly one item: its response, or None when the
+/// response is suppressed by cancellation. The None still wakes the
+/// connection loop so post-disconnect draining always terminates.
 fn spawn_request_handler(
     connection: &Arc<Box<dyn ServerHandler>>,
     request: JSONRPCRequest,
-    response_tx: mpsc::Sender<JSONRPCMessage>,
+    outbound_tx: mpsc::Sender<Option<JSONRPCMessage>>,
     in_flight_requests: Arc<AtomicUsize>,
     context: &ServerCtx,
 ) {
     let conn = connection.clone();
     let ctx = context.clone();
-    let tx = response_tx;
+
+    // Track the request as in flight before yielding to the loop, so a
+    // cancellation notification processed next is not ignored.
+    ctx.begin_request(&request.id);
 
     tokio::spawn(async move {
         let request_id = request.id.clone();
         let response_message = handle_request(&**conn, request, &ctx).await;
-        let is_cancelled = ctx.is_request_cancelled(&request_id);
-        if is_cancelled {
+        let suppressed = ctx.is_request_cancelled(&request_id);
+        ctx.end_request(&request_id);
+        in_flight_requests.fetch_sub(1, Ordering::SeqCst);
+
+        let payload = if suppressed {
             tracing::info!("Server suppressing response for cancelled request: {request_id:?}");
+            None
         } else {
             tracing::info!("Server sending response: {:?}", response_message);
-            if let Err(e) = tx.send(response_message).await {
-                error!("Failed to queue response: {}", e);
-            }
+            Some(response_message)
+        };
+        if outbound_tx.send(payload).await.is_err() {
+            error!("Failed to queue response for request {request_id:?}");
         }
-        ctx.clear_cancelled(&request_id);
-        in_flight_requests.fetch_sub(1, Ordering::SeqCst);
     });
 }
 

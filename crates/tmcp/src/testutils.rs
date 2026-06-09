@@ -171,6 +171,11 @@ impl WireConnection {
     /// Send one raw JSON-RPC message as a newline-delimited JSON line.
     pub async fn send(&mut self, message: &Value) {
         let line = serde_json::to_string(message).expect("serialize wire message");
+        self.send_raw(&line).await;
+    }
+
+    /// Send one raw line verbatim, for tests that exercise malformed input.
+    pub async fn send_raw(&mut self, line: &str) {
         self.writer
             .write_all(line.as_bytes())
             .await
