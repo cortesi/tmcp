@@ -135,10 +135,11 @@ impl RequestHandler {
         self.inner.shutting_down.store(false, Ordering::Release);
     }
 
-    /// Set the request timeout in milliseconds.
-    pub fn with_timeout(self, timeout_ms: u64) -> Self {
+    /// Set the default request timeout in milliseconds for this connection.
+    ///
+    /// Affects every request issued through this handler and its clones.
+    pub fn set_timeout(&self, timeout_ms: u64) {
         self.inner.timeout_ms.store(timeout_ms, Ordering::Relaxed);
-        self
     }
 
     /// Shut down the current transport and wake any pending requests immediately.
@@ -160,8 +161,38 @@ impl RequestHandler {
         pending.await
     }
 
+    /// Send a request with a per-request timeout and wait for the response.
+    pub async fn request_with_timeout<Req, Res>(
+        &self,
+        request: Req,
+        timeout: Duration,
+    ) -> Result<Res>
+    where
+        Req: serde::Serialize + RequestMethod,
+        Res: DeserializeOwned + Send + 'static,
+    {
+        let (_, pending) = self
+            .request_pending_with_timeout(request, Some(timeout))
+            .await?;
+        pending.await
+    }
+
     /// Send a request and return its id plus a typed response future.
     pub async fn request_pending<Req, Res>(&self, request: Req) -> Result<(RequestId, Pending<Res>)>
+    where
+        Req: serde::Serialize + RequestMethod,
+        Res: DeserializeOwned + Send + 'static,
+    {
+        self.request_pending_with_timeout(request, None).await
+    }
+
+    /// Send a request, optionally overriding the connection's default timeout
+    /// for this request only.
+    pub async fn request_pending_with_timeout<Req, Res>(
+        &self,
+        request: Req,
+        timeout_override: Option<Duration>,
+    ) -> Result<(RequestId, Pending<Res>)>
     where
         Req: serde::Serialize + RequestMethod,
         Res: DeserializeOwned + Send + 'static,
@@ -177,9 +208,10 @@ impl RequestHandler {
             handler: self.clone(),
             id: id.clone(),
         };
+        let timeout_ms = timeout_override.map(|duration| duration.as_millis() as u64);
         let inner = Box::pin(async move {
             handler
-                .await_response(pending_id, &method, response_rx)
+                .await_response(pending_id, &method, response_rx, timeout_ms)
                 .await
         });
 
@@ -231,14 +263,15 @@ impl RequestHandler {
         id: RequestId,
         method: &str,
         response_rx: oneshot::Receiver<JSONRPCResponse>,
+        timeout_override: Option<u64>,
     ) -> Result<Res>
     where
         Res: DeserializeOwned,
     {
-        let timeout_ms = self.inner.timeout_ms.load(Ordering::Relaxed);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-        let result = timeout(timeout_duration, response_rx).await;
-        self.process_response_result(&id, method, result)
+        let timeout_ms =
+            timeout_override.unwrap_or_else(|| self.inner.timeout_ms.load(Ordering::Relaxed));
+        let result = timeout(Duration::from_millis(timeout_ms), response_rx).await;
+        self.process_response_result(&id, method, result, timeout_ms)
     }
 
     /// Process the result of waiting for a response.
@@ -247,6 +280,7 @@ impl RequestHandler {
         id: &RequestId,
         method: &str,
         result: TimeoutResult<JSONRPCResponse>,
+        timeout_ms: u64,
     ) -> Result<Res>
     where
         Res: DeserializeOwned,
@@ -265,7 +299,6 @@ impl RequestHandler {
             }
             Err(_timeout) => {
                 self.inner.pending_requests.remove(id);
-                let timeout_ms = self.inner.timeout_ms.load(Ordering::Relaxed);
                 tracing::warn!("Request {} timed out after {}ms", id, timeout_ms);
                 Err(Error::Timeout {
                     request_id: id.to_string(),

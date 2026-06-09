@@ -63,6 +63,14 @@ where
 /// the owning `Client` goes away.
 struct AbortOnDrop(JoinHandle<()>);
 
+impl AbortOnDrop {
+    /// Abort the task and wait until it has fully stopped.
+    async fn stop(mut self) {
+        self.0.abort();
+        (&mut self.0).await.ok();
+    }
+}
+
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
@@ -155,11 +163,9 @@ impl Client<()> {
         self
     }
 
-    /// Set the request timeout duration.
-    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
-        self.request_handler = self
-            .request_handler
-            .with_timeout(timeout.as_millis() as u64);
+    /// Set the default request timeout for this connection.
+    pub fn with_request_timeout(self, timeout: Duration) -> Self {
+        self.request_handler.set_timeout(timeout.as_millis() as u64);
         self
     }
 }
@@ -405,6 +411,21 @@ where
         })
     }
 
+    /// Send a request with a per-request timeout overriding the connection
+    /// default, and wait for the typed response.
+    pub async fn request_with_timeout<T>(
+        &self,
+        request: ClientRequest,
+        timeout: Duration,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
+        self.request_handler
+            .request_with_timeout(request, timeout)
+            .await
+    }
+
     /// Wait for an in-flight request, cancelling it if `cancel` resolves first.
     ///
     /// Local cancellation sends `notifications/cancelled`, drops the pending
@@ -481,6 +502,13 @@ where
 
     /// Start the background task that handles incoming messages
     async fn start_message_handler(&mut self, stream: Box<dyn TransportStream>) -> Result<()> {
+        // Stop any prior handler (e.g., on reconnect) and wait for it to wind
+        // down completely before touching shared state, so a stale task's
+        // shutdown cannot clear the newly installed transport.
+        if let Some(prior) = self.message_handler.take() {
+            prior.stop().await;
+        }
+
         let request_handler = self.request_handler.clone();
 
         // Split the transport stream into read and write halves
@@ -505,10 +533,6 @@ where
 
         // Clone sink for notification handler
         let notification_sink = tx.clone();
-
-        // Abort any prior handler (e.g., on reconnect) so its transport and
-        // associated background work are released before we install a new one.
-        self.message_handler.take();
 
         // Spawn a task to handle incoming messages
         let handle = tokio::spawn(async move {
@@ -536,27 +560,20 @@ where
                                     }
                                     JSONRPCMessage::Request(request) => {
                                         tracing::info!("Client received request from server: {:?}", request.id);
-                                        let response = handle_server_request(connection.as_ref(), &context, request).await;
-                                        let response_id = match &response {
-                                            JSONRPCMessage::Response(r) => match r {
-                                                JSONRPCResponse::Result(result) => {
-                                                    format!("{:?}", result.id)
-                                                }
-                                                JSONRPCResponse::Error(error) => {
-                                                    format!("{:?}", error.id)
-                                                }
-                                            },
-                                            _ => "Unknown".to_string(),
-                                        };
-                                        tracing::info!(
-                                            "Client sending response to server: {:?}",
-                                            response_id
-                                        );
-                                        let mut sink = tx.lock().await;
-                                        if let Err(e) = sink.send(response).await {
-                                            error!("Failed to send response to server: {}", e);
-                                            break;
-                                        }
+                                        // Handle server-initiated requests (elicitation,
+                                        // sampling, …) on their own task: they can take
+                                        // arbitrarily long and must not stall response
+                                        // dispatch for the client's own requests.
+                                        let conn = connection.clone();
+                                        let ctx = context.clone();
+                                        let sink = tx.clone();
+                                        tokio::spawn(async move {
+                                            let response = handle_server_request(conn.as_ref(), &ctx, request).await;
+                                            let mut sink = sink.lock().await;
+                                            if let Err(e) = sink.send(response).await {
+                                                error!("Failed to send response to server: {}", e);
+                                            }
+                                        });
                                     }
                                 }
                             }
@@ -630,14 +647,14 @@ where
     }
 
     /// Respond to ping requests
-    pub async fn ping(&mut self) -> Result<()> {
+    pub async fn ping(&self) -> Result<()> {
         let _: EmptyResult = self.request_and_wait(ClientRequest::ping()).await?;
         Ok(())
     }
 
     /// List available tools with optional pagination
     pub async fn list_tools(
-        &mut self,
+        &self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListToolsResult> {
         self.request_and_wait(ClientRequest::list_tools(cursor.into()))
@@ -667,7 +684,7 @@ where
     /// let result = client.call_tool("dynamic", args).await?;
     /// ```
     pub async fn call_tool(
-        &mut self,
+        &self,
         name: impl Into<String> + Send,
         arguments: impl Serialize + Send,
     ) -> Result<CallToolResult> {
@@ -683,7 +700,7 @@ where
     /// notifications, so callers should still use durable tool APIs when they
     /// need recoverable progress.
     pub async fn call_tool_with_progress(
-        &mut self,
+        &self,
         name: impl Into<String> + Send,
         arguments: impl Serialize + Send,
         progress_token: ProgressToken,
@@ -706,7 +723,7 @@ where
     /// Use this when the call may create a task instead of returning an
     /// immediate tool result.
     pub async fn call_tool_with_task(
-        &mut self,
+        &self,
         name: impl Into<String> + Send,
         arguments: impl Serialize + Send,
         task: Option<TaskMetadata>,
@@ -737,7 +754,7 @@ where
     /// let result: CalcResult = client.call_tool_json("add", CalcArgs { a: 1, b: 2 }).await?;
     /// ```
     pub async fn call_tool_json<R: DeserializeOwned>(
-        &mut self,
+        &self,
         name: impl Into<String> + Send,
         arguments: impl Serialize + Send,
     ) -> Result<R> {
@@ -768,7 +785,7 @@ where
     ///
     /// This is a convenience method for tools that return structured content.
     pub async fn call_tool_structured<R: DeserializeOwned>(
-        &mut self,
+        &self,
         name: impl Into<String> + Send,
         arguments: impl Serialize + Send,
     ) -> Result<R> {
@@ -793,7 +810,7 @@ where
 
     /// List available resources with optional pagination
     pub async fn list_resources(
-        &mut self,
+        &self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListResourcesResult> {
         self.request_and_wait(ClientRequest::list_resources(cursor.into()))
@@ -802,7 +819,7 @@ where
 
     /// List resource templates with optional pagination
     pub async fn list_resource_templates(
-        &mut self,
+        &self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListResourceTemplatesResult> {
         self.request_and_wait(ClientRequest::list_resource_templates(cursor.into()))
@@ -811,7 +828,7 @@ where
 
     /// Read a resource by URI
     pub async fn resources_read(
-        &mut self,
+        &self,
         uri: impl Into<String> + Send,
     ) -> Result<ReadResourceResult> {
         self.request_and_wait(ClientRequest::read_resource(uri))
@@ -819,13 +836,13 @@ where
     }
 
     /// Subscribe to resource updates
-    pub async fn resources_subscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
+    pub async fn resources_subscribe(&self, uri: impl Into<String> + Send) -> Result<()> {
         let _: EmptyResult = self.request_and_wait(ClientRequest::subscribe(uri)).await?;
         Ok(())
     }
 
     /// Unsubscribe from resource updates
-    pub async fn resources_unsubscribe(&mut self, uri: impl Into<String> + Send) -> Result<()> {
+    pub async fn resources_unsubscribe(&self, uri: impl Into<String> + Send) -> Result<()> {
         let _: EmptyResult = self
             .request_and_wait(ClientRequest::unsubscribe(uri))
             .await?;
@@ -834,7 +851,7 @@ where
 
     /// List available prompts with optional pagination
     pub async fn list_prompts(
-        &mut self,
+        &self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListPromptsResult> {
         self.request_and_wait(ClientRequest::list_prompts(cursor.into()))
@@ -843,7 +860,7 @@ where
 
     /// Get a prompt by name with optional arguments
     pub async fn get_prompt(
-        &mut self,
+        &self,
         name: impl Into<String> + Send,
         arguments: Option<HashMap<String, String>>,
     ) -> Result<GetPromptResult> {
@@ -853,7 +870,7 @@ where
 
     /// Handle completion requests
     pub async fn complete(
-        &mut self,
+        &self,
         reference: Reference,
         argument: ArgumentInfo,
         context: Option<CompleteContext>,
@@ -863,7 +880,7 @@ where
     }
 
     /// Set the logging level
-    pub async fn set_level(&mut self, level: LoggingLevel) -> Result<()> {
+    pub async fn set_level(&self, level: LoggingLevel) -> Result<()> {
         let _: EmptyResult = self
             .request_and_wait(ClientRequest::set_level(level))
             .await?;
@@ -871,14 +888,14 @@ where
     }
 
     /// Retrieve the state of a task.
-    pub async fn get_task(&mut self, task_id: impl Into<String> + Send) -> Result<GetTaskResult> {
+    pub async fn get_task(&self, task_id: impl Into<String> + Send) -> Result<GetTaskResult> {
         self.request_and_wait(ClientRequest::get_task(task_id))
             .await
     }
 
     /// Retrieve the result of a completed task.
     pub async fn get_task_payload(
-        &mut self,
+        &self,
         task_id: impl Into<String> + Send,
     ) -> Result<GetTaskPayloadResult> {
         self.request_and_wait(ClientRequest::get_task_payload(task_id))
@@ -887,7 +904,7 @@ where
 
     /// List tasks with optional pagination.
     pub async fn list_tasks(
-        &mut self,
+        &self,
         cursor: impl Into<Option<Cursor>> + Send,
     ) -> Result<ListTasksResult> {
         self.request_and_wait(ClientRequest::list_tasks(cursor.into()))
@@ -895,10 +912,7 @@ where
     }
 
     /// Cancel a task by ID.
-    pub async fn cancel_task(
-        &mut self,
-        task_id: impl Into<String> + Send,
-    ) -> Result<CancelTaskResult> {
+    pub async fn cancel_task(&self, task_id: impl Into<String> + Send) -> Result<CancelTaskResult> {
         self.request_and_wait(ClientRequest::cancel_task(task_id))
             .await
     }
@@ -1013,7 +1027,7 @@ mod tests {
     #[test]
     fn test_pagination_api() {
         // This test just verifies the API is ergonomic - it doesn't run async code
-        let mut client = Client::new("test-client", "1.0.0");
+        let client = Client::new("test-client", "1.0.0");
 
         // These should all compile cleanly
         drop(async {
@@ -1059,7 +1073,7 @@ mod tests {
         }
 
         // This test just verifies the API is ergonomic - it doesn't run async code
-        let mut client = Client::new("test-client", "1.0.0");
+        let client = Client::new("test-client", "1.0.0");
 
         // These should all compile cleanly
         drop(async {
@@ -1377,7 +1391,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_ping_server() {
-        let (mut client, _server) = setup_client_server().await;
+        let (client, _server) = setup_client_server().await;
         client.ping().await.expect("Ping failed");
     }
 
@@ -1418,7 +1432,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_client_pings() {
-        let (mut client, _server) = setup_client_server().await;
+        let (client, _server) = setup_client_server().await;
         for i in 0..20 {
             client
                 .ping()
@@ -1429,7 +1443,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping_performance() {
-        let (mut client, _server) = setup_client_server().await;
+        let (client, _server) = setup_client_server().await;
 
         let start = Instant::now();
         let num_pings = 50;
