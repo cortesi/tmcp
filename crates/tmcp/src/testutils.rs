@@ -14,9 +14,11 @@
 //! divergences, and gives downstream users example code they can re-use in
 //! their own test suites.
 
+use serde_json::Value;
 use tokio::{
-    io::{self, AsyncRead, AsyncWrite},
+    io::{self, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines},
     sync::mpsc,
+    time::{Duration, timeout},
 };
 
 use crate::{
@@ -27,6 +29,10 @@ use crate::{
 
 /// Queue size for test-only notification channels.
 const TEST_NOTIFICATION_BUFFER: usize = 16;
+
+/// Upper bound on how long [`WireConnection::recv`] waits for a message before
+/// failing the test.
+const WIRE_RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Conveniently create **two** independent in-memory duplex pipes that together
 /// form a bidirectional channel suitable for wiring up a test client and
@@ -126,6 +132,95 @@ where
     drop(client);
 
     timeout(Duration::from_millis(10), server.stop()).await.ok();
+}
+
+/// A raw JSON-RPC wire connection to an in-process server.
+///
+/// Unlike [`connected_client_and_server`], this bypasses the [`Client`]
+/// machinery entirely: messages are written and read as raw newline-delimited
+/// JSON, which lets tests assert the exact wire-level protocol a server
+/// produces.
+pub struct WireConnection {
+    /// Handle to the running server, exposed so tests can stop it or inspect
+    /// captured capabilities.
+    pub server: ServerHandle,
+    /// Write half of the client side of the transport.
+    writer: io::DuplexStream,
+    /// Buffered line reader over the server's output.
+    lines: Lines<BufReader<io::DuplexStream>>,
+}
+
+impl WireConnection {
+    /// Start a server from `handler_factory` on an in-memory transport and
+    /// return a raw wire connection to it.
+    pub async fn start<F>(handler_factory: F) -> Result<Self>
+    where
+        F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
+    {
+        let server = Server::from_factory(handler_factory);
+        let (server_reader, client_writer) = io::duplex(64 * 1024);
+        let (client_reader, server_writer) = io::duplex(64 * 1024);
+        let server = ServerHandle::from_stream(server, server_reader, server_writer).await?;
+        Ok(Self {
+            server,
+            writer: client_writer,
+            lines: BufReader::new(client_reader).lines(),
+        })
+    }
+
+    /// Send one raw JSON-RPC message as a newline-delimited JSON line.
+    pub async fn send(&mut self, message: &Value) {
+        let line = serde_json::to_string(message).expect("serialize wire message");
+        self.writer
+            .write_all(line.as_bytes())
+            .await
+            .expect("write wire message");
+        self.writer
+            .write_all(b"\n")
+            .await
+            .expect("write wire newline");
+    }
+
+    /// Receive the next message sent by the server.
+    ///
+    /// Panics if the connection closes or no message arrives within
+    /// [`WIRE_RECV_TIMEOUT`].
+    pub async fn recv(&mut self) -> Value {
+        let line = timeout(WIRE_RECV_TIMEOUT, self.lines.next_line())
+            .await
+            .expect("timed out waiting for wire message")
+            .expect("read wire message")
+            .expect("connection closed while waiting for wire message");
+        serde_json::from_str(&line).expect("parse wire message")
+    }
+}
+
+/// Run a JSON fixture of request/response steps against a server.
+///
+/// The fixture is a JSON array of steps. Each step must contain a `send`
+/// message, which is written to the server verbatim, and may contain an
+/// `expect` message, which is compared structurally against the next message
+/// the server sends. Steps without `expect` (notifications) produce no read.
+pub async fn run_wire_fixture<F>(handler_factory: F, fixture: &str)
+where
+    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
+{
+    let steps: Vec<Value> = serde_json::from_str(fixture).expect("parse wire fixture");
+    let mut conn = WireConnection::start(handler_factory)
+        .await
+        .expect("start wire server");
+    for (index, step) in steps.iter().enumerate() {
+        let step = step.as_object().expect("fixture step must be an object");
+        let send = step.get("send").expect("fixture step missing `send`");
+        conn.send(send).await;
+        if let Some(expected) = step.get("expect") {
+            let actual = conn.recv().await;
+            assert_eq!(
+                &actual, expected,
+                "wire fixture step {index} mismatch\nsent:     {send}\nexpected: {expected:#}\nactual:   {actual:#}"
+            );
+        }
+    }
 }
 
 /// Create a ServerCtx for testing purposes.

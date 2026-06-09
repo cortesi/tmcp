@@ -509,6 +509,7 @@ pub struct ToolResultContent {
     #[serde(rename = "toolUseId")]
     pub tool_use_id: String,
     /// The unstructured result content of the tool use.
+    #[serde(default)]
     pub content: Vec<ContentBlock>,
     /// An optional structured result object.
     #[serde(rename = "structuredContent", skip_serializing_if = "Option::is_none")]

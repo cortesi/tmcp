@@ -1,0 +1,87 @@
+[
+    {
+        "send": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "golden-client", "version": "1.0.0" }
+            }
+        },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {
+                    "logging": {},
+                    "prompts": { "listChanged": false },
+                    "resources": { "listChanged": false },
+                    "tools": { "listChanged": true }
+                },
+                "serverInfo": { "name": "golden-server", "version": "1.0.0" },
+                "instructions": "Golden wire-format test server."
+            }
+        }
+    },
+    {
+        "send": { "jsonrpc": "2.0", "method": "notifications/initialized" }
+    },
+    {
+        "send": { "jsonrpc": "2.0", "id": 2, "method": "tools/list" },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "tools": [
+                    {
+                        "name": "echo",
+                        "description": "Echo a message back.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": { "message": { "type": "string" } },
+                            "required": ["message"]
+                        },
+                        "annotations": {
+                            "title": "Echo",
+                            "readOnlyHint": true,
+                            "destructiveHint": false,
+                            "idempotentHint": true,
+                            "openWorldHint": false
+                        }
+                    }
+                ]
+            }
+        }
+    },
+    {
+        "send": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": "echo", "arguments": { "message": "hi" } }
+        },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {
+                "content": [{ "type": "text", "text": "echo: hi" }]
+            }
+        }
+    },
+    {
+        "send": {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": { "name": "nope", "arguments": {} }
+        },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "error": { "code": -32602, "message": "Unknown tool: nope" }
+        }
+    }
+]

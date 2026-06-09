@@ -1,8 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{NotificationParams, PaginatedResult, Result};
-use crate::macros::with_open_meta;
+use super::{PaginatedResult, Result};
+use crate::macros::{with_meta, with_open_meta};
 
 /// The status of a task.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -145,10 +145,43 @@ impl Default for ListTasksResult {
 }
 
 /// Parameters for a `notifications/tasks/status` notification.
+#[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskStatusNotificationParams {
-    #[serde(flatten)]
-    pub notification: NotificationParams,
+    /// The task whose status changed.
     #[serde(flatten)]
     pub task: Task,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn task_status_notification_params_round_trip_without_duplicate_keys() {
+        let wire = json!({
+            "taskId": "task-1",
+            "status": "working",
+            "createdAt": "2025-01-01T00:00:00Z",
+            "lastUpdatedAt": "2025-01-01T00:00:01Z",
+            "ttl": null,
+            "_meta": {"k": "v"},
+        });
+        let params: TaskStatusNotificationParams = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(params.task.task_id, "task-1");
+        assert!(matches!(params.task.status, TaskStatus::Working));
+
+        let out = serde_json::to_string(&params).unwrap();
+        for key in ["taskId", "status", "createdAt", "lastUpdatedAt", "ttl"] {
+            assert_eq!(
+                out.matches(&format!("\"{key}\"")).count(),
+                1,
+                "key {key} must appear exactly once in {out}"
+            );
+        }
+        let reparsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(reparsed, wire);
+    }
 }

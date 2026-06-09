@@ -1,0 +1,133 @@
+[
+    {
+        "send": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "golden-client", "version": "1.0.0" }
+            }
+        },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {
+                    "logging": {},
+                    "prompts": { "listChanged": false },
+                    "resources": { "listChanged": false },
+                    "tools": { "listChanged": true }
+                },
+                "serverInfo": { "name": "golden-server", "version": "1.0.0" },
+                "instructions": "Golden wire-format test server."
+            }
+        }
+    },
+    {
+        "send": { "jsonrpc": "2.0", "method": "notifications/initialized" }
+    },
+    {
+        "send": { "jsonrpc": "2.0", "id": 2, "method": "resources/list" },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "resources": [
+                    {
+                        "name": "greeting",
+                        "uri": "golden://greeting",
+                        "description": "A canned greeting.",
+                        "mimeType": "text/plain"
+                    }
+                ]
+            }
+        }
+    },
+    {
+        "send": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "resources/read",
+            "params": { "uri": "golden://greeting" }
+        },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {
+                "contents": [
+                    { "uri": "golden://greeting", "text": "Hello, golden world!" }
+                ]
+            }
+        }
+    },
+    {
+        "send": {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "resources/read",
+            "params": { "uri": "golden://missing" }
+        },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "error": {
+                "code": -32002,
+                "message": "Resource not found",
+                "data": { "uri": "golden://missing" }
+            }
+        }
+    },
+    {
+        "send": { "jsonrpc": "2.0", "id": 5, "method": "prompts/list" },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "result": {
+                "prompts": [
+                    {
+                        "name": "greet",
+                        "description": "Greet someone by name.",
+                        "arguments": [{ "name": "name", "required": true }]
+                    }
+                ]
+            }
+        }
+    },
+    {
+        "send": {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "prompts/get",
+            "params": { "name": "greet", "arguments": { "name": "World" } }
+        },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "result": {
+                "description": "Greet someone by name.",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": { "type": "text", "text": "Greet World." }
+                    }
+                ]
+            }
+        }
+    },
+    {
+        "send": {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "prompts/get",
+            "params": { "name": "nope" }
+        },
+        "expect": {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "error": { "code": -32602, "message": "Unknown prompt: nope" }
+        }
+    }
+]

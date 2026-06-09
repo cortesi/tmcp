@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::schema::{
     CallToolResult, ErrorObject, INVALID_PARAMS, INVALID_REQUEST, JSONRPC_VERSION,
-    JSONRPCErrorResponse, METHOD_NOT_FOUND, PARSE_ERROR, RequestId,
+    JSONRPCErrorResponse, METHOD_NOT_FOUND, PARSE_ERROR, RESOURCE_NOT_FOUND, RequestId,
 };
 
 #[derive(Error, Debug, Clone)]
@@ -208,31 +208,49 @@ impl Error {
         &self,
         request_id: RequestId,
     ) -> Option<JSONRPCErrorResponse> {
-        let (code, message) = match self {
+        let (code, message, data) = match self {
             Self::ToolNotFound(tool_name) => {
-                (METHOD_NOT_FOUND, format!("Tool not found: {tool_name}"))
+                (INVALID_PARAMS, format!("Unknown tool: {tool_name}"), None)
             }
-            Self::PromptNotFound(prompt_name) => {
-                (METHOD_NOT_FOUND, format!("Prompt not found: {prompt_name}"))
+            Self::PromptNotFound(prompt_name) => (
+                INVALID_PARAMS,
+                format!("Unknown prompt: {prompt_name}"),
+                None,
+            ),
+            Self::ResourceNotFound { uri } => (
+                RESOURCE_NOT_FOUND,
+                "Resource not found".to_string(),
+                Some(serde_json::json!({ "uri": uri })),
+            ),
+            Self::MethodNotFound(method_name) => (
+                METHOD_NOT_FOUND,
+                format!("Method not found: {method_name}"),
+                None,
+            ),
+            Self::InvalidParams(message) => (
+                INVALID_PARAMS,
+                format!("Invalid parameters: {message}"),
+                None,
+            ),
+            Self::InvalidRequest(msg) => (INVALID_REQUEST, format!("Invalid request: {msg}"), None),
+            Self::GroupNotFound(group) => {
+                (INVALID_PARAMS, format!("Group not found: {group}"), None)
             }
-            Self::MethodNotFound(method_name) => {
-                (METHOD_NOT_FOUND, format!("Method not found: {method_name}"))
-            }
-            Self::InvalidParams(message) => {
-                (INVALID_PARAMS, format!("Invalid parameters: {message}"))
-            }
-            Self::InvalidRequest(msg) => (INVALID_REQUEST, format!("Invalid request: {msg}")),
-            Self::GroupNotFound(group) => (INVALID_PARAMS, format!("Group not found: {group}")),
             Self::GroupInactive { group, parent } => (
                 INVALID_PARAMS,
                 format!("Group '{group}' requires active parent '{parent}'"),
+                None,
             ),
-            Self::JsonParse { message } => {
-                (PARSE_ERROR, format!("JSON serialization error: {message}"))
-            }
-            Self::InvalidMessageFormat { message } => {
-                (PARSE_ERROR, format!("Invalid message format: {message}"))
-            }
+            Self::JsonParse { message } => (
+                PARSE_ERROR,
+                format!("JSON serialization error: {message}"),
+                None,
+            ),
+            Self::InvalidMessageFormat { message } => (
+                PARSE_ERROR,
+                format!("Invalid message format: {message}"),
+                None,
+            ),
             // Return None for errors that should use the generic INTERNAL_ERROR handling
             _ => return None,
         };
@@ -243,7 +261,7 @@ impl Error {
             error: ErrorObject {
                 code,
                 message,
-                data: None,
+                data,
             },
         })
     }

@@ -56,6 +56,7 @@ impl ListToolsResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallToolResult {
     /// Content returned by the tool call.
+    #[serde(default)]
     pub content: Vec<ContentBlock>,
     #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
     /// Whether the tool call resulted in an error.
@@ -308,6 +309,7 @@ impl From<CreateTaskResult> for CallToolResponse {
 /// Clients should never make tool use decisions based on ToolAnnotations
 /// received from untrusted servers.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolAnnotations {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional display title for the tool.
@@ -889,7 +891,42 @@ fn force_object_schema(value: &mut Value) {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    #[test]
+    fn tool_annotations_wire_format_is_camel_case() {
+        let annotations = ToolAnnotations {
+            title: Some("t".to_string()),
+            read_only_hint: Some(true),
+            destructive_hint: Some(false),
+            idempotent_hint: Some(true),
+            open_world_hint: Some(false),
+        };
+        let value = serde_json::to_value(&annotations).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "title": "t",
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+            })
+        );
+        let parsed: ToolAnnotations = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.read_only_hint, Some(true));
+        assert_eq!(parsed.open_world_hint, Some(false));
+    }
+
+    #[test]
+    fn call_tool_result_content_defaults_when_omitted() {
+        let result: CallToolResult =
+            serde_json::from_value(json!({"structuredContent": {"answer": 42}})).unwrap();
+        assert!(result.content.is_empty());
+        assert_eq!(result.structured_content, Some(json!({"answer": 42})));
+    }
 
     fn collect_refs(value: &Value, refs: &mut Vec<String>) {
         match value {
