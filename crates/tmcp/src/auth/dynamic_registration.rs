@@ -1,9 +1,12 @@
-use std::{collections::HashMap, net::IpAddr};
+use std::collections::HashMap;
 
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
 
-use super::discovery::AuthorizationDiscoveryClient;
+use super::{
+    discovery::AuthorizationDiscoveryClient,
+    util::{bearer_header, is_loopback_url},
+};
 use crate::error::Error;
 
 /// Client metadata for dynamic registration as per RFC7591
@@ -259,55 +262,43 @@ impl DynamicRegistrationClient {
     }
 }
 
-/// Returns whether `url` targets this machine.
-fn is_loopback_url(url: &str) -> bool {
-    let Ok(url) = url::Url::parse(url) else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    host == "localhost"
-        || host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
-}
-
-/// Builds an authorization header without exposing token material through logs.
-fn bearer_header(token: &str) -> Result<HeaderValue, Error> {
-    let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
-        .map_err(|_| Error::Transport("Invalid authorization token".into()))?;
-    value.set_sensitive(true);
-    Ok(value)
-}
-
 use super::oauth_client::OAuth2Config;
 
 impl OAuth2Config {
-    /// Create OAuth2Config from dynamic registration response
+    /// Create an `OAuth2Config` from a dynamic registration response.
+    ///
+    /// Fails when the identity provider's response does not include any registered
+    /// `redirect_uris`, since silently substituting a redirect URL would misroute the
+    /// authorization flow.
     pub fn from_registration(
         registration: ClientRegistrationResponse,
         auth_url: String,
         token_url: String,
         resource: String,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Error> {
+        let redirect_url = registration
+            .metadata
+            .redirect_uris
+            .and_then(|uris| uris.first().cloned())
+            .ok_or_else(|| {
+                Error::InvalidConfiguration(
+                    "Registration response missing redirect_uris".to_string(),
+                )
+            })?;
+
+        Ok(Self {
             client_id: registration.client_id,
             client_secret: registration.client_secret,
             auth_url,
             token_url,
-            redirect_url: registration
-                .metadata
-                .redirect_uris
-                .and_then(|uris| uris.first().cloned())
-                .unwrap_or_else(|| "http://localhost:8080/callback".to_string()),
+            redirect_url,
             resource,
             scopes: registration
                 .metadata
                 .scope
                 .map(|s| s.split_whitespace().map(String::from).collect())
                 .unwrap_or_default(),
-        }
+        })
     }
 }
 
@@ -349,10 +340,24 @@ mod tests {
     }
 
     #[test]
-    fn bearer_header_debug_redacts_token() {
-        let header = bearer_header("secret-token").unwrap();
-        let debug = format!("{header:?}");
+    fn from_registration_requires_redirect_uris() {
+        let mut metadata = ClientMetadata::new("Test", "http://localhost:8080/callback");
+        metadata.redirect_uris = None;
+        let registration = ClientRegistrationResponse {
+            client_id: "client".to_string(),
+            client_secret: None,
+            client_id_issued_at: None,
+            client_secret_expires_at: None,
+            metadata,
+        };
 
-        assert!(!debug.contains("secret-token"));
+        let err = OAuth2Config::from_registration(
+            registration,
+            "https://auth.example.com".to_string(),
+            "https://auth.example.com/token".to_string(),
+            "https://mcp.example.com".to_string(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("redirect_uris"));
     }
 }

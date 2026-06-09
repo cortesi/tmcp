@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    str::FromStr,
     time::{Duration, Instant},
 };
 
@@ -15,6 +16,7 @@ use tokio::sync::Mutex;
 use super::{
     AuthError, AuthInfo, DEFAULT_JWKS_CACHE_TTL, TokenValidator, extra_claims, parse_scope_set,
 };
+use crate::{auth::util::require_https_or_loopback, error::Error};
 
 /// Validates JWT bearer tokens using a local JWK set or a remote JWKS endpoint.
 pub struct JwtValidator {
@@ -28,6 +30,8 @@ pub struct JwtValidator {
     cache_ttl: Duration,
     /// Minimum interval between forced refreshes caused by unknown key ids.
     unknown_kid_refresh_cooldown: Duration,
+    /// Clock-skew leeway applied to time-based claims.
+    leeway: Duration,
     /// HTTP client for JWKS fetches.
     client: Client,
     /// Cached key set.
@@ -57,23 +61,44 @@ struct CachedJwkSet {
 /// Default cooldown between forced unknown-`kid` refreshes.
 const DEFAULT_UNKNOWN_KID_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 
+/// Default clock-skew leeway for time-based claim validation.
+const DEFAULT_LEEWAY: Duration = Duration::from_secs(60);
+
+/// Signing algorithms permitted when a JWK does not declare a key algorithm.
+const DEFAULT_ASYMMETRIC_ALGORITHMS: &[Algorithm] = &[
+    Algorithm::RS256,
+    Algorithm::RS384,
+    Algorithm::RS512,
+    Algorithm::PS256,
+    Algorithm::PS384,
+    Algorithm::PS512,
+    Algorithm::ES256,
+    Algorithm::ES384,
+    Algorithm::EdDSA,
+];
+
 impl JwtValidator {
     /// Create a validator that fetches and caches keys from a JWKS endpoint.
+    ///
+    /// The JWKS URL must use HTTPS; plain HTTP is only accepted for loopback hosts.
     pub fn new(
         issuer: impl Into<String>,
         audiences: impl IntoIterator<Item = impl Into<String>>,
         jwks_url: impl Into<String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Error> {
+        let jwks_url = jwks_url.into();
+        require_https_or_loopback(&jwks_url, "JWKS URL")?;
+        Ok(Self {
             issuer: issuer.into(),
             audiences: audiences.into_iter().map(Into::into).collect(),
-            source: JwkSource::Remote(jwks_url.into()),
+            source: JwkSource::Remote(jwks_url),
             cache_ttl: DEFAULT_JWKS_CACHE_TTL,
             unknown_kid_refresh_cooldown: DEFAULT_UNKNOWN_KID_REFRESH_COOLDOWN,
+            leeway: DEFAULT_LEEWAY,
             client: Client::new(),
             cache: Mutex::new(None),
             refresh_lock: Mutex::new(()),
-        }
+        })
     }
 
     /// Create a validator backed by a pre-loaded JWK set.
@@ -88,6 +113,7 @@ impl JwtValidator {
             source: JwkSource::Static(jwk_set),
             cache_ttl: DEFAULT_JWKS_CACHE_TTL,
             unknown_kid_refresh_cooldown: DEFAULT_UNKNOWN_KID_REFRESH_COOLDOWN,
+            leeway: DEFAULT_LEEWAY,
             client: Client::new(),
             cache: Mutex::new(None),
             refresh_lock: Mutex::new(()),
@@ -97,6 +123,13 @@ impl JwtValidator {
     /// Override the JWKS cache TTL.
     pub fn with_cache_ttl(mut self, cache_ttl: Duration) -> Self {
         self.cache_ttl = cache_ttl;
+        self
+    }
+
+    /// Override the clock-skew leeway applied to `exp` and `nbf` validation
+    /// (default: 60 seconds).
+    pub fn with_leeway(mut self, leeway: Duration) -> Self {
+        self.leeway = leeway;
         self
     }
 
@@ -110,16 +143,16 @@ impl JwtValidator {
     }
 
     /// Load the current JWK set, refreshing the cache when required.
-    async fn load_jwk_set(&self, force_refresh: bool) -> Result<JwkSet, AuthError> {
+    async fn load_jwk_set(&self) -> Result<JwkSet, AuthError> {
         match &self.source {
             JwkSource::Static(jwk_set) => Ok(jwk_set.clone()),
             JwkSource::Remote(jwks_url) => {
-                if !force_refresh && let Some(jwk_set) = self.cached_jwk_set().await {
+                if let Some(jwk_set) = self.cached_jwk_set().await {
                     return Ok(jwk_set);
                 }
 
                 let _refresh_guard = self.refresh_lock.lock().await;
-                if !force_refresh && let Some(jwk_set) = self.cached_jwk_set().await {
+                if let Some(jwk_set) = self.cached_jwk_set().await {
                     return Ok(jwk_set);
                 }
 
@@ -176,7 +209,7 @@ impl JwtValidator {
 
     /// Select the verification key for a JWT header.
     async fn select_jwk(&self, token_kid: Option<&str>) -> Result<Jwk, AuthError> {
-        let jwk_set = self.load_jwk_set(false).await?;
+        let jwk_set = self.load_jwk_set().await?;
         match token_kid {
             Some(kid) => {
                 if let Some(jwk) = jwk_set.find(kid) {
@@ -218,10 +251,12 @@ impl JwtValidator {
         }
     }
 
-    /// Build validation rules for a JWT algorithm.
-    fn validation(&self, algorithm: Algorithm) -> Validation {
-        let mut validation = Validation::new(algorithm);
-        validation.leeway = 0;
+    /// Build validation rules permitting only the provided signing algorithms.
+    fn validation(&self, algorithms: Vec<Algorithm>) -> Validation {
+        let mut validation = Validation::default();
+        validation.algorithms = algorithms;
+        validation.leeway = self.leeway.as_secs();
+        validation.validate_nbf = true;
         validation.set_audience(&self.audiences);
         validation.set_issuer(&[&self.issuer]);
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
@@ -260,11 +295,30 @@ impl TokenValidator for JwtValidator {
         let jwk = self.select_jwk(header.kid.as_deref()).await?;
         let decoding_key = DecodingKey::from_jwk(&jwk)
             .map_err(|error| AuthError::Unavailable(format!("Invalid JWK: {error}")))?;
-        let validation = self.validation(header.alg);
+        let validation = self.validation(permitted_algorithms(&jwk)?);
         let claims = decode::<Value>(token, &decoding_key, &validation)
             .map_err(|error| map_jwt_error(&error))?
             .claims;
         Self::auth_info_from_claims(claims)
+    }
+}
+
+/// Derive the signing algorithms permitted for a verification key.
+///
+/// The token header's `alg` is never trusted: when the JWK declares a key algorithm,
+/// only that algorithm is permitted; otherwise a default allowlist of asymmetric
+/// algorithms applies.
+fn permitted_algorithms(jwk: &Jwk) -> Result<Vec<Algorithm>, AuthError> {
+    match jwk.common.key_algorithm {
+        Some(key_algorithm) => {
+            let algorithm = Algorithm::from_str(&key_algorithm.to_string()).map_err(|_| {
+                AuthError::Unavailable(format!(
+                    "JWK declares unsupported algorithm: {key_algorithm}"
+                ))
+            })?;
+            Ok(vec![algorithm])
+        }
+        None => Ok(DEFAULT_ASYMMETRIC_ALGORITHMS.to_vec()),
     }
 }
 
@@ -441,7 +495,8 @@ mod tests {
     async fn rejects_expired_tokens() {
         let (encoding_key, jwk_set) = signing_key("kid-1");
         let validator = JwtValidator::from_jwk_set("https://issuer.example.com", ["tmcp"], jwk_set)
-            .with_cache_ttl(Duration::from_secs(1));
+            .with_cache_ttl(Duration::from_secs(1))
+            .with_leeway(Duration::ZERO);
 
         let error = validator
             .validate(&token(
@@ -455,6 +510,84 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, AuthError::Expired));
+    }
+
+    #[tokio::test]
+    async fn leeway_tolerates_recently_expired_tokens() {
+        let (encoding_key, jwk_set) = signing_key("kid-1");
+        let validator = JwtValidator::from_jwk_set("https://issuer.example.com", ["tmcp"], jwk_set);
+
+        let auth = validator
+            .validate(&token(
+                &encoding_key,
+                "kid-1",
+                now() - 10,
+                &Value::String("tmcp".to_string()),
+                "tools:call",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(auth.subject, "user-123");
+    }
+
+    #[tokio::test]
+    async fn rejects_tokens_signed_with_unexpected_algorithm() {
+        let (encoding_key, jwk_set) = signing_key("kid-1");
+        let validator = JwtValidator::from_jwk_set("https://issuer.example.com", ["tmcp"], jwk_set);
+
+        // The JWK declares RS256; a PS256-signed token must be rejected even
+        // though the RSA key itself could verify it.
+        let mut header = Header::new(Algorithm::PS256);
+        header.kid = Some("kid-1".to_string());
+        let token = encode(
+            &header,
+            &serde_json::json!({
+                "sub": "user-123",
+                "iss": "https://issuer.example.com",
+                "aud": "tmcp",
+                "exp": now() + 300,
+            }),
+            &encoding_key,
+        )
+        .unwrap();
+
+        let error = validator.validate(&token).await.unwrap_err();
+        assert!(matches!(error, AuthError::Invalid));
+    }
+
+    #[tokio::test]
+    async fn rejects_tokens_not_yet_valid() {
+        let (encoding_key, jwk_set) = signing_key("kid-1");
+        let validator = JwtValidator::from_jwk_set("https://issuer.example.com", ["tmcp"], jwk_set);
+
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("kid-1".to_string());
+        let token = encode(
+            &header,
+            &serde_json::json!({
+                "sub": "user-123",
+                "iss": "https://issuer.example.com",
+                "aud": "tmcp",
+                "exp": now() + 600,
+                "nbf": now() + 300,
+            }),
+            &encoding_key,
+        )
+        .unwrap();
+
+        let error = validator.validate(&token).await.unwrap_err();
+        assert!(matches!(error, AuthError::Invalid));
+    }
+
+    #[test]
+    fn new_rejects_plain_http_jwks_urls() {
+        let result = JwtValidator::new(
+            "https://issuer.example.com",
+            ["tmcp"],
+            "http://issuer.example.com/jwks",
+        );
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -481,6 +614,7 @@ mod tests {
             ["tmcp"],
             format!("http://{addr}/jwks"),
         )
+        .unwrap()
         .with_cache_ttl(Duration::from_secs(300));
 
         let auth = validator
@@ -523,6 +657,7 @@ mod tests {
             ["tmcp"],
             format!("http://{addr}/jwks"),
         )
+        .unwrap()
         .with_unknown_kid_refresh_cooldown(Duration::from_secs(60));
 
         let first_error = validator

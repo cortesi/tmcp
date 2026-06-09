@@ -151,7 +151,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 args.auth_url,
                 args.token_url,
                 args.resource,
-            );
+            )?;
 
             info!("\n📋 OAuth2 Configuration:");
             info!("You can now use these credentials to connect to the MCP server:");

@@ -337,9 +337,15 @@ async fn fetch_authorization_server_metadata(
     Ok(metadata)
 }
 
+/// Maximum metadata document size accepted from discovery endpoints.
+const MAX_METADATA_RESPONSE_BYTES: usize = 1024 * 1024;
+
 /// Fetch JSON from a URL and deserialize it as the requested type.
+///
+/// Response bodies are capped at [`MAX_METADATA_RESPONSE_BYTES`] so a misbehaving
+/// endpoint cannot exhaust memory.
 async fn fetch_json<T: DeserializeOwned>(client: &Client, url: &Url) -> Result<T, Error> {
-    let response = client
+    let mut response = client
         .get(url.clone())
         .send()
         .await
@@ -354,9 +360,30 @@ async fn fetch_json<T: DeserializeOwned>(client: &Client, url: &Url) -> Result<T
 
     ensure_json_content_type(response.headers())?;
 
-    response
-        .json::<T>()
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_METADATA_RESPONSE_BYTES as u64)
+    {
+        return Err(Error::AuthorizationFailed(
+            "Metadata response is too large".to_string(),
+        ));
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
+        .map_err(|e| Error::Transport(format!("Failed to read metadata response: {e}")))?
+    {
+        if body.len() + chunk.len() > MAX_METADATA_RESPONSE_BYTES {
+            return Err(Error::AuthorizationFailed(
+                "Metadata response is too large".to_string(),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    serde_json::from_slice(&body)
         .map_err(|e| Error::InvalidConfiguration(format!("Invalid metadata JSON: {e}")))
 }
 

@@ -7,14 +7,17 @@ use axum::{
     body::Body,
     http::{
         HeaderMap, Request, StatusCode,
-        header::{self, AUTHORIZATION, AsHeaderName, WWW_AUTHENTICATE},
+        header::{AUTHORIZATION, WWW_AUTHENTICATE},
     },
     response::{IntoResponse, Response},
 };
 use futures::future::BoxFuture;
 use tower::{Layer, Service};
+use tracing::error;
 
-use super::{AuthError, TokenValidator, WwwAuthenticate, resource_metadata_relative_uri};
+use super::{
+    AuthError, TokenValidator, WwwAuthenticate, resolve_base_url, resource_metadata_relative_uri,
+};
 
 /// Tower layer that enforces bearer-token authentication.
 #[derive(Clone)]
@@ -25,6 +28,8 @@ pub struct BearerAuthLayer {
     resource_metadata_path: String,
     /// Fallback base URL for constructing absolute resource_metadata URIs.
     base_url: String,
+    /// Whether forwarded headers may override the base URL.
+    trust_forwarded_headers: bool,
 }
 
 impl BearerAuthLayer {
@@ -34,17 +39,25 @@ impl BearerAuthLayer {
             validator,
             resource_metadata_path: resource_metadata_relative_uri(endpoint_path),
             base_url: String::new(),
+            trust_forwarded_headers: false,
         }
     }
 
-    /// Set the fallback base URL for absolute resource-metadata URIs.
+    /// Set the base URL for absolute resource-metadata URIs.
     ///
-    /// RFC 9728 requires the `resource_metadata` parameter in `WWW-Authenticate` challenges
-    /// to be an absolute URI. The middleware resolves the public origin from forwarding
-    /// headers at request time, falling back to this value when no forwarding headers are
-    /// present.
+    /// RFC 9728 requires the `resource_metadata` parameter in `WWW-Authenticate`
+    /// challenges to be an absolute URI; challenges are built against this origin.
     pub fn with_base_url(mut self, base_url: &str) -> Self {
         self.base_url = base_url.trim_end_matches('/').to_string();
+        self
+    }
+
+    /// Honor `X-Forwarded-Host`/`X-Forwarded-Proto` headers when deriving the public
+    /// origin for challenges.
+    ///
+    /// Only enable this when a trusted reverse proxy sets these headers.
+    pub fn with_trusted_forwarded_headers(mut self, trust_forwarded_headers: bool) -> Self {
+        self.trust_forwarded_headers = trust_forwarded_headers;
         self
     }
 }
@@ -58,6 +71,7 @@ impl<S> Layer<S> for BearerAuthLayer {
             validator: self.validator.clone(),
             resource_metadata_path: self.resource_metadata_path.clone(),
             base_url: self.base_url.clone(),
+            trust_forwarded_headers: self.trust_forwarded_headers,
         }
     }
 }
@@ -73,6 +87,8 @@ pub struct BearerAuthMiddleware<S> {
     resource_metadata_path: String,
     /// Fallback base URL.
     base_url: String,
+    /// Whether forwarded headers may override the base URL.
+    trust_forwarded_headers: bool,
 }
 
 impl<S, B> Service<Request<B>> for BearerAuthMiddleware<S>
@@ -94,10 +110,15 @@ where
         let validator = self.validator.clone();
         let resource_metadata_path = self.resource_metadata_path.clone();
         let base_url = self.base_url.clone();
+        let trust_forwarded_headers = self.trust_forwarded_headers;
 
         Box::pin(async move {
-            let resource_metadata =
-                resolve_resource_metadata(request.headers(), &base_url, &resource_metadata_path);
+            let resource_metadata = resolve_resource_metadata(
+                request.headers(),
+                &base_url,
+                &resource_metadata_path,
+                trust_forwarded_headers,
+            );
 
             let Some(token) = bearer_token(request.headers()) else {
                 return Ok(unauthorized_response(
@@ -126,53 +147,31 @@ where
                     .expect("expired-token challenge must serialize"),
                 )),
                 Err(AuthError::Unavailable(message)) => {
-                    Ok((StatusCode::SERVICE_UNAVAILABLE, message).into_response())
+                    error!("Token validation unavailable: {message}");
+                    Ok((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Token validation unavailable",
+                    )
+                        .into_response())
                 }
             }
         })
     }
 }
 
-/// Build an absolute resource_metadata URI from the request's forwarding headers.
+/// Build an absolute resource_metadata URI for `WWW-Authenticate` challenges.
 fn resolve_resource_metadata(
     headers: &HeaderMap,
     fallback_base: &str,
     relative_path: &str,
+    trust_forwarded_headers: bool,
 ) -> String {
-    let base = resolve_base_url(headers, fallback_base);
+    let base = resolve_base_url(headers, fallback_base, trust_forwarded_headers);
     if base.is_empty() {
         relative_path.to_string()
     } else {
         format!("{base}{relative_path}")
     }
-}
-
-/// Resolve the externally visible origin from forwarding headers or a fallback base URL.
-fn resolve_base_url(headers: &HeaderMap, fallback: &str) -> String {
-    let forwarded_host = first_forwarded_value(headers, "x-forwarded-host");
-    let forwarded_proto = first_forwarded_value(headers, "x-forwarded-proto");
-
-    if forwarded_host.is_none() && forwarded_proto.is_none() {
-        return fallback.trim_end_matches('/').to_string();
-    }
-
-    let host = forwarded_host.or_else(|| first_forwarded_value(headers, header::HOST));
-    let scheme = forwarded_proto.or_else(|| fallback.split_once("://").map(|(s, _)| s));
-
-    match (scheme, host) {
-        (Some(scheme), Some(host)) => format!("{scheme}://{host}"),
-        _ => fallback.trim_end_matches('/').to_string(),
-    }
-}
-
-/// Return the first value from a potentially comma-separated forwarding header.
-fn first_forwarded_value<K: AsHeaderName>(headers: &HeaderMap, name: K) -> Option<&str> {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
 }
 
 /// Extract a bearer token from an `Authorization` header.

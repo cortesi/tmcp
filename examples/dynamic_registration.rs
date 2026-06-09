@@ -6,7 +6,8 @@ use clap::Parser;
 use tmcp::{
     Client,
     auth::{
-        ClientMetadata, DynamicRegistrationClient, OAuth2CallbackServer, OAuth2Client, OAuth2Config,
+        ClientMetadata, DynamicRegistrationClient, DynamicRegistrationConfig, OAuth2CallbackServer,
+        OAuth2Client, OAuth2Config,
     },
 };
 use tracing::{Level, info, subscriber};
@@ -81,7 +82,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let redirect_url = format!("http://localhost:{}/callback", args.port);
 
     // Create or register OAuth client
-    let mut oauth_client = if let (Some(client_id), Some(client_secret)) =
+    let oauth_client = if let (Some(client_id), Some(client_secret)) =
         (args.client_id, args.client_secret)
     {
         // Use provided credentials
@@ -103,15 +104,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         info!("Performing dynamic client registration...");
 
         // First, try direct registration
-        match OAuth2Client::register_dynamic(
-            args.auth_url.clone(),
-            args.token_url.clone(),
-            args.endpoint.clone(),
-            args.client_name.clone(),
-            redirect_url.clone(),
-            scopes.clone(),
-            args.registration_endpoint.clone(),
-        )
+        match OAuth2Client::register_dynamic(DynamicRegistrationConfig {
+            auth_url: args.auth_url.clone(),
+            token_url: args.token_url.clone(),
+            resource: args.endpoint.clone(),
+            registration_endpoint: args.registration_endpoint.clone(),
+            metadata: ClientMetadata::new(&args.client_name, &redirect_url)
+                .with_scopes(&scopes)
+                .with_software_info("tmcp", env!("CARGO_PKG_VERSION")),
+        })
         .await
         {
             Ok(client) => {
@@ -156,7 +157,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 args.auth_url.clone(),
                                 args.token_url.clone(),
                                 args.endpoint.clone(),
-                            );
+                            )?;
 
                             OAuth2Client::new(config)?
                         }
@@ -174,8 +175,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Now perform OAuth flow
     info!("Starting OAuth authorization flow...");
 
-    // Get authorization URL
-    let (auth_url, _csrf_token) = oauth_client.get_authorization_url();
+    // Bind the callback server before opening the browser
+    let callback_server = OAuth2CallbackServer::new(args.port).await?;
+
+    // Begin the authorization flow
+    let flow = oauth_client.begin_authorization();
+    let auth_url = flow.auth_url().clone();
 
     info!("Opening browser for authorization...");
     info!("If the browser doesn't open, visit: {}", auth_url);
@@ -186,16 +191,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("Please visit the URL manually: {auth_url}");
     }
 
-    // Start callback server
-    let callback_server = OAuth2CallbackServer::new(args.port);
     info!("Waiting for OAuth callback on port {}...", args.port);
-
     let (code, state) = callback_server.wait_for_callback().await?;
 
     info!("Received authorization code, exchanging for token...");
 
     // Exchange code for token
-    let _token = oauth_client.exchange_code(code, state).await?;
+    let _token = oauth_client.exchange_code(flow, code, state).await?;
     info!("Successfully obtained access token");
 
     // Create MCP client with OAuth

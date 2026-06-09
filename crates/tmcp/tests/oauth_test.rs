@@ -8,25 +8,13 @@ mod tests {
     };
 
     use tmcp::auth::{
-        ClientMetadata, OAuth2CallbackServer, OAuth2Client, OAuth2Config, OAuth2Token,
+        ClientMetadata, DynamicRegistrationConfig, OAuth2CallbackServer, OAuth2Client,
+        OAuth2Config, OAuth2Token,
     };
     use tokio::{
         net::TcpStream,
-        task::yield_now,
-        time::{Duration, sleep, timeout},
+        time::{Duration, timeout},
     };
-
-    async fn connect_with_retry(addr: &str) -> TcpStream {
-        for _ in 0..50 {
-            match TcpStream::connect(addr).await {
-                Ok(stream) => return stream,
-                Err(_) => {
-                    yield_now().await;
-                }
-            }
-        }
-        panic!("failed to connect to callback server at {addr}");
-    }
 
     #[tokio::test]
     async fn test_oauth_client_creation() {
@@ -57,11 +45,11 @@ mod tests {
             scopes: vec!["read".to_string()],
         };
 
-        let mut oauth_client = OAuth2Client::new(config).unwrap();
-        let (auth_url, csrf_token) = oauth_client.get_authorization_url();
+        let oauth_client = OAuth2Client::new(config).unwrap();
+        let flow = oauth_client.begin_authorization();
 
         // Check that the URL contains expected parameters
-        let url_str = auth_url.as_str();
+        let url_str = flow.auth_url().as_str();
         assert!(url_str.contains("client_id=test_client_id"));
         assert!(url_str.contains("redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fcallback"));
         assert!(url_str.contains("response_type=code"));
@@ -70,53 +58,18 @@ mod tests {
         assert!(url_str.contains("code_challenge_method=S256"));
         assert!(url_str.contains("resource=http%3A%2F%2Flocalhost%3A9090%2Fapi"));
         assert!(url_str.contains("scope=read"));
-
-        // CSRF token should not be empty
-        assert!(!csrf_token.secret().is_empty());
     }
 
     #[tokio::test]
     async fn test_callback_server() {
-        let server = OAuth2CallbackServer::new(8765);
-
-        // Spawn a task to simulate a client making the callback request
-        let client_task = tokio::spawn(async move {
-            sleep(Duration::from_millis(100)).await;
-
-            let client = reqwest::Client::new();
-            let _response = client
-                .get("http://127.0.0.1:8765/callback?code=test_code&state=test_state")
-                .send()
-                .await
-                .expect("callback request failed");
-        });
-
-        // Wait for callback with timeout
-        let result = timeout(Duration::from_secs(5), server.wait_for_callback()).await;
-
-        match result {
-            Ok(Ok((code, state))) => {
-                assert_eq!(code, "test_code");
-                assert_eq!(state, "test_state");
-            }
-            Ok(Err(e)) => panic!("Callback server error: {e}"),
-            Err(_) => panic!("Callback server timed out"),
-        }
-
-        client_task.await.expect("callback client task failed");
-    }
-
-    #[tokio::test]
-    async fn test_callback_server_binds_loopback_port() {
         let server = OAuth2CallbackServer::bind_loopback()
             .await
             .expect("callback server");
         assert_ne!(server.port(), 0);
         let redirect_url = server.redirect_url();
 
+        // The listener is bound eagerly, so the client can connect immediately.
         let client_task = tokio::spawn(async move {
-            sleep(Duration::from_millis(100)).await;
-
             let client = reqwest::Client::new();
             let _response = client
                 .get(format!("{redirect_url}?code=test_code&state=test_state"))
@@ -140,13 +93,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_callback_server_ignores_other_paths() {
+        let server = OAuth2CallbackServer::bind_loopback()
+            .await
+            .expect("callback server");
+        let base_url = format!("http://127.0.0.1:{}", server.port());
+
+        let client_task = tokio::spawn(async move {
+            let client = reqwest::Client::new();
+
+            // A stray request (e.g. a favicon probe) receives 404 and the
+            // server keeps waiting for the real callback.
+            let favicon = client
+                .get(format!("{base_url}/favicon.ico"))
+                .send()
+                .await
+                .expect("favicon request failed");
+            assert_eq!(favicon.status(), reqwest::StatusCode::NOT_FOUND);
+
+            let callback = client
+                .get(format!(
+                    "{base_url}/callback?code=test_code&state=test_state"
+                ))
+                .send()
+                .await
+                .expect("callback request failed");
+            assert_eq!(callback.status(), reqwest::StatusCode::OK);
+        });
+
+        let (code, state) = timeout(Duration::from_secs(5), server.wait_for_callback())
+            .await
+            .expect("callback server timed out")
+            .expect("callback failed");
+        assert_eq!(code, "test_code");
+        assert_eq!(state, "test_state");
+
+        client_task.await.expect("callback client task failed");
+    }
+
+    #[tokio::test]
+    async fn test_callback_server_surfaces_oauth_errors() {
+        let server = OAuth2CallbackServer::bind_loopback()
+            .await
+            .expect("callback server");
+        let redirect_url = server.redirect_url();
+
+        let client_task = tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let response = client
+                .get(format!(
+                    "{redirect_url}?error=access_denied&error_description=User%20cancelled"
+                ))
+                .send()
+                .await
+                .expect("error redirect failed");
+            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        });
+
+        let err = timeout(Duration::from_secs(5), server.wait_for_callback())
+            .await
+            .expect("callback server timed out")
+            .expect_err("expected OAuth error");
+        let message = err.to_string();
+        assert!(message.contains("access_denied"), "got: {message}");
+        assert!(message.contains("User cancelled"), "got: {message}");
+
+        client_task.await.expect("error redirect task failed");
+    }
+
+    #[tokio::test]
     async fn test_callback_server_oversized_request() {
         use tokio::io::AsyncWriteExt;
 
-        let server = OAuth2CallbackServer::new(8766);
+        let server = OAuth2CallbackServer::bind_loopback()
+            .await
+            .expect("callback server");
+        let addr = format!("127.0.0.1:{}", server.port());
 
         let client_task = tokio::spawn(async move {
-            let mut stream = connect_with_retry("127.0.0.1:8766").await;
+            let mut stream = TcpStream::connect(&addr).await.expect("connect");
             let big_query = "a".repeat(3000);
             let request = format!(
                 "GET /callback?code={big_query}&state=test HTTP/1.1\r\nHost: localhost\r\n\r\n"
@@ -167,10 +192,13 @@ mod tests {
     async fn test_callback_server_malformed_request() {
         use tokio::io::AsyncWriteExt;
 
-        let server = OAuth2CallbackServer::new(8767);
+        let server = OAuth2CallbackServer::bind_loopback()
+            .await
+            .expect("callback server");
+        let addr = format!("127.0.0.1:{}", server.port());
 
         let client_task = tokio::spawn(async move {
-            let mut stream = connect_with_retry("127.0.0.1:8767").await;
+            let mut stream = TcpStream::connect(&addr).await.expect("connect");
             let request = "GET /callback?code=test_code HTTP/1.1\r\nHost: localhost\r\n\r\n";
             stream
                 .write_all(request.as_bytes())
@@ -263,20 +291,20 @@ mod tests {
         });
 
         let mut metadata = ClientMetadata::new("Custom", "http://localhost/callback")
-            .with_resource("http://resource")
+            .with_resource("http://localhost/resource")
             .with_token_endpoint_auth_method("none");
         metadata.additional.insert(
             "software_statement".to_string(),
             Value::String("signed-statement".to_string()),
         );
 
-        let oauth_client = OAuth2Client::register_dynamic_with_metadata(
-            format!("http://{addr}/authorize"),
-            format!("http://{addr}/token"),
-            "http://resource".to_string(),
+        let oauth_client = OAuth2Client::register_dynamic(DynamicRegistrationConfig {
+            auth_url: format!("http://{addr}/authorize"),
+            token_url: format!("http://{addr}/token"),
+            resource: "http://localhost/resource".to_string(),
+            registration_endpoint: Some(format!("http://{addr}/register")),
             metadata,
-            Some(format!("http://{addr}/register")),
-        )
+        })
         .await
         .unwrap();
 

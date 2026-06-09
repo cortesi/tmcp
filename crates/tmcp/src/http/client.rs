@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::{
-    auth::OAuth2Client,
+    auth::{OAuth2Client, util::bearer_header},
     error::{Error, Result},
     schema::{
         AUTHORIZATION_FAILED, ErrorObject, INTERNAL_ERROR, JSONRPC_VERSION, JSONRPCErrorResponse,
@@ -671,14 +671,6 @@ async fn outbound_post_request(ctx: &OutboundContext) -> Result<OutboundPostRequ
     })
 }
 
-/// Builds an authorization header without exposing token material through logs.
-fn bearer_header(token: &str) -> Result<HeaderValue> {
-    let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
-        .map_err(|_| Error::Transport("Invalid authorization token".into()))?;
-    value.set_sensitive(true);
-    Ok(value)
-}
-
 /// Marks caller-supplied static headers as sensitive before attaching them.
 fn sensitive_header_map(mut headers: HeaderMap) -> HeaderMap {
     for value in headers.values_mut() {
@@ -777,14 +769,6 @@ mod tests {
         let debug = format!("{:?}", transport.static_headers);
 
         assert!(!debug.contains("secret"));
-    }
-
-    #[test]
-    fn bearer_header_debug_redacts_token() {
-        let header = bearer_header("secret-token").unwrap();
-        let debug = format!("{header:?}");
-
-        assert!(!debug.contains("secret-token"));
     }
 
     #[test]

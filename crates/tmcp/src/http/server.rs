@@ -47,6 +47,7 @@ use super::validation::{
     validate_protocol_version,
 };
 use crate::{
+    auth::server::AuthInfo,
     connection::ServerHandler,
     error::{Error, Result},
     schema::{JSONRPCMessage, JSONRPCNotification, JSONRPCResponse, RequestId},
@@ -141,6 +142,13 @@ struct HttpSession {
     routes: SessionRoutes,
     /// Handle to the session's connection loop.
     handle: Arc<ServerHandle>,
+    /// Authenticated subject the session is bound to.
+    ///
+    /// Recorded from the [`AuthInfo`] request extension at initialize when the auth
+    /// middleware is installed. Subsequent requests for the session must authenticate as
+    /// the same subject; mismatches are rejected with `403 Forbidden` so a session id
+    /// cannot be replayed with a different identity's token.
+    auth_subject: Option<String>,
 }
 
 impl HttpSession {
@@ -492,6 +500,28 @@ fn session_id_header(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Enforce session–subject binding for a request.
+///
+/// Returns a `403 Forbidden` response when the session was initialized by an
+/// authenticated subject and the request's [`AuthInfo`] subject differs or is absent.
+fn check_session_subject(session: &HttpSession, extensions: &http::Extensions) -> Option<Response> {
+    let expected = session.auth_subject.as_deref()?;
+    let actual = extensions
+        .get::<AuthInfo>()
+        .map(|info| info.subject.as_str());
+    if actual == Some(expected) {
+        None
+    } else {
+        Some(
+            (
+                StatusCode::FORBIDDEN,
+                "Session is bound to a different subject",
+            )
+                .into_response(),
+        )
+    }
+}
+
 /// Return the request id cancelled by a `notifications/cancelled` message.
 fn cancelled_request_id(notification: &JSONRPCNotification) -> Option<RequestId> {
     if notification.notification.method != "notifications/cancelled" {
@@ -543,6 +573,9 @@ async fn handle_post(State(state): State<HttpServerState>, request: Request) -> 
     let Some(session) = state.sessions.get(&session_id).map(|s| s.clone()) else {
         return (StatusCode::NOT_FOUND, "Session not found").into_response();
     };
+    if let Some(response) = check_session_subject(&session, &extensions) {
+        return response;
+    }
     session.touch();
 
     match &message {
@@ -621,6 +654,9 @@ async fn handle_initialize_post(
         incoming_tx,
         routes,
         handle: Arc::new(handle),
+        auth_subject: extensions
+            .get::<AuthInfo>()
+            .map(|info| info.subject.clone()),
     };
     state.sessions.insert(session_id.clone(), session.clone());
 
@@ -652,7 +688,11 @@ async fn handle_initialize_post(
 }
 
 /// Handle inbound HTTP GET requests for the standing SSE stream.
-async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) -> Response {
+async fn handle_get(State(state): State<HttpServerState>, request: Request) -> Response {
+    let (parts, _) = request.into_parts();
+    let headers = parts.headers;
+    let extensions = parts.extensions;
+
     if let Err(response) = validate_origin(&headers, &state.cors) {
         return *response;
     }
@@ -679,6 +719,9 @@ async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) ->
     let Some(session) = state.sessions.get(&session_id).map(|s| s.clone()) else {
         return (StatusCode::NOT_FOUND, "Session not found").into_response();
     };
+    if let Some(response) = check_session_subject(&session, &extensions) {
+        return response;
+    }
     session.touch();
 
     let last_event_id = headers
@@ -703,7 +746,11 @@ async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) ->
 }
 
 /// Handle session termination via HTTP DELETE.
-async fn handle_delete(State(state): State<HttpServerState>, headers: HeaderMap) -> Response {
+async fn handle_delete(State(state): State<HttpServerState>, request: Request) -> Response {
+    let (parts, _) = request.into_parts();
+    let headers = parts.headers;
+    let extensions = parts.extensions;
+
     if let Err(response) = validate_origin(&headers, &state.cors) {
         return *response;
     }
@@ -711,12 +758,14 @@ async fn handle_delete(State(state): State<HttpServerState>, headers: HeaderMap)
     let Some(session_id) = session_id_header(&headers) else {
         return (StatusCode::BAD_REQUEST, "Missing session ID").into_response();
     };
-    if state.sessions.contains_key(&session_id) {
-        remove_session(&state, &session_id);
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        (StatusCode::NOT_FOUND, "Session not found").into_response()
+    let Some(session) = state.sessions.get(&session_id).map(|s| s.clone()) else {
+        return (StatusCode::NOT_FOUND, "Session not found").into_response();
+    };
+    if let Some(response) = check_session_subject(&session, &extensions) {
+        return response;
     }
+    remove_session(&state, &session_id);
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[cfg(test)]

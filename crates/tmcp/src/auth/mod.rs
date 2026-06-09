@@ -68,19 +68,18 @@
 //!         scopes: vec!["read".to_string(), "write".to_string()],
 //!     };
 //!
-//!     // Create OAuth client
-//!     let mut oauth_client = OAuth2Client::new(config)?;
+//!     // Create OAuth client and start the callback server
+//!     let oauth_client = OAuth2Client::new(config)?;
+//!     let callback_server = OAuth2CallbackServer::new(8080).await?;
 //!
-//!     // Get authorization URL
-//!     let (auth_url, _csrf_token) = oauth_client.get_authorization_url();
-//!     println!("Open this URL in your browser: {}", auth_url);
+//!     // Begin the authorization flow
+//!     let flow = oauth_client.begin_authorization();
+//!     println!("Open this URL in your browser: {}", flow.auth_url());
 //!
-//!     // Start callback server
-//!     let callback_server = OAuth2CallbackServer::new(8080);
 //!     let (code, state) = callback_server.wait_for_callback().await?;
 //!
 //!     // Exchange code for token
-//!     let token = oauth_client.exchange_code(code, state).await?;
+//!     let token = oauth_client.exchange_code(flow, code, state).await?;
 //!     println!("Access token obtained!");
 //!
 //!     Ok(())
@@ -128,7 +127,7 @@
 //!     "https://issuer.example.com",
 //!     ["tmcp"],
 //!     "https://issuer.example.com/.well-known/jwks.json",
-//! ));
+//! )?);
 //!
 //! let auth = AuthConfig::new("https://example.com", validator)
 //!     .with_endpoint_path("/mcp");
@@ -143,20 +142,22 @@
 //!
 //! ### Dynamic Client Registration
 //! ```no_run
-//! use tmcp::auth::{OAuth2Client, ClientMetadata, DynamicRegistrationClient};
+//! use tmcp::auth::{
+//!     ClientMetadata, DynamicRegistrationClient, DynamicRegistrationConfig, OAuth2Client,
+//! };
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Option 1: Automatic registration with discovery
-//!     let oauth_client = OAuth2Client::register_dynamic(
-//!         "https://auth.example.com/authorize".to_string(),
-//!         "https://auth.example.com/token".to_string(),
-//!         "https://mcp.example.com".to_string(),
-//!         "My MCP Client".to_string(),
-//!         "http://localhost:8080/callback".to_string(),
-//!         vec!["read".to_string()],
-//!         None, // Will discover registration endpoint
-//!     ).await?;
+//!     let oauth_client = OAuth2Client::register_dynamic(DynamicRegistrationConfig {
+//!         auth_url: "https://auth.example.com/authorize".to_string(),
+//!         token_url: "https://auth.example.com/token".to_string(),
+//!         resource: "https://mcp.example.com".to_string(),
+//!         registration_endpoint: None, // Will discover registration endpoint
+//!         metadata: ClientMetadata::new("My MCP Client", "http://localhost:8080/callback")
+//!             .with_scopes(&["read".to_string()]),
+//!     })
+//!     .await?;
 //!
 //!     // Option 2: Manual registration with custom metadata
 //!     let registration_client = DynamicRegistrationClient::default();
@@ -231,6 +232,8 @@ mod dynamic_registration;
 mod oauth_client;
 /// OAuth 2.1 resource-server support for tmcp servers.
 pub mod server;
+/// Shared URL and header helpers for OAuth components.
+pub(crate) mod util;
 
 pub use discovery::{
     AuthorizationDiscoveryClient, AuthorizationServerDiscovery, AuthorizationServerMetadata,
@@ -239,4 +242,7 @@ pub use discovery::{
 pub use dynamic_registration::{
     ClientMetadata, ClientRegistrationResponse, DynamicRegistrationClient, RegistrationError,
 };
-pub use oauth_client::{OAuth2CallbackServer, OAuth2Client, OAuth2Config, OAuth2Token};
+pub use oauth_client::{
+    AuthorizationFlow, DynamicRegistrationConfig, OAuth2CallbackServer, OAuth2Client, OAuth2Config,
+    OAuth2Token,
+};

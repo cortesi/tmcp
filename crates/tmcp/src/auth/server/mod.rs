@@ -44,8 +44,15 @@ pub struct AuthConfig {
     ///
     /// Required by RFC 9728. When the server runs behind a reverse proxy, this is the
     /// public-facing origin (e.g. `https://example.com`). Request-time forwarding headers
-    /// (`X-Forwarded-Host`, `X-Forwarded-Proto`) override this value when present.
+    /// (`X-Forwarded-Host`, `X-Forwarded-Proto`) override this value only when
+    /// [`Self::trust_forwarded_headers`] is enabled.
     pub base_url: String,
+    /// Whether to honor `X-Forwarded-Host`/`X-Forwarded-Proto` request headers.
+    ///
+    /// Disabled by default: forwarding headers are attacker-controlled unless a trusted
+    /// reverse proxy sets them. Enable only when the server is deployed behind such a
+    /// proxy.
+    pub trust_forwarded_headers: bool,
     /// Authorization server issuer URLs advertised in the protected resource metadata.
     ///
     /// Defaults to `[base_url]`. Override with [`Self::with_authorization_servers`] when
@@ -72,9 +79,20 @@ impl AuthConfig {
             endpoint_path: "/".to_string(),
             authorization_servers: vec![base_url.clone()],
             base_url,
+            trust_forwarded_headers: false,
             scopes_supported: vec!["mcp".to_string()],
             bearer_methods_supported: vec!["header".to_string()],
         }
+    }
+
+    /// Honor `X-Forwarded-Host`/`X-Forwarded-Proto` headers when deriving the public
+    /// origin for metadata and challenges.
+    ///
+    /// Only enable this when a trusted reverse proxy sets these headers; otherwise
+    /// clients can spoof the advertised resource URL.
+    pub fn with_trusted_forwarded_headers(mut self) -> Self {
+        self.trust_forwarded_headers = true;
+        self
     }
 
     /// Override the externally visible MCP endpoint path.
@@ -235,8 +253,10 @@ impl WwwAuthenticate {
 /// Shared state for dynamic protected-resource metadata handlers.
 #[derive(Clone)]
 struct ProtectedResourceState {
-    /// Fallback externally visible base URL.
+    /// Externally visible base URL.
     base_url: String,
+    /// Whether forwarded headers may override the base URL.
+    trust_forwarded_headers: bool,
     /// MCP endpoint path component.
     endpoint_path: String,
     /// Authorization server issuer URLs.
@@ -249,12 +269,14 @@ struct ProtectedResourceState {
 
 /// Return an RFC 9728 protected resource metadata router for the endpoint path.
 ///
-/// The `base_url` is used as a fallback origin; request-time `X-Forwarded-Host` and
-/// `X-Forwarded-Proto` headers take precedence so the metadata document reflects the
-/// externally visible URL even when the server is behind a reverse proxy.
+/// The metadata document is built from the configured `base_url`. When the config opts
+/// into trusting forwarded headers, request-time `X-Forwarded-Host` and
+/// `X-Forwarded-Proto` headers take precedence so the document reflects the externally
+/// visible URL behind a reverse proxy.
 pub fn protected_resource_handler(config: &AuthConfig) -> Router {
     let state = ProtectedResourceState {
         base_url: config.base_url.trim_end_matches('/').to_string(),
+        trust_forwarded_headers: config.trust_forwarded_headers,
         endpoint_path: normalize_endpoint_path(&config.endpoint_path),
         authorization_servers: config.authorization_servers.clone(),
         scopes_supported: config.scopes_supported.clone(),
@@ -280,7 +302,7 @@ async fn serve_protected_resource_metadata(
     State(state): State<ProtectedResourceState>,
     headers: HeaderMap,
 ) -> Json<Value> {
-    let base = resolve_base_url(&headers, &state.base_url);
+    let base = resolve_base_url(&headers, &state.base_url, state.trust_forwarded_headers);
     Json(json!({
         "resource": format!("{base}{}", state.endpoint_path),
         "authorization_servers": state.authorization_servers,
@@ -289,12 +311,20 @@ async fn serve_protected_resource_metadata(
     }))
 }
 
-/// Resolve the externally visible origin from forwarding headers or a fallback base URL.
+/// Resolve the externally visible origin from the configured base URL.
 ///
-/// Only uses request headers when explicit forwarding headers (`X-Forwarded-Host`,
-/// `X-Forwarded-Proto`) are present, indicating a reverse proxy. Otherwise the configured
-/// base URL is returned unchanged.
-fn resolve_base_url(headers: &HeaderMap, fallback: &str) -> String {
+/// Request-time forwarding headers (`X-Forwarded-Host`, `X-Forwarded-Proto`) are only
+/// consulted when `trust_forwarded_headers` is set, since they are attacker-controlled
+/// unless a trusted reverse proxy injects them.
+pub(super) fn resolve_base_url(
+    headers: &HeaderMap,
+    fallback: &str,
+    trust_forwarded_headers: bool,
+) -> String {
+    if !trust_forwarded_headers {
+        return fallback.trim_end_matches('/').to_string();
+    }
+
     let forwarded_host = first_forwarded_value(headers, "x-forwarded-host");
     let forwarded_proto = first_forwarded_value(headers, "x-forwarded-proto");
 
@@ -433,8 +463,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn protected_resource_metadata_uses_forwarded_headers() {
-        let response = protected_resource_handler(&test_config("/mcp"))
+    async fn protected_resource_metadata_uses_forwarded_headers_when_trusted() {
+        let config = test_config("/mcp").with_trusted_forwarded_headers();
+        let response = protected_resource_handler(&config)
             .oneshot(
                 Request::builder()
                     .uri("/.well-known/oauth-protected-resource/mcp")
@@ -456,6 +487,27 @@ mod tests {
             metadata["authorization_servers"],
             json!(["https://example.com"])
         );
+    }
+
+    #[tokio::test]
+    async fn protected_resource_metadata_ignores_forwarded_headers_by_default() {
+        let response = protected_resource_handler(&test_config("/mcp"))
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-protected-resource/mcp")
+                    .header("x-forwarded-host", "attacker.example.com")
+                    .header("x-forwarded-proto", "http")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let metadata: Value = serde_json::from_slice(&body).unwrap();
+        // Forwarded headers are not trusted: the configured base URL wins.
+        assert_eq!(metadata["resource"], "https://example.com/mcp");
     }
 
     #[test]

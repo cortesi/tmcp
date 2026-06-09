@@ -1,6 +1,6 @@
 use std::{
+    fmt,
     future::Future,
-    net::IpAddr,
     str,
     sync::Arc,
     time::{Duration, Instant},
@@ -16,6 +16,7 @@ use oauth2::{
     },
     reqwest::Client,
 };
+use subtle::ConstantTimeEq;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -23,7 +24,10 @@ use tokio::{
 };
 use url::{Url, form_urlencoded};
 
-use super::dynamic_registration::{ClientMetadata, DynamicRegistrationClient};
+use super::{
+    dynamic_registration::{ClientMetadata, DynamicRegistrationClient},
+    util::{is_loopback_url, require_https_or_loopback},
+};
 use crate::error::Error;
 
 /// Time before expiration at which tokens are proactively refreshed.
@@ -48,7 +52,7 @@ pub struct OAuth2Config {
     pub scopes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 /// OAuth2 token information.
 pub struct OAuth2Token {
     /// Access token value.
@@ -59,6 +63,56 @@ pub struct OAuth2Token {
     pub expires_in: Option<Duration>,
     /// Optional expiration instant.
     pub expires_at: Option<Instant>,
+}
+
+impl fmt::Debug for OAuth2Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OAuth2Token")
+            .field("access_token", &"[REDACTED]")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("expires_in", &self.expires_in)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+/// Configuration for OAuth 2.0 dynamic client registration (RFC 7591).
+#[derive(Debug, Clone)]
+pub struct DynamicRegistrationConfig {
+    /// Authorization endpoint URL of the identity provider.
+    pub auth_url: String,
+    /// Token endpoint URL of the identity provider.
+    pub token_url: String,
+    /// Resource audience the registered client requests tokens for.
+    pub resource: String,
+    /// Explicit registration endpoint; discovered from the auth URL origin when `None`.
+    pub registration_endpoint: Option<String>,
+    /// Client metadata submitted to the registration endpoint.
+    pub metadata: ClientMetadata,
+}
+
+/// In-flight authorization code flow state.
+///
+/// Created by [`OAuth2Client::begin_authorization`]; holds the PKCE verifier and CSRF
+/// token for one flow. Direct the user to [`Self::auth_url`], then consume the flow with
+/// [`OAuth2Client::exchange_code`].
+pub struct AuthorizationFlow {
+    /// Authorization URL the user must visit.
+    auth_url: Url,
+    /// PKCE verifier matching the challenge embedded in the auth URL.
+    pkce_verifier: PkceCodeVerifier,
+    /// Expected CSRF state value for the callback.
+    csrf_token: CsrfToken,
+}
+
+impl AuthorizationFlow {
+    /// The authorization URL the user must visit to grant access.
+    pub fn auth_url(&self) -> &Url {
+        &self.auth_url
+    }
 }
 
 /// Internal OAuth2 client type alias with configured endpoint states.
@@ -75,7 +129,7 @@ type ConfiguredClient = oauth2::Client<
     EndpointSet,
 >;
 
-/// OAuth2 client with optional token caching and refresh support.
+/// OAuth2 client with token caching and refresh support.
 pub struct OAuth2Client {
     /// OAuth2 client used for token flows.
     client: ConfiguredClient,
@@ -85,47 +139,26 @@ pub struct OAuth2Client {
     token: Arc<RwLock<Option<OAuth2Token>>>,
     /// Mutex to serialize refreshes.
     refresh_lock: Arc<Mutex<()>>,
-    /// PKCE verifier captured during authorization.
-    pkce_verifier: Option<PkceCodeVerifier>,
-    /// CSRF token captured during authorization.
-    csrf_token: Option<CsrfToken>,
 }
 
 impl OAuth2Client {
-    /// Perform dynamic client registration and create an OAuth2Client
-    pub async fn register_dynamic(
-        auth_url: String,
-        token_url: String,
-        resource: String,
-        client_name: String,
-        redirect_url: String,
-        scopes: Vec<String>,
-        registration_endpoint: Option<String>,
-    ) -> Result<Self, Error> {
-        // Create client metadata
-        let metadata = ClientMetadata::new(&client_name, &redirect_url)
-            .with_resource(&resource)
-            .with_scopes(&scopes)
-            .with_software_info("tmcp", env!("CARGO_PKG_VERSION"));
-
-        Self::register_dynamic_with_metadata(
+    /// Perform dynamic client registration and create an `OAuth2Client`.
+    ///
+    /// When `config.metadata` carries no resource, the configured resource is filled in
+    /// so the registered client is audience-bound as required by MCP.
+    pub async fn register_dynamic(config: DynamicRegistrationConfig) -> Result<Self, Error> {
+        let DynamicRegistrationConfig {
             auth_url,
             token_url,
             resource,
-            metadata,
             registration_endpoint,
-        )
-        .await
-    }
+            mut metadata,
+        } = config;
 
-    /// Perform dynamic client registration with caller-supplied client metadata.
-    pub async fn register_dynamic_with_metadata(
-        auth_url: String,
-        token_url: String,
-        resource: String,
-        metadata: ClientMetadata,
-        registration_endpoint: Option<String>,
-    ) -> Result<Self, Error> {
+        if metadata.resource.is_none() {
+            metadata.resource = Some(resource.clone());
+        }
+
         let registration_client = DynamicRegistrationClient::for_endpoint(
             registration_endpoint.as_deref().unwrap_or(&auth_url),
         )?;
@@ -133,15 +166,11 @@ impl OAuth2Client {
             Self::registration_endpoint(&registration_client, &auth_url, registration_endpoint)
                 .await?;
 
-        // Register the client
         let registration = registration_client
             .register(&reg_endpoint, metadata, None)
             .await?;
 
-        // Create OAuth2Config from registration response
-        let config = OAuth2Config::from_registration(registration, auth_url, token_url, resource);
-
-        // Create the OAuth2Client
+        let config = OAuth2Config::from_registration(registration, auth_url, token_url, resource)?;
         Self::new(config)
     }
 
@@ -157,11 +186,12 @@ impl OAuth2Client {
 
         let auth_url_parsed = Url::parse(auth_url)
             .map_err(|e| Error::InvalidConfiguration(format!("Invalid auth URL: {e}")))?;
-        let issuer = format!(
-            "{}://{}",
-            auth_url_parsed.scheme(),
-            auth_url_parsed.host_str().unwrap_or("")
-        );
+        if !matches!(auth_url_parsed.scheme(), "http" | "https") {
+            return Err(Error::InvalidConfiguration(
+                "Auth URL must use http or https".to_string(),
+            ));
+        }
+        let issuer = auth_url_parsed.origin().ascii_serialization();
 
         registration_client
             .discover_registration_endpoint(&issuer)
@@ -174,7 +204,14 @@ impl OAuth2Client {
     }
 
     /// Create a new OAuth2 client from configuration.
+    ///
+    /// The authorization, token, and redirect URLs must use HTTPS; plain HTTP is only
+    /// accepted for loopback hosts (`127.0.0.1`, `::1`, `localhost`).
     pub fn new(config: OAuth2Config) -> Result<Self, Error> {
+        require_https_or_loopback(&config.auth_url, "auth URL")?;
+        require_https_or_loopback(&config.token_url, "token URL")?;
+        require_https_or_loopback(&config.redirect_url, "redirect URL")?;
+
         let mut client = BasicClient::new(ClientId::new(config.client_id.clone()))
             .set_auth_uri(
                 AuthUrl::new(config.auth_url.clone())
@@ -194,23 +231,21 @@ impl OAuth2Client {
             client = client.set_client_secret(ClientSecret::new(client_secret.clone()));
         }
 
-        // For now, we don't set revocation URL during construction to maintain type compatibility
-        // The revocation URL can be set later if needed
-
         Ok(Self {
             client,
             config,
             token: Arc::new(RwLock::new(None)),
             refresh_lock: Arc::new(Mutex::new(())),
-            pkce_verifier: None,
-            csrf_token: None,
         })
     }
 
-    /// Build an authorization URL and return the CSRF token.
-    pub fn get_authorization_url(&mut self) -> (Url, CsrfToken) {
+    /// Begin an authorization code flow with PKCE.
+    ///
+    /// Returns the flow state holding the generated PKCE verifier and CSRF token. Direct
+    /// the user to [`AuthorizationFlow::auth_url`] and complete the flow with
+    /// [`Self::exchange_code`].
+    pub fn begin_authorization(&self) -> AuthorizationFlow {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-        self.pkce_verifier = Some(pkce_verifier);
 
         let mut auth_request = self
             .client
@@ -222,35 +257,35 @@ impl OAuth2Client {
             auth_request = auth_request.add_scope(Scope::new(scope.clone()));
         }
 
-        let (url, csrf_token) = auth_request.url();
-        self.csrf_token = Some(csrf_token.clone());
-        (url, csrf_token)
+        let (auth_url, csrf_token) = auth_request.url();
+        AuthorizationFlow {
+            auth_url,
+            pkce_verifier,
+            csrf_token,
+        }
     }
 
-    /// Exchange an authorization code for a token.
+    /// Exchange an authorization code for a token, consuming the flow state.
+    ///
+    /// The callback `state` is compared against the flow's CSRF token in constant time.
     pub async fn exchange_code(
-        &mut self,
+        &self,
+        flow: AuthorizationFlow,
         code: String,
         state: String,
     ) -> Result<OAuth2Token, Error> {
-        let stored_token = self
-            .csrf_token
-            .take()
-            .ok_or_else(|| Error::InvalidConfiguration("Missing CSRF token".to_string()))?;
-
-        if state != *stored_token.secret() {
+        let state_matches: bool = state
+            .as_bytes()
+            .ct_eq(flow.csrf_token.secret().as_bytes())
+            .into();
+        if !state_matches {
             return Err(Error::AuthorizationFailed("CSRF token mismatch".into()));
         }
-
-        let pkce_verifier = self
-            .pkce_verifier
-            .take()
-            .ok_or_else(|| Error::InvalidConfiguration("Missing PKCE verifier".to_string()))?;
 
         let mut token_request = self
             .client
             .exchange_code(AuthorizationCode::new(code))
-            .set_pkce_verifier(pkce_verifier);
+            .set_pkce_verifier(flow.pkce_verifier);
 
         // Only add resource parameter if it's not empty (some providers don't support it)
         if !self.config.resource.is_empty() {
@@ -414,27 +449,16 @@ fn oauth_http_client(url: &str) -> Result<Client, Error> {
         .map_err(|error| Error::Transport(format!("Failed to build OAuth HTTP client: {error}")))
 }
 
-/// Returns whether `url` targets this machine.
-fn is_loopback_url(url: &str) -> bool {
-    let Ok(url) = Url::parse(url) else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    host == "localhost"
-        || host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
-}
-
 /// Maximum length of callback query string accepted by the OAuth callback server.
 const MAX_CALLBACK_QUERY_LEN: usize = 2 * 1024;
 /// Maximum length of the callback HTTP request we accept.
 const MAX_CALLBACK_REQUEST_LEN: usize = 8 * 1024;
 
 /// Parse and validate OAuth callback query parameters.
-fn parse_callback_query(query: Option<String>) -> Result<(String, String), Error> {
+///
+/// Surfaces `error`/`error_description` parameters from OAuth error redirects as
+/// authorization failures; otherwise both `code` and `state` are required.
+fn parse_callback_query(query: Option<&str>) -> Result<(String, String), Error> {
     let query = query.unwrap_or_default();
     if query.is_empty() {
         return Err(Error::AuthorizationFailed(
@@ -450,13 +474,25 @@ fn parse_callback_query(query: Option<String>) -> Result<(String, String), Error
 
     let mut code = None;
     let mut state = None;
+    let mut error = None;
+    let mut error_description = None;
 
     for (key, value) in form_urlencoded::parse(query.as_bytes()) {
         match key.as_ref() {
             "code" => code = Some(value.into_owned()),
             "state" => state = Some(value.into_owned()),
+            "error" => error = Some(value.into_owned()),
+            "error_description" => error_description = Some(value.into_owned()),
             _ => {}
         }
+    }
+
+    if let Some(error) = error {
+        let message = match error_description {
+            Some(description) => format!("OAuth error ({error}): {description}"),
+            None => format!("OAuth error: {error}"),
+        };
+        return Err(Error::AuthorizationFailed(message));
     }
 
     let code =
@@ -466,16 +502,12 @@ fn parse_callback_query(query: Option<String>) -> Result<(String, String), Error
     Ok((code, state))
 }
 
-/// Parse the callback target and extract the optional query string.
-fn parse_callback_target(target: &str) -> Result<Option<String>, Error> {
-    let mut parts = target.splitn(2, '?');
-    let path = parts.next().unwrap_or_default();
-    if path != "/callback" {
-        return Err(Error::AuthorizationFailed(
-            "Invalid callback path".to_string(),
-        ));
+/// Split a request target into its path and optional query string.
+fn split_target(target: &str) -> (&str, Option<&str>) {
+    match target.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (target, None),
     }
-    Ok(parts.next().map(str::to_string))
 }
 
 /// Parse the HTTP request line and return the request target.
@@ -555,35 +587,37 @@ async fn send_http_response(
 }
 
 /// Minimal HTTP callback server for OAuth redirects.
+///
+/// The listener is bound eagerly on construction, so the server accepts connections as
+/// soon as it exists.
 pub struct OAuth2CallbackServer {
-    /// Port to bind the callback server on.
+    /// Bound listener accepting callback connections.
+    listener: TcpListener,
+    /// Port the listener is bound to.
     port: u16,
-    /// Pre-bound callback listener, when the OS selected the port.
-    listener: Arc<Mutex<Option<TcpListener>>>,
 }
 
 impl OAuth2CallbackServer {
-    /// Create a new callback server bound to the provided port.
-    pub fn new(port: u16) -> Self {
-        Self {
-            port,
-            listener: Arc::new(Mutex::new(None)),
-        }
+    /// Bind a callback server on `127.0.0.1` at the provided port.
+    pub async fn new(port: u16) -> Result<Self, Error> {
+        Self::bind(&format!("127.0.0.1:{port}")).await
     }
 
-    /// Bind a callback server to `127.0.0.1:0`.
+    /// Bind a callback server to `127.0.0.1:0`, letting the OS choose the port.
     pub async fn bind_loopback() -> Result<Self, Error> {
-        let listener = TcpListener::bind("127.0.0.1:0")
+        Self::bind("127.0.0.1:0").await
+    }
+
+    /// Bind the callback listener to the provided address.
+    async fn bind(addr: &str) -> Result<Self, Error> {
+        let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| Error::Transport(format!("Failed to bind callback listener: {e}")))?;
         let port = listener
             .local_addr()
             .map_err(|e| Error::Transport(format!("Failed to inspect callback listener: {e}")))?
             .port();
-        Ok(Self {
-            port,
-            listener: Arc::new(Mutex::new(Some(listener))),
-        })
+        Ok(Self { listener, port })
     }
 
     /// Return the bound callback port.
@@ -597,50 +631,57 @@ impl OAuth2CallbackServer {
     }
 
     /// Wait for the OAuth redirect callback and return (code, state).
+    ///
+    /// Requests for paths other than `/callback` (e.g. `/favicon.ico`) receive a 404
+    /// response and the server keeps waiting. OAuth error redirects surface their
+    /// `error`/`error_description` parameters as an authorization failure.
     pub async fn wait_for_callback(&self) -> Result<(String, String), Error> {
-        let addr = format!("127.0.0.1:{}", self.port);
-        let listener = match self.listener.lock().await.take() {
-            Some(listener) => listener,
-            None => TcpListener::bind(&addr)
-                .await
-                .map_err(|e| Error::Transport(format!("Failed to bind to {addr}: {e}")))?,
-        };
+        loop {
+            let (mut stream, _) = self.listener.accept().await.map_err(|e| {
+                Error::Transport(format!("Failed to accept callback connection: {e}"))
+            })?;
 
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .map_err(|e| Error::Transport(format!("Failed to accept callback connection: {e}")))?;
+            let request = read_http_request(&mut stream).await?;
+            let request_line = request
+                .lines()
+                .next()
+                .ok_or_else(|| Error::AuthorizationFailed("Missing request line".to_string()))?;
+            let target = parse_request_line(request_line)?;
+            let (path, query) = split_target(target);
 
-        let request = read_http_request(&mut stream).await?;
-        let request_line = request
-            .lines()
-            .next()
-            .ok_or_else(|| Error::AuthorizationFailed("Missing request line".to_string()))?;
-        let target = parse_request_line(request_line)?;
-        let query = parse_callback_target(target)?;
-        let result = parse_callback_query(query);
-
-        match result {
-            Ok((code, state)) => {
+            if path != "/callback" {
                 send_http_response(
                     &mut stream,
-                    "200 OK",
-                    "text/html; charset=utf-8",
-                    SUCCESS_HTML,
-                )
-                .await?;
-                Ok((code, state))
-            }
-            Err(err) => {
-                let message = err.to_string();
-                send_http_response(
-                    &mut stream,
-                    "400 Bad Request",
+                    "404 Not Found",
                     "text/plain; charset=utf-8",
-                    &message,
+                    "Not Found",
                 )
                 .await?;
-                Err(err)
+                continue;
+            }
+
+            match parse_callback_query(query) {
+                Ok((code, state)) => {
+                    send_http_response(
+                        &mut stream,
+                        "200 OK",
+                        "text/html; charset=utf-8",
+                        SUCCESS_HTML,
+                    )
+                    .await?;
+                    return Ok((code, state));
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    send_http_response(
+                        &mut stream,
+                        "400 Bad Request",
+                        "text/plain; charset=utf-8",
+                        &message,
+                    )
+                    .await?;
+                    return Err(err);
+                }
             }
         }
     }
@@ -679,3 +720,49 @@ const SUCCESS_HTML: &str = r#"<!DOCTYPE html>
     </div>
 </body>
 </html>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_token_debug_redacts_secrets() {
+        let token = OAuth2Token {
+            access_token: "secret-access".to_string(),
+            refresh_token: Some("secret-refresh".to_string()),
+            expires_in: Some(Duration::from_secs(60)),
+            expires_at: None,
+        };
+
+        let debug = format!("{token:?}");
+        assert!(!debug.contains("secret-access"));
+        assert!(!debug.contains("secret-refresh"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn new_rejects_plain_http_remote_urls() {
+        let config = OAuth2Config {
+            client_id: "client".to_string(),
+            client_secret: None,
+            auth_url: "http://auth.example.com/authorize".to_string(),
+            token_url: "https://auth.example.com/token".to_string(),
+            redirect_url: "http://127.0.0.1:8080/callback".to_string(),
+            resource: "https://mcp.example.com".to_string(),
+            scopes: vec![],
+        };
+
+        let err = OAuth2Client::new(config).map(|_| ()).unwrap_err();
+        assert!(err.to_string().contains("auth URL"));
+    }
+
+    #[test]
+    fn callback_query_surfaces_oauth_errors() {
+        let err = parse_callback_query(Some(
+            "error=access_denied&error_description=User%20cancelled",
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("access_denied"));
+        assert!(err.to_string().contains("User cancelled"));
+    }
+}

@@ -2712,6 +2712,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "subtle",
  "thiserror 2.0.18",
  "tmcp-macros",
  "tokio",

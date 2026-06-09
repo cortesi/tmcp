@@ -135,10 +135,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             scopes: vec!["read:user".to_string()],
         };
 
-        let mut oauth_client = OAuth2Client::new(config)?;
+        let oauth_client = OAuth2Client::new(config)?;
 
-        // Get authorization URL
-        let (auth_url, _csrf_token) = oauth_client.get_authorization_url();
+        // Bind the callback server before opening the browser
+        let callback_server = OAuth2CallbackServer::new(args.port).await?;
+
+        // Begin the authorization flow
+        let flow = oauth_client.begin_authorization();
+        let auth_url = flow.auth_url().clone();
 
         println!("Opening browser for GitHub authorization...");
         println!("If the browser doesn't open, visit: {auth_url}");
@@ -149,17 +153,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("Please visit the URL manually: {auth_url}");
         }
 
-        // Start callback server
-        let callback_server = OAuth2CallbackServer::new(args.port);
         debug!("Waiting for OAuth callback on port {}...", args.port);
-
         let (code, state) = callback_server.wait_for_callback().await?;
 
         debug!("Received authorization code, exchanging for token...");
 
         // Exchange code for token
-        let token = oauth_client.exchange_code(code, state).await?;
-        debug!("Successfully obtained access token: {}", token.access_token);
+        let _token = oauth_client.exchange_code(flow, code, state).await?;
+        debug!("Successfully obtained access token");
 
         oauth_client
     };

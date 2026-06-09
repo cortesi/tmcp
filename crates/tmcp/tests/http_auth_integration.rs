@@ -94,12 +94,16 @@ mod tests {
     }
 
     fn token(key: &EncodingKey, kid: &str, exp: u64) -> String {
+        token_for_subject(key, kid, exp, "user-123")
+    }
+
+    fn token_for_subject(key: &EncodingKey, kid: &str, exp: u64, subject: &str) -> String {
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(kid.to_string());
         encode(
             &header,
             &json!({
-                "sub": "user-123",
+                "sub": subject,
                 "iss": "https://issuer.example.com",
                 "aud": ["tmcp"],
                 "exp": exp,
@@ -215,10 +219,10 @@ mod tests {
             "subject=user-123;audiences=tmcp;scopes=resources:read,tools:call"
         );
 
-        // Expired token → 401 with invalid_token error.
+        // Expired token (beyond the clock-skew leeway) → 401 with invalid_token error.
         let expired = client
             .post(format!("{base_url}/mcp"))
-            .bearer_auth(token(&encoding_key, "kid-1", now() - 1))
+            .bearer_auth(token(&encoding_key, "kid-1", now() - 300))
             .header("Content-Type", "application/json")
             .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
             .json(&initialize_payload())
@@ -373,5 +377,108 @@ mod tests {
         shutdown.cancel();
         server_task.await.unwrap();
         handle.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_session_subject_binding() {
+        fmt::try_init().ok();
+
+        let (encoding_key, jwk_set) = signing_key("kid-bind");
+        let validator = Arc::new(JwtValidator::from_jwk_set(
+            "https://issuer.example.com",
+            ["tmcp"],
+            jwk_set,
+        ));
+        let server_handle = Server::new(|| AuthenticatedConnection)
+            .http("127.0.0.1:0")
+            .with_auth(
+                &AuthConfig::new("https://example.com", validator).with_endpoint_path("/mcp"),
+            )
+            .serve()
+            .await
+            .unwrap();
+
+        let base_url = format!("http://{}", server_handle.bound_addr.as_ref().unwrap());
+        let client = HttpClient::new();
+        let alice_token = token_for_subject(&encoding_key, "kid-bind", now() + 300, "alice");
+        let bob_token = token_for_subject(&encoding_key, "kid-bind", now() + 300, "bob");
+
+        // Alice initializes a session.
+        let init = client
+            .post(format!("{base_url}/mcp"))
+            .bearer_auth(&alice_token)
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .json(&initialize_payload())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(init.status(), reqwest::StatusCode::OK);
+        let session_id = init.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // Bob cannot POST to Alice's session.
+        let bob_call = client
+            .post(format!("{base_url}/mcp"))
+            .bearer_auth(&bob_token)
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("Mcp-Session-Id", &session_id)
+            .json(&call_tool_payload())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bob_call.status(), reqwest::StatusCode::FORBIDDEN);
+
+        // Bob cannot open the session's SSE stream.
+        let bob_sse = client
+            .get(format!("{base_url}/mcp"))
+            .bearer_auth(&bob_token)
+            .header("Accept", "text/event-stream")
+            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("Mcp-Session-Id", &session_id)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bob_sse.status(), reqwest::StatusCode::FORBIDDEN);
+
+        // Bob cannot delete Alice's session.
+        let bob_delete = client
+            .delete(format!("{base_url}/mcp"))
+            .bearer_auth(&bob_token)
+            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("Mcp-Session-Id", &session_id)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bob_delete.status(), reqwest::StatusCode::FORBIDDEN);
+
+        // Alice can still use her session.
+        let alice_call = client
+            .post(format!("{base_url}/mcp"))
+            .bearer_auth(&alice_token)
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("Mcp-Session-Id", &session_id)
+            .json(&call_tool_payload())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(alice_call.status(), reqwest::StatusCode::OK);
+
+        // ... and delete it.
+        let alice_delete = client
+            .delete(format!("{base_url}/mcp"))
+            .bearer_auth(&alice_token)
+            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("Mcp-Session-Id", &session_id)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(alice_delete.status(), reqwest::StatusCode::NO_CONTENT);
+
+        server_handle.stop().await.unwrap();
     }
 }

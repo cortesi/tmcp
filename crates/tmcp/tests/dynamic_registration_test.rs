@@ -28,9 +28,11 @@ mod tests {
             "https://auth.example.com".to_string(),
             "https://token.example.com".to_string(),
             "https://resource.example.com".to_string(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(config.client_id, "test_id");
         assert_eq!(config.client_secret, Some("test_secret".to_string()));
+        assert_eq!(config.redirect_url, "http://localhost:8080/callback");
     }
 }
