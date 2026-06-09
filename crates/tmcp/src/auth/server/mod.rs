@@ -20,6 +20,8 @@ use axum::{
 use serde_json::{Value, json};
 use thiserror::Error;
 
+use crate::http::normalize_endpoint_path;
+
 /// JWT/JWKS-backed bearer token validation.
 mod jwt;
 /// Tower middleware for bearer-token enforcement.
@@ -340,22 +342,6 @@ pub fn insufficient_scope_response(
         .into_response();
     response.headers_mut().insert(WWW_AUTHENTICATE, challenge);
     response
-}
-
-/// Normalize an externally visible endpoint path.
-pub(crate) fn normalize_endpoint_path(endpoint_path: impl Into<String>) -> String {
-    let endpoint_path = endpoint_path.into();
-    let trimmed = endpoint_path.trim();
-    if trimmed.is_empty() || trimmed == "/" {
-        return "/".to_string();
-    }
-
-    let trimmed = trimmed.trim_end_matches('/');
-    if trimmed.starts_with('/') {
-        trimmed.to_string()
-    } else {
-        format!("/{trimmed}")
-    }
 }
 
 /// Return the relative protected-resource metadata URI for an endpoint path.

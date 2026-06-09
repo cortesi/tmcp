@@ -20,13 +20,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    auth::server::{
-        AuthConfig, BearerAuthLayer, normalize_endpoint_path, protected_resource_handler,
-    },
+    auth::server::{AuthConfig, BearerAuthLayer, protected_resource_handler},
     connection::ServerHandler,
     context::ServerCtx,
     error::{Error, Result},
-    http::{EmbeddedHttpRoutes, HttpServerTransport},
+    http::{EmbeddedHttpRoutes, HttpServerTransport, normalize_endpoint_path},
     jsonrpc::create_jsonrpc_notification,
     schema::{self, *},
     transport::{GenericDuplex, StdioTransport, StreamTransport, Transport},
