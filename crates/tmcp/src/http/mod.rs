@@ -10,7 +10,7 @@ mod server;
 mod validation;
 
 pub use client::HttpClientTransport;
-pub use server::{EmbeddedHttpRoutes, HttpServerTransport};
+pub use server::{EmbeddedHttpRoutes, HttpServer};
 
 /// Normalize an HTTP endpoint path to a canonical form.
 ///

@@ -154,13 +154,18 @@ mod tests {
             .unwrap();
         client1.list_tools(None).await.ok();
 
-        // HTTP server has single lifecycle - one on_connect for all clients
+        // Each HTTP session is its own connection with its own handler
+        // lifecycle, so the first client triggers one on_connect.
         assert_eq!(server_impl.connect_count.load(Ordering::SeqCst), 1);
         let addrs = server_impl.connect_addrs.lock().await;
-        assert_eq!(addrs[0], addr);
+        assert!(
+            addrs[0].starts_with("http:"),
+            "HTTP sessions report a session-scoped remote address, got {}",
+            addrs[0]
+        );
         drop(addrs);
 
-        // Connect second client - should not trigger another on_connect
+        // The second client establishes its own session and handler.
         let mut client2 = Client::new("http-client-2", "1.0.0");
         client2
             .connect_http(&format!("http://{addr}"))
@@ -168,8 +173,7 @@ mod tests {
             .unwrap();
         client2.list_tools(None).await.ok();
 
-        // Still only one on_connect
-        assert_eq!(server_impl.connect_count.load(Ordering::SeqCst), 1);
+        assert_eq!(server_impl.connect_count.load(Ordering::SeqCst), 2);
 
         // Make requests to verify connections work
         client1.list_tools(None).await.ok();
@@ -183,8 +187,8 @@ mod tests {
         http_server.stop().await.unwrap();
         sleep(Duration::from_millis(200)).await;
 
-        // Verify on_shutdown - HTTP server calls on_shutdown when the server stops
-        assert_eq!(server_impl.shutdown_count.load(Ordering::SeqCst), 1);
+        // Stopping the listener shuts down every session's connection loop.
+        assert_eq!(server_impl.shutdown_count.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -285,7 +289,7 @@ mod tests {
             server_handle.stop().await.unwrap();
         }
 
-        // Test 2: HTTP reports server address
+        // Test 2: HTTP reports a session-scoped address
         {
             let server_clone = server_impl.clone();
             let server = Server::new(move || server_clone.clone());
@@ -300,7 +304,11 @@ mod tests {
             client.list_tools(None).await.ok();
 
             let addrs = server_impl.connect_addrs.lock().await;
-            assert_eq!(addrs.last().unwrap(), &addr);
+            assert!(
+                addrs.last().unwrap().starts_with("http:"),
+                "expected session-scoped remote address, got {}",
+                addrs.last().unwrap()
+            );
             drop(addrs);
 
             drop(client);

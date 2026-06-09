@@ -24,11 +24,14 @@ use crate::{
     connection::ServerHandler,
     context::ServerCtx,
     error::{Error, Result},
-    http::{EmbeddedHttpRoutes, HttpServerTransport, normalize_endpoint_path},
+    http::{EmbeddedHttpRoutes, HttpServer, normalize_endpoint_path},
     jsonrpc::create_jsonrpc_notification,
     schema::{self, *},
     transport::{GenericDuplex, StdioTransport, StreamTransport, Transport},
 };
+
+/// Fan-out delivering a server notification to every active session.
+pub type NotificationFanout = Box<dyn Fn(&ServerNotification) + Send + Sync>;
 
 /// Maximum number of queued outbound server notifications before backpressure applies.
 const SERVER_NOTIFICATION_BUFFER: usize = 64;
@@ -319,15 +322,16 @@ where
                 "HTTP embed builders do not have a bind address; call into_router()".to_string(),
             )
         })?;
-        let mut http_transport = HttpServerTransport::new(bind_addr, &self.endpoint_path);
-        http_transport.start(self.middleware, self.routes).await?;
-        let bound_addr = http_transport
-            .bind_addr
-            .clone()
-            .expect("HTTP transport bound");
+        let http = HttpServer::new(Arc::new(self.server.connection_factory));
+        let EmbeddedHttpRoutes {
+            mcp_router,
+            aux_routes,
+        } = http.routes(&self.endpoint_path, self.middleware, self.routes);
+        let router = mcp_router.merge(aux_routes);
 
+        let (task, bound_addr) = http.listen(&bind_addr, router).await?;
         let mut handle =
-            ServerHandle::from_transport(self.server, Box::new(http_transport)).await?;
+            ServerHandle::listener(task, http.shutdown_token(), http.notification_fanout());
         handle.bound_addr = Some(bound_addr);
         handle.endpoint_path = Some(self.endpoint_path);
         Ok(handle)
@@ -336,15 +340,19 @@ where
     /// Build tmcp HTTP routers for embedding into an existing Axum application.
     pub async fn into_router(self) -> Result<EmbeddedHttpServer> {
         let endpoint_path = self.endpoint_path;
-        let mut http_transport = HttpServerTransport::embedded(&endpoint_path);
+        let http = HttpServer::new(Arc::new(self.server.connection_factory));
         let EmbeddedHttpRoutes {
             mcp_router,
             aux_routes,
-        } = http_transport.embed(self.middleware, self.routes)?;
-
+        } = http.routes("/", self.middleware, self.routes);
         let router = mount_embedded_router(&endpoint_path, mcp_router, aux_routes);
-        let mut handle =
-            ServerHandle::from_transport(self.server, Box::new(http_transport)).await?;
+
+        let shutdown_token = http.shutdown_token();
+        let watch_token = shutdown_token.clone();
+        let task = tokio::spawn(async move {
+            watch_token.cancelled().await;
+        });
+        let mut handle = ServerHandle::listener(task, shutdown_token, http.notification_fanout());
         handle.endpoint_path = Some(endpoint_path);
         Ok(EmbeddedHttpServer { router, handle })
     }
@@ -387,6 +395,11 @@ pub struct ServerHandle {
     /// Capabilities from the handler's initialize response.
     /// This is set when the client initializes and is used to gate notifications.
     capabilities: Arc<RwLock<ServerCapabilities>>,
+    /// Notification fan-out override used by multi-session (HTTP) listeners.
+    ///
+    /// When set, `send_server_notification` delegates here instead of the
+    /// single-connection notification channel.
+    fanout: Option<NotificationFanout>,
 }
 
 impl ServerHandle {
@@ -572,7 +585,37 @@ impl ServerHandle {
             bound_addr: None,
             endpoint_path: None,
             capabilities,
+            fanout: None,
         })
+    }
+
+    /// Create a handle for a multi-session listener (HTTP).
+    ///
+    /// `task` keeps the listener alive for `join`; `shutdown_token` stops the
+    /// listener and all of its sessions; `fanout` delivers server
+    /// notifications to every active session.
+    pub(crate) fn listener(
+        task: JoinHandle<()>,
+        shutdown_token: CancellationToken,
+        fanout: NotificationFanout,
+    ) -> Self {
+        // The notification channel is unused when fanout is set; sessions own
+        // their own channels.
+        let (notification_tx, _notification_rx) = mpsc::channel(1);
+        Self {
+            handle: task,
+            notification_tx,
+            shutdown_token,
+            bound_addr: None,
+            endpoint_path: None,
+            capabilities: Arc::new(RwLock::new(ServerCapabilities::default())),
+            fanout: Some(fanout),
+        }
+    }
+
+    /// Signal the server loop to stop without consuming the handle.
+    pub(crate) fn signal_stop(&self) {
+        self.shutdown_token.cancel();
     }
 
     /// Create a ServerHandle using generic AsyncRead and AsyncWrite streams
@@ -623,6 +666,10 @@ impl ServerHandle {
 
     /// Send a server notification to connected clients.
     pub fn send_server_notification(&self, notification: &ServerNotification) {
+        if let Some(fanout) = &self.fanout {
+            fanout(notification);
+            return;
+        }
         if !self.can_forward_notification(notification) {
             debug!(
                 "Skipping server notification {:?} due to missing capability",

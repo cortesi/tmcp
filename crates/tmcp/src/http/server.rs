@@ -1,11 +1,24 @@
-//! HTTP server transport: axum handlers and session management.
+//! HTTP server: axum handlers with one MCP connection per session.
+//!
+//! Every HTTP session is a first-class MCP connection: the handler factory is
+//! invoked once per session, each session runs its own connection loop, and
+//! session state (request correlation, cancellation, capabilities) is fully
+//! isolated between clients.
+//!
+//! Message routing per session:
+//! - POSTed requests are correlated to their JSON-RPC response by id and
+//!   answered on the POST itself with `application/json`.
+//! - Server-initiated notifications and requests flow to the standing GET
+//!   SSE stream when one is open, and are dropped otherwise.
+//! - POSTed notifications and responses are forwarded to the connection loop
+//!   and acknowledged with `202 Accepted`.
 
 use std::{
-    collections::HashMap,
     pin::Pin,
+    result::Result as StdResult,
     sync::{
         self, Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll},
     time::{Duration, Instant},
@@ -15,7 +28,7 @@ use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -24,60 +37,85 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures::{Sink, Stream, StreamExt, channel::mpsc};
-use serde_json::Value;
-use tokio::{
-    net::TcpListener,
-    sync::{Mutex, oneshot},
-    task::JoinHandle,
-    time::{interval, sleep, timeout},
-};
+use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time::interval};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use super::{
-    normalize_endpoint_path,
-    validation::{parse_jsonrpc_body, read_json_body, validate_json_content_type, validate_origin},
+use super::validation::{
+    parse_jsonrpc_body, read_json_body, validate_json_content_type, validate_origin,
 };
 use crate::{
+    connection::ServerHandler,
     error::{Error, Result},
     schema::{
-        JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
-        LATEST_PROTOCOL_VERSION, RequestId,
+        JSONRPCMessage, JSONRPCNotification, JSONRPCResponse, LATEST_PROTOCOL_VERSION, RequestId,
     },
+    server::{NotificationFanout, Server, ServerHandle},
     transport::{IncomingMessage, Transport, TransportStream},
 };
+
+/// Factory producing a fresh handler for each HTTP session.
+pub type HandlerFactory = Arc<dyn Fn() -> Box<dyn ServerHandler> + Send + Sync>;
 
 /// Session inactivity timeout (1 hour).
 const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);
 
-/// Session information for HTTP transport
-#[derive(Debug, Clone)]
-pub struct HttpSession {
+/// An MCP server exposed over streamable HTTP.
+pub struct HttpServer {
+    /// State shared with the axum handlers.
+    state: HttpServerState,
+}
+
+/// State shared by the axum handlers.
+#[derive(Clone)]
+struct HttpServerState {
+    /// Active sessions keyed by server-generated session id.
+    sessions: Arc<DashMap<String, HttpSession>>,
+    /// Factory producing one handler per session.
+    factory: HandlerFactory,
+    /// Master shutdown token covering the listener and all sessions.
+    shutdown: CancellationToken,
+}
+
+/// A single client session and its running connection loop.
+#[derive(Clone)]
+struct HttpSession {
     /// Timestamp of the last observed activity for the session.
-    pub last_activity: Arc<sync::Mutex<Instant>>,
-    /// Sender used to forward JSON-RPC messages to the session.
-    pub sender: mpsc::UnboundedSender<JSONRPCMessage>,
-    /// Receiver used to read JSON-RPC messages for the session.
-    pub receiver: Arc<Mutex<mpsc::UnboundedReceiver<JSONRPCMessage>>>,
-    /// Monotonic event counter for SSE messages.
-    event_counter: Arc<AtomicU64>,
-    /// True while a streaming SSE connection is active.
-    streaming: Arc<AtomicBool>,
+    last_activity: Arc<sync::Mutex<Instant>>,
+    /// Sender feeding the session's connection loop.
+    incoming_tx: mpsc::UnboundedSender<IncomingMessage>,
+    /// Outbound routing shared with the session's transport.
+    routes: SessionRoutes,
+    /// Monotonic id source for SSE events on the GET stream.
+    event_counter: EventCounter,
+    /// Handle to the session's connection loop.
+    handle: Arc<ServerHandle>,
 }
 
 impl HttpSession {
-    /// Return the next monotonically increasing SSE event id.
-    fn next_event_id(&self) -> u64 {
-        self.event_counter.fetch_add(1, Ordering::Relaxed) + 1
+    /// Record activity on the session, deferring inactivity cleanup.
+    fn touch(&self) {
+        *self.last_activity.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+    }
+}
+
+/// Monotonically increasing SSE event id source.
+#[derive(Clone, Debug, Default)]
+struct EventCounter(Arc<AtomicU64>);
+
+impl EventCounter {
+    /// Return the next event id.
+    fn next(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    /// Ensure the event counter is at least the provided last-event id.
-    fn bump_event_id(&self, last_event_id: u64) {
-        let mut current = self.event_counter.load(Ordering::Relaxed);
+    /// Ensure the counter is at least `last_event_id`.
+    fn bump_to(&self, last_event_id: u64) {
+        let mut current = self.0.load(Ordering::Relaxed);
         while last_event_id > current {
-            match self.event_counter.compare_exchange(
+            match self.0.compare_exchange(
                 current,
                 last_event_id,
                 Ordering::Relaxed,
@@ -90,355 +128,104 @@ impl HttpSession {
     }
 }
 
-/// Guard that marks an SSE stream as active while held.
-struct StreamingGuard {
-    /// Flag tracking whether the SSE stream is active.
-    flag: Arc<AtomicBool>,
+/// Routes outbound messages from a session's connection loop to the HTTP
+/// request waiting for them, or to the standing SSE stream.
+#[derive(Clone, Default)]
+struct SessionRoutes {
+    /// Pending request responses keyed by JSON-RPC request id.
+    pending: Arc<DashMap<RequestId, oneshot::Sender<JSONRPCMessage>>>,
+    /// Sender for the standing GET SSE stream, when one is open.
+    stream_tx: Arc<sync::Mutex<Option<mpsc::UnboundedSender<JSONRPCMessage>>>>,
 }
 
-impl StreamingGuard {
-    /// Create a guard that marks streaming active until dropped.
-    fn new(flag: Arc<AtomicBool>) -> Self {
-        flag.store(true, Ordering::SeqCst);
-        Self { flag }
-    }
-}
-
-impl Drop for StreamingGuard {
-    fn drop(&mut self) {
-        self.flag.store(false, Ordering::SeqCst);
-    }
-}
-
-/// HTTP server state
-#[derive(Clone)]
-struct HttpServerState {
-    /// Active HTTP sessions keyed by session id.
-    sessions: Arc<DashMap<String, HttpSession>>,
-    /// Incoming JSON-RPC messages forwarded to the server.
-    incoming_tx: mpsc::UnboundedSender<(JSONRPCMessage, String, http::Extensions)>,
-    /// Cancellation token for server shutdown.
-    shutdown: CancellationToken,
-}
-
-/// HTTP server transport
-pub struct HttpServerTransport {
-    /// Address to bind the HTTP server on.
-    pub bind_addr: Option<String>,
-    /// Public endpoint path where MCP is served.
-    endpoint_path: String,
-    /// Router configured with transport endpoints.
-    router: Option<Router>,
-    /// Shared server state across handlers.
-    state: Option<HttpServerState>,
-    /// Running server task handle.
-    server_handle: Option<JoinHandle<Result<()>>>,
-    /// Receiver for incoming JSON-RPC messages.
-    incoming_rx: Option<mpsc::UnboundedReceiver<(JSONRPCMessage, String, http::Extensions)>>,
-    /// Shutdown token used to signal server termination.
-    shutdown_token: Option<CancellationToken>,
-}
-
-/// Routers returned when embedding tmcp HTTP handlers into another Axum app.
-pub struct EmbeddedHttpRoutes {
-    /// Router containing only the MCP GET/POST endpoint handlers.
-    pub(crate) mcp_router: Router,
-    /// Auxiliary top-level routes that must be merged at the application root.
-    pub(crate) aux_routes: Router,
-}
-
-/// Parse the Last-Event-ID header, if present.
-fn parse_last_event_id(headers: &HeaderMap) -> Option<u64> {
-    headers
-        .get("Last-Event-ID")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-}
-
-/// Apply a Last-Event-ID header to the session event counter.
-fn apply_last_event_id(headers: &HeaderMap, session: &HttpSession) {
-    if let Some(last_event_id) = parse_last_event_id(headers) {
-        session.bump_event_id(last_event_id);
-    }
-}
-
-/// Build an SSE event with a monotonically increasing id.
-fn build_sse_event(session: &HttpSession, message: &JSONRPCMessage) -> Event {
-    Event::default()
-        .id(session.next_event_id().to_string())
-        .data(serde_json::to_string(message).unwrap())
-}
-
-impl HttpServerTransport {
-    /// Create a new HTTP server transport bound to the provided address.
-    pub fn new(bind_addr: impl Into<String>, endpoint_path: impl Into<String>) -> Self {
-        Self {
-            bind_addr: Some(bind_addr.into()),
-            endpoint_path: normalize_endpoint_path(endpoint_path),
-            router: None,
-            state: None,
-            server_handle: None,
-            incoming_rx: None,
-            shutdown_token: None,
-        }
-    }
-
-    /// Create an HTTP server transport for embedding into an existing Axum server.
-    pub fn embedded(endpoint_path: impl Into<String>) -> Self {
-        Self {
-            bind_addr: None,
-            endpoint_path: normalize_endpoint_path(endpoint_path),
-            router: None,
-            state: None,
-            server_handle: None,
-            incoming_rx: None,
-            shutdown_token: None,
-        }
-    }
-
-    /// Prepare the transport state and return routers for embedding.
-    pub fn embed(
-        &mut self,
-        middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
-        routes: Option<Router>,
-    ) -> Result<EmbeddedHttpRoutes> {
-        self.configure_routes("/", middleware, routes)
-    }
-
-    /// Start the standalone HTTP server.
-    pub async fn start(
-        &mut self,
-        middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
-        routes: Option<Router>,
-    ) -> Result<()> {
-        if self.server_handle.is_some() {
-            return Ok(());
-        }
-
-        let EmbeddedHttpRoutes {
-            mcp_router,
-            aux_routes,
-        } = self.configure_routes(&self.endpoint_path.clone(), middleware, routes)?;
-        let router = mcp_router.merge(aux_routes);
-
-        let bind_addr = self.bind_addr.clone().ok_or_else(|| {
-            Error::InvalidConfiguration("Embedded HTTP transports do not bind listeners".into())
-        })?;
-        let listener = TcpListener::bind(&bind_addr)
-            .await
-            .map_err(|e| Error::Transport(format!("Failed to bind to {bind_addr}: {e}")))?;
-
-        // Update bind_addr with the actual address (in case port 0 was used)
-        self.bind_addr = Some(
-            listener
-                .local_addr()
-                .map_err(|e| Error::Transport(format!("Failed to get local address: {e}")))?
-                .to_string(),
-        );
-
-        let bind_addr = self.bind_addr.clone().expect("bind addr set after bind");
-        let shutdown = self
-            .shutdown_token
-            .clone()
-            .expect("shutdown token initialized during route setup");
-
-        // Create a channel to signal when the server is actually ready
-        let (ready_tx, ready_rx) = oneshot::channel();
-
-        // Clone for the ready signal
-        let bind_addr_clone = bind_addr.clone();
-
-        let server_handle = tokio::spawn(async move {
-            info!("HTTP server starting on {}", bind_addr);
-
-            // Signal readiness immediately - axum::serve will start accepting connections
-            // as soon as it's called with the already-bound listener
-            ready_tx.send(()).ok();
-
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    shutdown.cancelled().await;
-                })
-                .await
-                .map_err(|e| Error::Transport(format!("Server error: {e}")))
-        });
-
-        self.server_handle = Some(server_handle);
-
-        // Wait for the ready signal
-        ready_rx
-            .await
-            .map_err(|_| Error::Transport("Server failed to start".into()))?;
-
-        // Give a small delay to ensure axum is fully ready
-        sleep(Duration::from_millis(100)).await;
-
-        info!("HTTP server ready on {}", bind_addr_clone);
-
-        Ok(())
-    }
-
-    /// Configure transport state and build routers.
-    fn configure_routes(
-        &mut self,
-        mcp_route_path: &str,
-        middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
-        routes: Option<Router>,
-    ) -> Result<EmbeddedHttpRoutes> {
-        if self.incoming_rx.is_none() {
-            let (incoming_tx, incoming_rx) = mpsc::unbounded();
-            self.incoming_rx = Some(incoming_rx);
-
-            let state = HttpServerState {
-                sessions: Arc::new(DashMap::new()),
-                incoming_tx,
-                shutdown: CancellationToken::new(),
+impl SessionRoutes {
+    /// Deliver one outbound message from the connection loop.
+    fn deliver(&self, message: JSONRPCMessage) {
+        if let JSONRPCMessage::Response(response) = &message {
+            let id = match response {
+                JSONRPCResponse::Result(result) => Some(result.id.clone()),
+                JSONRPCResponse::Error(error) => error.id.clone(),
             };
-
-            self.shutdown_token = Some(state.shutdown.clone());
-            spawn_session_cleanup(&state);
-            self.state = Some(state);
+            if let Some(id) = id
+                && let Some((_, tx)) = self.pending.remove(&id)
+            {
+                tx.send(message).ok();
+                return;
+            }
         }
-
-        let state = self.state.clone().ok_or(Error::TransportDisconnected)?;
-
-        let mut mcp_router = Router::new()
-            .route(mcp_route_path, post(handle_post))
-            .route(mcp_route_path, get(handle_get))
-            .with_state(state);
-        if let Some(transform) = middleware {
-            mcp_router = transform(mcp_router);
-        }
-        mcp_router = mcp_router.layer(CorsLayer::permissive());
-
-        let aux_routes = routes
-            .unwrap_or_else(Router::new)
-            .layer(CorsLayer::permissive());
-
-        self.router = Some(mcp_router.clone());
-        Ok(EmbeddedHttpRoutes {
-            mcp_router,
-            aux_routes,
-        })
+        self.send_to_stream(message);
     }
+
+    /// Forward a message to the standing SSE stream, if one is open.
+    fn send_to_stream(&self, message: JSONRPCMessage) {
+        let mut guard = self.stream_tx.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(tx) => {
+                if tx.unbounded_send(message).is_err() {
+                    *guard = None;
+                }
+            }
+            None => debug!("No SSE stream open; dropping server-initiated message"),
+        }
+    }
+
+    /// Install a new standing SSE stream, replacing any previous one.
+    fn set_stream(&self, tx: mpsc::UnboundedSender<JSONRPCMessage>) {
+        *self.stream_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    }
+}
+
+/// Transport bridging one HTTP session to its connection loop.
+struct SessionTransport {
+    /// Messages POSTed by the client for this session.
+    incoming_rx: Option<mpsc::UnboundedReceiver<IncomingMessage>>,
+    /// Outbound routing back to HTTP requests and the SSE stream.
+    routes: SessionRoutes,
+    /// Session id, used as the connection's remote address.
+    session_id: String,
 }
 
 #[async_trait]
-impl Transport for HttpServerTransport {
+impl Transport for SessionTransport {
     async fn connect(&mut self) -> Result<()> {
-        if self.incoming_rx.is_some() {
-            Ok(())
-        } else {
-            self.start(None, None).await
-        }
+        Ok(())
     }
 
     fn framed(mut self: Box<Self>) -> Result<Box<dyn TransportStream>> {
-        // Take ownership of shutdown_token to prevent Drop from cancelling it
-        let _shutdown_token = self.shutdown_token.take();
-
         let incoming_rx = self
             .incoming_rx
             .take()
             .ok_or(Error::TransportDisconnected)?;
-
-        // Create a session for the server side
-        let session_id = Uuid::new_v4().to_string();
-        let (tx, rx) = mpsc::unbounded();
-
-        if let Some(state) = &self.state {
-            let session = HttpSession {
-                last_activity: Arc::new(sync::Mutex::new(Instant::now())),
-                sender: tx,
-                receiver: Arc::new(Mutex::new(rx)),
-                event_counter: Arc::new(AtomicU64::new(0)),
-                streaming: Arc::new(AtomicBool::new(false)),
-            };
-
-            state.sessions.insert(session_id, session);
-        }
-
-        // Create a stream that merges incoming messages with session-specific messages
-        let stream = HttpServerStream {
+        Ok(Box::new(SessionTransportStream {
             incoming_rx,
-            state: self.state.clone(),
-            request_sessions: Arc::new(DashMap::new()),
-        };
-
-        Ok(Box::new(stream))
+            routes: self.routes.clone(),
+        }))
     }
 
     fn remote_addr(&self) -> String {
-        self.bind_addr
-            .clone()
-            .unwrap_or_else(|| format!("embedded:{}", self.endpoint_path))
+        format!("http:{}", self.session_id)
     }
 }
 
-/// Start the background task that expires inactive HTTP sessions.
-fn spawn_session_cleanup(state: &HttpServerState) {
-    let cleanup_sessions = state.sessions.clone();
-    let cleanup_shutdown = state.shutdown.clone();
-
-    tokio::spawn(async move {
-        let mut interval = interval(Duration::from_secs(60));
-        loop {
-            tokio::select! {
-                _ = cleanup_shutdown.cancelled() => break,
-                _ = interval.tick() => {
-                    let now = Instant::now();
-                    let expired: Vec<String> = cleanup_sessions
-                        .iter()
-                        .filter(|entry| {
-                            let last_active = *entry.value().last_activity.lock().unwrap();
-                            now.duration_since(last_active) > SESSION_TIMEOUT
-                        })
-                        .map(|entry| entry.key().clone())
-                        .collect();
-
-                    for id in expired {
-                        debug!("Removing expired session: {}", id);
-                        cleanup_sessions.remove(&id);
-                    }
-                }
-            }
-        }
-    });
+/// Stream/sink pair for one session's connection loop.
+struct SessionTransportStream {
+    /// Messages POSTed by the client.
+    incoming_rx: mpsc::UnboundedReceiver<IncomingMessage>,
+    /// Outbound routing back to HTTP requests and the SSE stream.
+    routes: SessionRoutes,
 }
 
-/// Server-side stream implementation
-struct HttpServerStream {
-    /// Receiver for incoming JSON-RPC messages and session ids.
-    incoming_rx: mpsc::UnboundedReceiver<(JSONRPCMessage, String, http::Extensions)>,
-    /// Shared server state for routing responses.
-    state: Option<HttpServerState>,
-    // Track which session sent each request ID
-    /// Map of request ids to originating session ids.
-    request_sessions: Arc<DashMap<RequestId, String>>,
-}
-
-impl Stream for HttpServerStream {
+impl Stream for SessionTransportStream {
     type Item = Result<IncomingMessage>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.incoming_rx.poll_next_unpin(cx) {
-            Poll::Ready(Some((message, session_id, extensions))) => {
-                // Track which session sent this request
-                if let JSONRPCMessage::Request(ref req) = message {
-                    self.request_sessions.insert(req.id.clone(), session_id);
-                }
-                Poll::Ready(Some(Ok(IncomingMessage {
-                    message,
-                    extensions,
-                })))
-            }
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
+        self.incoming_rx
+            .poll_next_unpin(cx)
+            .map(|message| message.map(Ok))
     }
 }
 
-impl Sink<JSONRPCMessage> for HttpServerStream {
+impl Sink<JSONRPCMessage> for SessionTransportStream {
     type Error = Error;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
@@ -446,33 +233,7 @@ impl Sink<JSONRPCMessage> for HttpServerStream {
     }
 
     fn start_send(self: Pin<&mut Self>, item: JSONRPCMessage) -> Result<()> {
-        if let Some(state) = &self.state {
-            match &item {
-                JSONRPCMessage::Response(resp) => {
-                    // Route response to the correct session
-                    let response_id = match resp {
-                        JSONRPCResponse::Result(result) => Some(result.id.clone()),
-                        JSONRPCResponse::Error(error) => error.id.clone(),
-                    };
-
-                    if let Some(response_id) = response_id
-                        && let Some((_, session_id)) = self.request_sessions.remove(&response_id)
-                        && let Some(session) = state.sessions.get(&session_id)
-                    {
-                        session.sender.unbounded_send(item).ok();
-                    }
-                }
-                JSONRPCMessage::Notification(_) | JSONRPCMessage::Request(_) => {
-                    if let Some(session_id) = resolve_session_id_for_message(&item, state) {
-                        if let Some(session) = state.sessions.get(&session_id) {
-                            session.sender.unbounded_send(item).ok();
-                        }
-                    } else {
-                        debug!("Dropping HTTP message without session context");
-                    }
-                }
-            }
-        }
+        self.routes.deliver(item);
         Ok(())
     }
 
@@ -485,68 +246,193 @@ impl Sink<JSONRPCMessage> for HttpServerStream {
     }
 }
 
-impl TransportStream for HttpServerStream {}
+impl TransportStream for SessionTransportStream {}
 
-/// Resolve a session id for outbound JSON-RPC messages.
-fn resolve_session_id_for_message(
-    message: &JSONRPCMessage,
-    state: &HttpServerState,
-) -> Option<String> {
-    let session_id = match message {
-        JSONRPCMessage::Request(request) => session_id_from_request(request),
-        JSONRPCMessage::Notification(notification) => session_id_from_notification(notification),
-        JSONRPCMessage::Response(_) => None,
-    };
-
-    session_id.or_else(|| single_session_id(state))
+/// Routers returned when embedding tmcp HTTP handlers into another Axum app.
+pub struct EmbeddedHttpRoutes {
+    /// Router containing only the MCP GET/POST endpoint handlers.
+    pub(crate) mcp_router: Router,
+    /// Auxiliary top-level routes that must be merged at the application root.
+    pub(crate) aux_routes: Router,
 }
 
-/// Return the only active session id if exactly one session exists.
-fn single_session_id(state: &HttpServerState) -> Option<String> {
-    if state.sessions.len() == 1 {
-        state
-            .sessions
-            .iter()
-            .next()
-            .map(|entry| entry.key().clone())
-    } else {
-        None
+impl HttpServer {
+    /// Create a new HTTP server around a per-session handler factory.
+    pub fn new(factory: HandlerFactory) -> Self {
+        let state = HttpServerState {
+            sessions: Arc::new(DashMap::new()),
+            factory,
+            shutdown: CancellationToken::new(),
+        };
+        spawn_session_cleanup(&state);
+        spawn_shutdown_watchdog(&state);
+        Self { state }
     }
-}
 
-/// Extract session id from request metadata, if present.
-fn session_id_from_request(request: &JSONRPCRequest) -> Option<String> {
-    request.request.params.as_ref().and_then(|params| {
-        params
-            ._meta
-            .as_ref()
-            .and_then(|meta| session_id_from_meta(Some(&meta.other)))
-    })
-}
+    /// Build the MCP routers mounted at `mcp_route_path`.
+    pub fn routes(
+        &self,
+        mcp_route_path: &str,
+        middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
+        routes: Option<Router>,
+    ) -> EmbeddedHttpRoutes {
+        let mut mcp_router = Router::new()
+            .route(mcp_route_path, post(handle_post))
+            .route(mcp_route_path, get(handle_get))
+            .with_state(self.state.clone());
+        if let Some(transform) = middleware {
+            mcp_router = transform(mcp_router);
+        }
+        mcp_router = mcp_router.layer(CorsLayer::permissive());
 
-/// Extract session id from notification metadata, if present.
-fn session_id_from_notification(notification: &JSONRPCNotification) -> Option<String> {
-    notification
-        .notification
-        .params
-        .as_ref()
-        .and_then(|params| session_id_from_meta(params._meta.as_ref()))
-}
+        let aux_routes = routes
+            .unwrap_or_else(Router::new)
+            .layer(CorsLayer::permissive());
 
-/// Extract session id from a metadata map.
-fn session_id_from_meta(meta: Option<&HashMap<String, Value>>) -> Option<String> {
-    meta.and_then(|map| map.get("sessionId"))
-        .and_then(Value::as_str)
-        .map(|value| value.to_string())
-}
-
-impl Drop for HttpServerTransport {
-    fn drop(&mut self) {
-        // Trigger shutdown when transport is dropped
-        if let Some(token) = &self.shutdown_token {
-            token.cancel();
+        EmbeddedHttpRoutes {
+            mcp_router,
+            aux_routes,
         }
     }
+
+    /// Token that stops the listener and every active session.
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.state.shutdown.clone()
+    }
+
+    /// Closure that fans a server notification out to every active session,
+    /// subject to each session's negotiated capabilities.
+    pub fn notification_fanout(&self) -> NotificationFanout {
+        let sessions = self.state.sessions.clone();
+        Box::new(move |notification| {
+            for entry in sessions.iter() {
+                entry.value().handle.send_server_notification(notification);
+            }
+        })
+    }
+
+    /// Bind `bind_addr` and serve `router`, returning the listener task and
+    /// the actually bound address.
+    pub async fn listen(
+        &self,
+        bind_addr: &str,
+        router: Router,
+    ) -> Result<(JoinHandle<()>, String)> {
+        let listener = TcpListener::bind(bind_addr)
+            .await
+            .map_err(|e| Error::Transport(format!("Failed to bind to {bind_addr}: {e}")))?;
+        let bound_addr = listener
+            .local_addr()
+            .map_err(|e| Error::Transport(format!("Failed to get local address: {e}")))?
+            .to_string();
+
+        info!("HTTP server listening on {}", bound_addr);
+        let shutdown = self.state.shutdown.clone();
+        let task = tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    shutdown.cancelled().await;
+                })
+                .await
+            {
+                error!("HTTP server error: {}", e);
+            }
+        });
+
+        Ok((task, bound_addr))
+    }
+}
+
+/// Stop and remove a session, if present.
+fn remove_session(state: &HttpServerState, session_id: &str) {
+    if let Some((_, session)) = state.sessions.remove(session_id) {
+        session.handle.signal_stop();
+    }
+}
+
+/// Start the background task that expires inactive HTTP sessions.
+fn spawn_session_cleanup(state: &HttpServerState) {
+    let state = state.clone();
+
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => break,
+                _ = interval.tick() => {
+                    let now = Instant::now();
+                    let expired: Vec<String> = state
+                        .sessions
+                        .iter()
+                        .filter(|entry| {
+                            let last_active = *entry
+                                .value()
+                                .last_activity
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            now.duration_since(last_active) > SESSION_TIMEOUT
+                        })
+                        .map(|entry| entry.key().clone())
+                        .collect();
+
+                    for id in expired {
+                        debug!("Removing expired session: {}", id);
+                        remove_session(&state, &id);
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Stop all sessions when the master shutdown token fires.
+fn spawn_shutdown_watchdog(state: &HttpServerState) {
+    let sessions = state.sessions.clone();
+    let shutdown = state.shutdown.clone();
+    tokio::spawn(async move {
+        shutdown.cancelled().await;
+        for entry in sessions.iter() {
+            entry.value().handle.signal_stop();
+        }
+        sessions.clear();
+    });
+}
+
+/// Validate the MCP-Protocol-Version header, if present.
+fn validate_protocol_version(headers: &HeaderMap) -> StdResult<(), Box<Response>> {
+    if let Some(version) = headers.get("MCP-Protocol-Version")
+        && version != LATEST_PROTOCOL_VERSION
+    {
+        return Err(Box::new(
+            (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response(),
+        ));
+    }
+    Ok(())
+}
+
+/// Extract the session id header, if present.
+fn session_id_header(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("Mcp-Session-Id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
+/// Return the request id cancelled by a `notifications/cancelled` message.
+fn cancelled_request_id(notification: &JSONRPCNotification) -> Option<RequestId> {
+    if notification.notification.method != "notifications/cancelled" {
+        return None;
+    }
+    let params = notification.notification.params.as_ref()?;
+    let value = params.other.get("requestId")?;
+    serde_json::from_value(value.clone()).ok()
+}
+
+/// Build an SSE event with a monotonically increasing id.
+fn build_sse_event(counter: &EventCounter, message: &JSONRPCMessage) -> Event {
+    Event::default()
+        .id(counter.next().to_string())
+        .data(serde_json::to_string(message).expect("serialize JSON-RPC message"))
 }
 
 // HTTP handlers
@@ -557,7 +443,13 @@ async fn handle_post(State(state): State<HttpServerState>, request: Request) -> 
     let headers = parts.headers;
     let extensions = parts.extensions;
 
+    if let Err(response) = validate_origin(&headers) {
+        return *response;
+    }
     if let Err(response) = validate_json_content_type(&headers) {
+        return *response;
+    }
+    if let Err(response) = validate_protocol_version(&headers) {
         return *response;
     }
 
@@ -572,195 +464,181 @@ async fn handle_post(State(state): State<HttpServerState>, request: Request) -> 
 
     debug!("HTTP server received POST request: {:?}", message);
 
-    if let Err(response) = validate_origin(&headers) {
-        return *response;
-    }
-
-    // Validate protocol version
-    if let Some(version) = headers.get("MCP-Protocol-Version")
-        && version != LATEST_PROTOCOL_VERSION
-    {
-        return (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response();
-    }
-
-    let session_id = headers
-        .get("Mcp-Session-Id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    // Handle initialization specially
+    // Initialize establishes a new session with its own connection loop. Any
+    // client-supplied session id is ignored: session ids are server-generated.
     if matches!(&message, JSONRPCMessage::Request(req) if req.request.method == "initialize") {
-        let new_session_id = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let (tx, rx) = mpsc::unbounded();
-
-        let session = HttpSession {
-            last_activity: Arc::new(sync::Mutex::new(Instant::now())),
-            sender: tx,
-            receiver: Arc::new(Mutex::new(rx)),
-            event_counter: Arc::new(AtomicU64::new(0)),
-            streaming: Arc::new(AtomicBool::new(false)),
-        };
-
-        state
-            .sessions
-            .insert(new_session_id.clone(), session.clone());
-
-        // Forward to server logic
-        state
-            .incoming_tx
-            .unbounded_send((message, new_session_id.clone(), extensions))
-            .ok();
-
-        // Wait for the actual response from the server with timeout
-        let receiver = session.receiver.clone();
-
-        let response = timeout(Duration::from_secs(5), async move {
-            let mut receiver = receiver.lock().await;
-            receiver.next().await
-        })
-        .await;
-
-        match response {
-            Ok(Some(response)) => {
-                let mut http_response = Json::<JSONRPCMessage>(response).into_response();
-
-                // Add session ID header
-                http_response.headers_mut().insert(
-                    "Mcp-Session-Id",
-                    HeaderValue::from_str(&new_session_id).unwrap(),
-                );
-
-                return http_response;
-            }
-            Ok(None) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, "No response from server")
-                    .into_response();
-            }
-            Err(_) => {
-                return (StatusCode::REQUEST_TIMEOUT, "Initialization timeout").into_response();
-            }
-        }
+        return handle_initialize_post(&state, message, extensions).await;
     }
 
-    // For other messages, validate session
-    let session_id = match session_id {
-        Some(id) => id,
-        None => return (StatusCode::BAD_REQUEST, "Missing session ID").into_response(),
+    let Some(session_id) = session_id_header(&headers) else {
+        return (StatusCode::BAD_REQUEST, "Missing session ID").into_response();
     };
-
-    let session = if let Some(session) = state.sessions.get(&session_id) {
-        *session.last_activity.lock().unwrap() = Instant::now();
-        session.clone()
-    } else {
+    let Some(session) = state.sessions.get(&session_id).map(|s| s.clone()) else {
         return (StatusCode::NOT_FOUND, "Session not found").into_response();
     };
+    session.touch();
 
     match &message {
-        JSONRPCMessage::Request(_) => {
-            // Forward to server logic
-            state
-                .incoming_tx
-                .unbounded_send((message, session_id.clone(), extensions))
-                .ok();
+        JSONRPCMessage::Request(request) => {
+            let (response_tx, response_rx) = oneshot::channel();
+            session
+                .routes
+                .pending
+                .insert(request.id.clone(), response_tx);
 
-            if session.streaming.load(Ordering::SeqCst) {
-                return StatusCode::ACCEPTED.into_response();
+            if session
+                .incoming_tx
+                .unbounded_send(IncomingMessage {
+                    message,
+                    extensions,
+                })
+                .is_err()
+            {
+                remove_session(&state, &session_id);
+                return (StatusCode::NOT_FOUND, "Session terminated").into_response();
             }
 
-            // Check if client accepts SSE
-            let accepts_sse = headers
-                .get(header::ACCEPT)
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.contains("text/event-stream"))
-                .unwrap_or(false);
-
-            if accepts_sse {
-                // Return SSE stream for response
-                apply_last_event_id(&headers, &session);
-                let receiver = session.receiver.clone();
-                let stream = async_stream::stream! {
-                    let mut receiver = receiver.lock().await;
-                    while let Some(msg) = receiver.next().await {
-                        yield Ok::<_, Error>(build_sse_event(&session, &msg));
-
-                        // If this is a response to our request, close the stream
-                        if matches!(&msg, JSONRPCMessage::Response(_)) {
-                            break;
-                        }
-                    }
-                };
-
-                Sse::new(stream)
-                    .keep_alive(KeepAlive::default())
-                    .into_response()
-            } else {
-                // Wait for response and return directly
-                let receiver = session.receiver.clone();
-
-                let response = timeout(
-                    Duration::from_secs(30), // 30 second timeout for requests
-                    async move {
-                        let mut receiver = receiver.lock().await;
-                        receiver.next().await
-                    },
-                )
-                .await;
-
-                match response {
-                    Ok(Some(response)) => Json::<JSONRPCMessage>(response).into_response(),
-                    Ok(None) => (StatusCode::INTERNAL_SERVER_ERROR, "No response").into_response(),
-                    Err(_) => (StatusCode::REQUEST_TIMEOUT, "Request timeout").into_response(),
-                }
+            match response_rx.await {
+                Ok(response) => Json::<JSONRPCMessage>(response).into_response(),
+                // The response was suppressed: the request was cancelled or
+                // the session shut down before responding.
+                Err(_) => StatusCode::ACCEPTED.into_response(),
             }
         }
-        JSONRPCMessage::Response(_) | JSONRPCMessage::Notification(_) => {
-            // Forward to server logic
-            state
+        JSONRPCMessage::Notification(notification) => {
+            // A cancellation releases the POST waiting on the cancelled
+            // request: the connection loop suppresses the response entirely.
+            if let Some(request_id) = cancelled_request_id(notification) {
+                session.routes.pending.remove(&request_id);
+            }
+            session
                 .incoming_tx
-                .unbounded_send((message, session_id, extensions))
+                .unbounded_send(IncomingMessage {
+                    message,
+                    extensions,
+                })
+                .ok();
+            StatusCode::ACCEPTED.into_response()
+        }
+        JSONRPCMessage::Response(_) => {
+            session
+                .incoming_tx
+                .unbounded_send(IncomingMessage {
+                    message,
+                    extensions,
+                })
                 .ok();
             StatusCode::ACCEPTED.into_response()
         }
     }
 }
 
-/// Handle inbound HTTP GET requests for SSE streams.
+/// Establish a new session for an initialize request.
+async fn handle_initialize_post(
+    state: &HttpServerState,
+    message: JSONRPCMessage,
+    extensions: http::Extensions,
+) -> Response {
+    let JSONRPCMessage::Request(request) = &message else {
+        return (StatusCode::BAD_REQUEST, "Invalid initialize message").into_response();
+    };
+
+    let session_id = Uuid::new_v4().to_string();
+    let (incoming_tx, incoming_rx) = mpsc::unbounded();
+    let routes = SessionRoutes::default();
+    let (response_tx, response_rx) = oneshot::channel();
+    routes.pending.insert(request.id.clone(), response_tx);
+
+    let transport = SessionTransport {
+        incoming_rx: Some(incoming_rx),
+        routes: routes.clone(),
+        session_id: session_id.clone(),
+    };
+    let factory = state.factory.clone();
+    let server = Server::from_factory(move || factory());
+    let handle = match ServerHandle::new(server, Box::new(transport)).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            error!("Failed to start HTTP session connection: {}", error);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to start session").into_response();
+        }
+    };
+
+    let session = HttpSession {
+        last_activity: Arc::new(sync::Mutex::new(Instant::now())),
+        incoming_tx,
+        routes,
+        event_counter: EventCounter::default(),
+        handle: Arc::new(handle),
+    };
+    state.sessions.insert(session_id.clone(), session.clone());
+
+    session
+        .incoming_tx
+        .unbounded_send(IncomingMessage {
+            message,
+            extensions,
+        })
+        .ok();
+
+    match response_rx.await {
+        Ok(response) => {
+            let failed = matches!(
+                &response,
+                JSONRPCMessage::Response(JSONRPCResponse::Error(_))
+            );
+            let mut http_response = Json::<JSONRPCMessage>(response).into_response();
+            if failed {
+                // No session is established when initialization fails.
+                remove_session(state, &session_id);
+            } else {
+                http_response.headers_mut().insert(
+                    "Mcp-Session-Id",
+                    HeaderValue::from_str(&session_id).expect("UUID is a valid header value"),
+                );
+            }
+            http_response
+        }
+        Err(_) => {
+            remove_session(state, &session_id);
+            (StatusCode::INTERNAL_SERVER_ERROR, "No response from server").into_response()
+        }
+    }
+}
+
+/// Handle inbound HTTP GET requests for the standing SSE stream.
 async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) -> Response {
     if let Err(response) = validate_origin(&headers) {
         return *response;
     }
-
-    // Validate protocol version
-    if let Some(version) = headers.get("MCP-Protocol-Version")
-        && version != LATEST_PROTOCOL_VERSION
-    {
-        return (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response();
+    if let Err(response) = validate_protocol_version(&headers) {
+        return *response;
     }
 
-    let session_id = headers
-        .get("Mcp-Session-Id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    let session_id = match session_id {
-        Some(id) => id,
-        None => return (StatusCode::BAD_REQUEST, "Missing session ID").into_response(),
+    let Some(session_id) = session_id_header(&headers) else {
+        return (StatusCode::BAD_REQUEST, "Missing session ID").into_response();
     };
-
-    // Clone the receiver to avoid lifetime issues
-    let session = if let Some(session) = state.sessions.get(&session_id) {
-        apply_last_event_id(&headers, &session);
-        session.clone()
-    } else {
+    let Some(session) = state.sessions.get(&session_id).map(|s| s.clone()) else {
         return (StatusCode::NOT_FOUND, "Session not found").into_response();
     };
-    let receiver = session.receiver.clone();
-    let streaming = session.streaming.clone();
+    session.touch();
+
+    if let Some(last_event_id) = headers
+        .get("Last-Event-ID")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        session.event_counter.bump_to(last_event_id);
+    }
+
+    // Install the stream; a reconnecting client replaces its previous stream.
+    let (tx, mut rx) = mpsc::unbounded();
+    session.routes.set_stream(tx);
+
+    let event_counter = session.event_counter;
     let stream = async_stream::stream! {
-        let _guard = StreamingGuard::new(streaming);
-        let mut receiver = receiver.lock().await;
-        while let Some(msg) = receiver.next().await {
-            yield Ok::<_, Error>(build_sse_event(&session, &msg));
+        while let Some(msg) = rx.next().await {
+            yield Ok::<_, Error>(build_sse_event(&event_counter, &msg));
         }
     };
 
@@ -772,49 +650,75 @@ async fn handle_get(State(state): State<HttpServerState>, headers: HeaderMap) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::{JSONRPC_VERSION, JSONRPCResultResponse, JSONRpcResult, Notification};
 
-    #[tokio::test]
-    async fn test_http_server_transport_creation() {
-        let transport = HttpServerTransport::new("127.0.0.1:8080", "/");
-        assert_eq!(transport.bind_addr, Some("127.0.0.1:8080".to_string()));
-        assert_eq!(transport.endpoint_path, "/");
-    }
-
-    #[tokio::test]
-    async fn test_session_management() {
-        let (tx, rx) = mpsc::unbounded();
-
-        let session = HttpSession {
-            last_activity: Arc::new(sync::Mutex::new(Instant::now())),
-            sender: tx,
-            receiver: Arc::new(Mutex::new(rx)),
-            event_counter: Arc::new(AtomicU64::new(0)),
-            streaming: Arc::new(AtomicBool::new(false)),
-        };
-
-        // Test that we can update last activity
-        let before = *session.last_activity.lock().unwrap();
-        sleep(Duration::from_millis(10)).await;
-        *session.last_activity.lock().unwrap() = Instant::now();
-        let after = *session.last_activity.lock().unwrap();
-        assert!(after > before);
+    #[test]
+    fn event_counter_is_monotonic_and_bumps() {
+        let counter = EventCounter::default();
+        assert_eq!(counter.next(), 1);
+        assert_eq!(counter.next(), 2);
+        counter.bump_to(10);
+        assert_eq!(counter.next(), 11);
+        // Bumping backwards has no effect.
+        counter.bump_to(3);
+        assert_eq!(counter.next(), 12);
     }
 
     #[test]
-    fn test_apply_last_event_id_advances_counter() {
-        let (tx, rx) = mpsc::unbounded();
-        let session = HttpSession {
-            last_activity: Arc::new(sync::Mutex::new(Instant::now())),
-            sender: tx,
-            receiver: Arc::new(Mutex::new(rx)),
-            event_counter: Arc::new(AtomicU64::new(0)),
-            streaming: Arc::new(AtomicBool::new(false)),
+    fn routes_deliver_response_to_pending_request() {
+        let routes = SessionRoutes::default();
+        let (tx, mut rx) = oneshot::channel();
+        let id = RequestId::Number(7);
+        routes.pending.insert(id.clone(), tx);
+
+        let response = JSONRPCMessage::Response(JSONRPCResponse::Result(JSONRPCResultResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id,
+            result: JSONRpcResult {
+                _meta: None,
+                other: Default::default(),
+            },
+        }));
+        routes.deliver(response);
+
+        assert!(rx.try_recv().is_ok());
+        assert!(routes.pending.is_empty());
+    }
+
+    #[test]
+    fn routes_send_notifications_to_stream() {
+        let routes = SessionRoutes::default();
+        let (tx, mut rx) = mpsc::unbounded();
+        routes.set_stream(tx);
+
+        let notification = JSONRPCMessage::Notification(JSONRPCNotification {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            notification: Notification {
+                method: "notifications/tools/list_changed".to_string(),
+                params: None,
+            },
+        });
+        routes.deliver(notification);
+
+        assert!(rx.try_next().unwrap().is_some());
+    }
+
+    #[test]
+    fn cancelled_request_id_parses_numeric_and_string_ids() {
+        let make = |value: serde_json::Value| JSONRPCNotification {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            notification: Notification {
+                method: "notifications/cancelled".to_string(),
+                params: serde_json::from_value(serde_json::json!({ "requestId": value })).unwrap(),
+            },
         };
-
-        let mut headers = HeaderMap::new();
-        headers.insert("Last-Event-ID", HeaderValue::from_static("5"));
-        apply_last_event_id(&headers, &session);
-
-        assert_eq!(session.next_event_id(), 6);
+        assert_eq!(
+            cancelled_request_id(&make(serde_json::json!(3))),
+            Some(RequestId::Number(3))
+        );
+        assert_eq!(
+            cancelled_request_id(&make(serde_json::json!("abc"))),
+            Some(RequestId::String("abc".to_string()))
+        );
     }
 }

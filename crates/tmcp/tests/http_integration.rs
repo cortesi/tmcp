@@ -333,4 +333,50 @@ mod tests {
         server_task.await.unwrap();
         handle.stop().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn concurrent_clients_with_colliding_request_ids() {
+        let server = Server::new(EchoConnection::default);
+        let handle = server.serve_http("127.0.0.1:0").await.unwrap();
+        let addr = handle.bound_addr.clone().unwrap();
+
+        // Two independent clients both number their JSON-RPC requests from
+        // the same starting id, so their ids collide on the wire. Each
+        // session must still receive exactly its own responses.
+        let mut client1 = Client::new("collide-1", "1.0.0");
+        client1
+            .connect_http(&format!("http://{addr}"))
+            .await
+            .unwrap();
+        let mut client2 = Client::new("collide-2", "1.0.0");
+        client2
+            .connect_http(&format!("http://{addr}"))
+            .await
+            .unwrap();
+
+        for round in 0..5 {
+            let message1 = format!("client1-round{round}");
+            let message2 = format!("client2-round{round}");
+            let (result1, result2) = tokio::join!(
+                client1.call_tool("echo", json!({ "message": message1.clone() })),
+                client2.call_tool("echo", json!({ "message": message2.clone() })),
+            );
+            let result1 = result1.unwrap();
+            let result2 = result2.unwrap();
+            let text1 = match &result1.content[0] {
+                ContentBlock::Text(text) => text.text.clone(),
+                other => panic!("unexpected content: {other:?}"),
+            };
+            let text2 = match &result2.content[0] {
+                ContentBlock::Text(text) => text.text.clone(),
+                other => panic!("unexpected content: {other:?}"),
+            };
+            assert_eq!(text1, message1, "client1 received the wrong response");
+            assert_eq!(text2, message2, "client2 received the wrong response");
+        }
+
+        drop(client1);
+        drop(client2);
+        handle.stop().await.unwrap();
+    }
 }
