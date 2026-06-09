@@ -284,24 +284,6 @@ where
 }
 
 // Convenience implementation for TcpStream
-#[async_trait]
-impl Transport for TcpStream {
-    async fn connect(&mut self) -> Result<()> {
-        // TcpStream is already connected
-        Ok(())
-    }
-
-    fn framed(self: Box<Self>) -> Result<Box<dyn TransportStream>> {
-        Ok(Box::new(FramedTransport::new(*self)))
-    }
-
-    fn remote_addr(&self) -> String {
-        self.peer_addr()
-            .map(|addr| addr.to_string())
-            .unwrap_or_else(|_| "unknown".to_string())
-    }
-}
-
 #[cfg(test)]
 pub use test_transport::TestTransport;
 

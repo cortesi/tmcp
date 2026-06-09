@@ -17,7 +17,10 @@ use crate::{
     context::ClientCtx,
     error::{Error, Result},
     http::HttpClientTransport,
-    jsonrpc::{create_jsonrpc_notification, result_to_jsonrpc_response},
+    jsonrpc::{
+        create_jsonrpc_notification, parse_typed_notification, parse_typed_request,
+        result_to_jsonrpc_response,
+    },
     request_handler::{Pending, RequestHandler},
     schema::*,
     transport::{
@@ -651,7 +654,7 @@ where
         Ok(result)
     }
 
-    /// Respond to ping requests
+    /// Send a ping request to the server and wait for the response.
     pub async fn ping(&self) -> Result<()> {
         let _: EmptyResult = self.request_and_wait(ClientRequest::ping()).await?;
         Ok(())
@@ -929,53 +932,22 @@ async fn handle_server_request<C: ClientHandler>(
     context: &ClientCtx,
     request: JSONRPCRequest,
 ) -> JSONRPCMessage {
-    // Create a context with the request ID
-    let ctx_with_request = context.with_request_id(request.id.clone());
-    let result = handle_server_request_inner(connection, &ctx_with_request, request.clone()).await;
-    result_to_jsonrpc_response(request.id, result)
-}
+    let JSONRPCRequest {
+        id,
+        request: Request { method, params },
+        ..
+    } = request;
+    let ctx_with_request = context.with_request_id(id.clone());
 
-/// Inner handler that returns Result<serde_json::Value>
-async fn handle_server_request_inner<C: ClientHandler>(
-    connection: &C,
-    ctx: &ClientCtx,
-    request: JSONRPCRequest,
-) -> Result<serde_json::Value> {
-    let mut request_obj = serde_json::Map::new();
-    request_obj.insert(
-        "method".to_string(),
-        serde_json::Value::String(request.request.method.clone()),
-    );
-    if let Some(params) = request.request.params {
-        if let Some(meta) = params._meta {
-            request_obj.insert("_meta".to_string(), serde_json::to_value(meta)?);
+    let result = match parse_typed_request::<ServerRequest>(&method, params) {
+        Ok(server_request) => {
+            connection
+                .handle_request(&ctx_with_request, server_request, &method)
+                .await
         }
-        for (key, value) in params.other {
-            request_obj.insert(key, value);
-        }
-    }
-
-    let server_request =
-        match serde_json::from_value::<ServerRequest>(serde_json::Value::Object(request_obj)) {
-            Ok(req) => req,
-            Err(err) => {
-                // Check if it's an unknown method or invalid parameters
-                let err_str = err.to_string();
-                if err_str.contains("unknown variant") {
-                    return Err(Error::MethodNotFound(request.request.method.clone()));
-                } else {
-                    // It's a known method with invalid parameters
-                    return Err(Error::InvalidParams(format!(
-                        "Invalid parameters for {}: {}",
-                        request.request.method, err
-                    )));
-                }
-            }
-        };
-
-    connection
-        .handle_request(ctx, server_request, &request.request.method)
-        .await
+        Err(e) => Err(e),
+    };
+    result_to_jsonrpc_response(id, result)
 }
 
 /// Convert a JSON-RPC notification into a typed ServerNotification and pass it
@@ -985,30 +957,8 @@ async fn handle_server_notification<C: ClientHandler>(
     context: &ClientCtx,
     notification: JSONRPCNotification,
 ) -> Result<()> {
-    // Build a serde_json::Value representing the notification in the shape
-    // expected by the ServerNotification enum (which is `{"method": "...", ...}`).
-    use serde_json::Value;
-
-    let mut obj = serde_json::Map::new();
-    obj.insert(
-        "method".to_string(),
-        Value::String(notification.notification.method.clone()),
-    );
-
-    if let Some(params) = notification.notification.params {
-        for (k, v) in params.other {
-            obj.insert(k, v);
-        }
-    }
-
-    let value = Value::Object(obj);
-
-    match serde_json::from_value::<ServerNotification>(value) {
-        Ok(typed) => connection.notification(context, typed).await,
-        Err(e) => Err(Error::InvalidParams(format!(
-            "Failed to parse server notification: {e}",
-        ))),
-    }
+    let typed = parse_typed_notification::<ServerNotification>(notification.notification)?;
+    connection.notification(context, typed).await
 }
 
 #[cfg(test)]

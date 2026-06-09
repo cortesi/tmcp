@@ -6,7 +6,7 @@ use tracing::{debug, error};
 
 use crate::{
     error::{Error, Result},
-    schema::{JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse},
+    schema::JSONRPCMessage,
 };
 
 /// Maximum accepted frame length in bytes.
@@ -104,34 +104,10 @@ impl Encoder<JSONRPCMessage> for JsonRpcCodec {
     }
 }
 
-impl Encoder<JSONRPCRequest> for JsonRpcCodec {
-    type Error = Error;
-
-    fn encode(&mut self, item: JSONRPCRequest, dst: &mut BytesMut) -> Result<()> {
-        self.encode(JSONRPCMessage::Request(item), dst)
-    }
-}
-
-impl Encoder<JSONRPCResponse> for JsonRpcCodec {
-    type Error = Error;
-
-    fn encode(&mut self, item: JSONRPCResponse, dst: &mut BytesMut) -> Result<()> {
-        self.encode(JSONRPCMessage::Response(item), dst)
-    }
-}
-
-impl Encoder<JSONRPCNotification> for JsonRpcCodec {
-    type Error = Error;
-
-    fn encode(&mut self, item: JSONRPCNotification, dst: &mut BytesMut) -> Result<()> {
-        self.encode(JSONRPCMessage::Notification(item), dst)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{JSONRPC_VERSION, Request, RequestId};
+    use crate::schema::{JSONRPC_VERSION, JSONRPCRequest, Request, RequestId};
 
     #[test]
     fn test_encode_decode_request() {
@@ -148,7 +124,9 @@ mod tests {
         };
 
         // Encode
-        codec.encode(request, &mut buf).unwrap();
+        codec
+            .encode(JSONRPCMessage::Request(request), &mut buf)
+            .unwrap();
 
         // Decode
         let decoded = codec.decode(&mut buf).unwrap().unwrap();

@@ -145,19 +145,6 @@ pub enum RequestId {
     Number(i64),
 }
 
-impl RequestId {
-    /// Convert the request ID to a string key for internal tracking.
-    ///
-    /// This normalizes both string and numeric IDs into a consistent string format
-    /// that can be used as a hash map key.
-    pub fn to_key(&self) -> String {
-        match self {
-            Self::String(s) => s.clone(),
-            Self::Number(n) => format!("__num__{n}"),
-        }
-    }
-}
-
 impl Display for RequestId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {

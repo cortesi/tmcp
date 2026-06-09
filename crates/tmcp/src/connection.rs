@@ -39,7 +39,7 @@ pub trait ClientHandler: Send + Sync {
         Ok(())
     }
 
-    /// Request the server to create a model message.
+    /// Handle a sampling request from the server by creating a message.
     async fn create_message(
         &self,
         _context: &ClientCtx,
@@ -51,12 +51,12 @@ pub trait ClientHandler: Send + Sync {
         ))
     }
 
-    /// Request the server to list roots.
+    /// Handle a server request for the client's filesystem roots.
     async fn list_roots(&self, _context: &ClientCtx) -> Result<schema::ListRootsResult> {
         Err(Error::InvalidRequest("list_roots not implemented".into()))
     }
 
-    /// Request the server to elicit user input.
+    /// Handle an elicitation request from the server for user input.
     async fn elicit(
         &self,
         _context: &ClientCtx,

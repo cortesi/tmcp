@@ -74,9 +74,10 @@ impl ClientCtx {
 
 /// Context provided to `ServerHandler` implementations for interacting with clients
 ///
-/// This context is only valid for the duration of a single method call and should not
-/// be stored or used outside of that scope. The Clone implementation is for internal
-/// framework use only.
+/// The framework derives a request-scoped clone for each handler invocation;
+/// the underlying channels live for the duration of the connection. Handlers
+/// may clone the context into spawned tasks (for example to emit progress),
+/// but it stops working once its connection closes.
 #[derive(Clone)]
 pub struct ServerCtx {
     /// Sender for server notifications
@@ -365,7 +366,7 @@ impl ServerCtx {
     //
     // These methods allow a server to make requests to the connected client.
 
-    /// Respond to ping requests from the client
+    /// Send a ping request to the client and wait for the response.
     pub async fn ping(&self) -> Result<()> {
         let _: schema::EmptyResult = self.request(schema::ServerRequest::ping()).await?;
         Ok(())

@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     net::SocketAddr,
     sync::{
         Arc, RwLock,
@@ -25,8 +24,11 @@ use crate::{
     context::ServerCtx,
     error::{Error, Result},
     http::{CorsPolicy, EmbeddedHttpRoutes, HttpServer, normalize_endpoint_path},
-    jsonrpc::create_jsonrpc_notification,
-    schema::{self, *},
+    jsonrpc::{
+        create_jsonrpc_notification, parse_typed_notification, parse_typed_request,
+        result_to_jsonrpc_response,
+    },
+    schema::*,
     transport::{GenericDuplex, StdioTransport, StreamTransport, Transport},
 };
 
@@ -245,9 +247,10 @@ where
         })
     }
 
-    /// Serve HTTP connections
-    /// This is a convenience method for the common HTTP server use case
-    /// Returns a ServerHandle that can be used to stop the server
+    /// Configure an HTTP server bound to the provided address.
+    ///
+    /// Returns an [`HttpBuilder`] for further configuration; call
+    /// [`HttpBuilder::serve`] to start serving.
     pub fn http(self, addr: impl AsRef<str>) -> HttpBuilder<F> {
         HttpBuilder {
             server: self,
@@ -446,7 +449,7 @@ impl ServerHandle {
         let notification_tx_handle = notification_tx.clone();
 
         // Create connection instance wrapped in Arc for shared access
-        let connection = Arc::new((server.connection_factory)());
+        let connection: Arc<dyn ServerHandler> = Arc::from((server.connection_factory)());
 
         // Create a single ServerCtx instance that will be used throughout the connection
         let server_ctx = ServerCtx::new(notification_tx, Some(sink_tx.clone()));
@@ -491,7 +494,7 @@ impl ServerHandle {
                                             // Handle initialize specially to capture capabilities
                                             let (response, init_caps) =
                                                 handle_initialize_request(
-                                                    connection.as_ref().as_ref(),
+                                                    connection.as_ref(),
                                                     request,
                                                     &context
                                                 ).await;
@@ -815,7 +818,7 @@ fn notification_permitted(caps: &ServerCapabilities, notification: &ServerNotifi
 
 /// Handle a message using the Connection trait
 async fn handle_message_with_connection(
-    connection: Arc<Box<dyn ServerHandler>>,
+    connection: Arc<dyn ServerHandler>,
     message: JSONRPCMessage,
     outbound_tx: mpsc::Sender<Option<JSONRPCMessage>>,
     in_flight_requests: Arc<AtomicUsize>,
@@ -823,7 +826,7 @@ async fn handle_message_with_connection(
 ) -> Result<()> {
     match message {
         JSONRPCMessage::Notification(notification) => {
-            handle_notification(&**connection, notification, context).await
+            handle_notification(&*connection, notification, context).await
         }
         JSONRPCMessage::Request(request) => {
             in_flight_requests.fetch_add(1, Ordering::SeqCst);
@@ -850,7 +853,7 @@ async fn handle_message_with_connection(
 /// response is suppressed by cancellation. The None still wakes the
 /// connection loop so post-disconnect draining always terminates.
 fn spawn_request_handler(
-    connection: &Arc<Box<dyn ServerHandler>>,
+    connection: &Arc<dyn ServerHandler>,
     request: JSONRPCRequest,
     outbound_tx: mpsc::Sender<Option<JSONRPCMessage>>,
     in_flight_requests: Arc<AtomicUsize>,
@@ -865,7 +868,7 @@ fn spawn_request_handler(
 
     tokio::spawn(async move {
         let request_id = request.id.clone();
-        let response_message = handle_request(&**conn, request, &ctx).await;
+        let response_message = handle_request(&*conn, request, &ctx).await;
         let suppressed = ctx.is_request_cancelled(&request_id);
         ctx.end_request(&request_id);
         in_flight_requests.fetch_sub(1, Ordering::SeqCst);
@@ -934,7 +937,7 @@ async fn handle_initialize_request(
         .unwrap_or_else(|| Implementation::new("unknown", "0.0.0"));
 
     // Call the handler's initialize method
-    match connection
+    let (caps, result) = match connection
         .initialize(
             &ctx_with_request,
             protocol_version,
@@ -943,59 +946,10 @@ async fn handle_initialize_request(
         )
         .await
     {
-        Ok(result) => {
-            // Capture the capabilities from the result
-            let caps = result.capabilities.clone();
-
-            // Serialize the result
-            match serde_json::to_value(&result) {
-                Ok(value) => {
-                    let response =
-                        JSONRPCMessage::Response(JSONRPCResponse::Result(JSONRPCResultResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: request.id,
-                            result: schema::JSONRpcResult {
-                                _meta: None,
-                                other: if let Some(obj) = value.as_object() {
-                                    obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                                } else {
-                                    HashMap::new()
-                                },
-                            },
-                        }));
-                    (response, Some(caps))
-                }
-                Err(e) => (
-                    JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: Some(request.id),
-                        error: ErrorObject {
-                            code: INTERNAL_ERROR,
-                            message: format!("Failed to serialize initialize result: {e}"),
-                            data: None,
-                        },
-                    })),
-                    None,
-                ),
-            }
-        }
-        Err(e) => {
-            let response = if let Some(jsonrpc_error) = e.to_jsonrpc_response(request.id.clone()) {
-                JSONRPCMessage::Response(JSONRPCResponse::Error(jsonrpc_error))
-            } else {
-                JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: Some(request.id),
-                    error: ErrorObject {
-                        code: INTERNAL_ERROR,
-                        message: e.to_string(),
-                        data: None,
-                    },
-                }))
-            };
-            (response, None)
-        }
-    }
+        Ok(result) => (Some(result.capabilities.clone()), Ok(result)),
+        Err(e) => (None, Err(e)),
+    };
+    (result_to_jsonrpc_response(request.id, result), caps)
 }
 
 /// Handle a request using the Connection trait and convert result to JSONRPCMessage
@@ -1004,98 +958,23 @@ async fn handle_request(
     request: JSONRPCRequest,
     context: &ServerCtx,
 ) -> JSONRPCMessage {
-    tracing::info!(
-        "Server handling request: {:?} method: {}",
-        request.id,
-        request.request.method
-    );
-    // Create a context with the request ID
-    let ctx_with_request = context.with_request_id(request.id.clone());
-    let result = handle_request_inner(connection, request.clone(), &ctx_with_request).await;
-
-    match result {
-        Ok(value) => {
-            // Create a successful response
-            JSONRPCMessage::Response(JSONRPCResponse::Result(JSONRPCResultResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: request.id,
-                result: schema::JSONRpcResult {
-                    _meta: None,
-                    other: if let Some(obj) = value.as_object() {
-                        obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                    } else {
-                        let mut map = HashMap::new();
-                        map.insert("result".to_string(), value);
-                        map
-                    },
-                },
-            }))
-        }
-        Err(e) => {
-            // Check if error has a specific JSONRPC response
-            if let Some(jsonrpc_error) = e.to_jsonrpc_response(request.id.clone()) {
-                JSONRPCMessage::Response(JSONRPCResponse::Error(jsonrpc_error))
-            } else {
-                // For all other errors, use INTERNAL_ERROR
-                JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: Some(request.id),
-                    error: ErrorObject {
-                        code: INTERNAL_ERROR,
-                        message: e.to_string(),
-                        data: None,
-                    },
-                }))
-            }
-        }
-    }
-}
-
-/// Inner handler that returns Result<serde_json::Value>
-async fn handle_request_inner(
-    conn: &dyn ServerHandler,
-    request: JSONRPCRequest,
-    ctx: &ServerCtx,
-) -> Result<serde_json::Value> {
     let JSONRPCRequest {
+        id,
         request: Request { method, params },
         ..
     } = request;
-    let client_request = parse_client_request(method, params)?;
+    tracing::info!("Server handling request: {:?} method: {}", id, method);
 
-    conn.handle_request(ctx, client_request).await
-}
-
-/// Parse a client request from the JSON-RPC method and params payload.
-fn parse_client_request(method: String, params: Option<RequestParams>) -> Result<ClientRequest> {
-    let mut request_obj = serde_json::Map::new();
-    request_obj.insert(
-        "method".to_string(),
-        serde_json::Value::String(method.clone()),
-    );
-    if let Some(params) = params {
-        if let Some(meta) = params._meta {
-            request_obj.insert("_meta".to_string(), serde_json::to_value(meta)?);
+    let ctx_with_request = context.with_request_id(id.clone());
+    let result = match parse_typed_request::<ClientRequest>(&method, params) {
+        Ok(client_request) => {
+            connection
+                .handle_request(&ctx_with_request, client_request)
+                .await
         }
-        for (key, value) in params.other {
-            request_obj.insert(key, value);
-        }
-    }
-
-    match serde_json::from_value::<ClientRequest>(serde_json::Value::Object(request_obj)) {
-        Ok(req) => Ok(req),
-        Err(err) => {
-            let err_str = err.to_string();
-            if err_str.contains("unknown variant") {
-                Err(Error::MethodNotFound(method))
-            } else {
-                Err(Error::InvalidParams(format!(
-                    "Invalid parameters for {}: {}",
-                    method, err
-                )))
-            }
-        }
-    }
+        Err(e) => Err(e),
+    };
+    result_to_jsonrpc_response(id, result)
 }
 
 /// Handle a notification using the Connection trait
@@ -1109,25 +988,7 @@ async fn handle_notification(
         notification.notification.method
     );
 
-    // Build a value that matches the shape expected by ClientNotification.
-    let mut object = serde_json::Map::new();
-    object.insert(
-        "method".to_string(),
-        serde_json::Value::String(notification.notification.method.clone()),
-    );
-
-    if let Some(params) = notification.notification.params {
-        if let Some(meta) = params._meta {
-            object.insert("_meta".to_string(), serde_json::to_value(meta)?);
-        }
-        for (k, v) in params.other {
-            object.insert(k, v);
-        }
-    }
-
-    let value = serde_json::Value::Object(object);
-
-    match serde_json::from_value::<ClientNotification>(value) {
+    match parse_typed_notification::<ClientNotification>(notification.notification) {
         Ok(typed) => {
             if let ClientNotification::Cancelled {
                 request_id,

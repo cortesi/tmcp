@@ -484,18 +484,6 @@ mod tests {
     use crate::schema::{ErrorObject, JSONRPCErrorResponse};
 
     #[test]
-    fn test_request_id_to_key_string() {
-        let id = RequestId::String("test-123".to_string());
-        assert_eq!(id.to_key(), "test-123");
-    }
-
-    #[test]
-    fn test_request_id_to_key_number() {
-        let id = RequestId::Number(42);
-        assert_eq!(id.to_key(), "__num__42");
-    }
-
-    #[test]
     fn test_request_id_display() {
         let string_id = RequestId::String("abc".to_string());
         assert_eq!(format!("{string_id}"), "abc");

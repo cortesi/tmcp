@@ -1,9 +1,74 @@
 use std::collections::HashMap;
 
+use serde::de::DeserializeOwned;
+
 use crate::{
-    error::Result,
+    error::{Error, Result},
     schema::{self, *},
 };
+
+/// Parse a typed inbound request from its JSON-RPC method and params.
+///
+/// The wire `params` object and its `_meta` are folded back into one object
+/// (alongside `method`) so the method-tagged enums can deserialize it.
+pub fn parse_typed_request<T>(method: &str, params: Option<RequestParams>) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "method".to_string(),
+        serde_json::Value::String(method.to_string()),
+    );
+    if let Some(params) = params {
+        if let Some(meta) = params._meta {
+            object.insert("_meta".to_string(), serde_json::to_value(meta)?);
+        }
+        object.extend(params.other);
+    }
+    serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|err| classify_parse_error(method, &err))
+}
+
+/// Parse a typed inbound notification from its JSON-RPC envelope.
+///
+/// `_meta` is preserved and folded back into the object so typed
+/// notifications that model it can capture it.
+pub fn parse_typed_notification<T>(notification: Notification) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let method = notification.method;
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "method".to_string(),
+        serde_json::Value::String(method.clone()),
+    );
+    if let Some(params) = notification.params {
+        if let Some(meta) = params._meta {
+            object.insert("_meta".to_string(), serde_json::to_value(meta)?);
+        }
+        object.extend(params.other);
+    }
+    serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|err| classify_parse_error(&method, &err))
+}
+
+/// Classify a deserialization failure as method-not-found or invalid params.
+///
+/// The method-tagged enums report an unknown method as serde's "unknown
+/// variant" error naming the method itself; matching on the quoted method
+/// name avoids misclassifying unknown variants nested inside valid params.
+fn classify_parse_error(method: &str, err: &serde_json::Error) -> Error {
+    if err
+        .to_string()
+        .contains(&format!("unknown variant `{method}`"))
+    {
+        Error::MethodNotFound(method.to_string())
+    } else {
+        Error::InvalidParams(format!("Invalid parameters for {method}: {err}"))
+    }
+}
 
 /// Create a JSONRPC notification from a typed notification.
 pub fn create_jsonrpc_notification<T>(notification: &T) -> JSONRPCNotification
@@ -72,24 +137,6 @@ impl NotificationTrait for schema::ClientNotification {
     }
 }
 
-/// Create a JSONRPC error response
-pub fn create_jsonrpc_error(
-    id: RequestId,
-    code: i64,
-    message: String,
-    data: Option<serde_json::Value>,
-) -> JSONRPCErrorResponse {
-    JSONRPCErrorResponse {
-        jsonrpc: JSONRPC_VERSION.to_string(),
-        id: Some(id),
-        error: ErrorObject {
-            code: code as i32,
-            message,
-            data,
-        },
-    }
-}
-
 /// Convert a Result<T> to a JSONRPC response
 pub fn result_to_jsonrpc_response<T>(id: RequestId, result: Result<T>) -> JSONRPCMessage
 where
@@ -103,27 +150,26 @@ where
                 id,
                 result: schema::JSONRpcResult {
                     _meta: None,
-                    other: if let Some(obj) = json_value.as_object() {
-                        obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                    } else {
-                        let mut map = HashMap::new();
-                        map.insert("result".to_string(), json_value);
-                        map
+                    other: match json_value {
+                        serde_json::Value::Object(map) => map.into_iter().collect(),
+                        other => HashMap::from([("result".to_string(), other)]),
                     },
                 },
             }))
         }
         Err(e) => {
-            if let Some(jsonrpc_error) = e.to_jsonrpc_response(id.clone()) {
-                JSONRPCMessage::Response(JSONRPCResponse::Error(jsonrpc_error))
-            } else {
-                JSONRPCMessage::Response(JSONRPCResponse::Error(create_jsonrpc_error(
-                    id,
-                    INTERNAL_ERROR as i64,
-                    e.to_string(),
-                    None,
-                )))
-            }
+            let error = e
+                .to_jsonrpc_response(id.clone())
+                .unwrap_or_else(|| JSONRPCErrorResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: Some(id),
+                    error: ErrorObject {
+                        code: INTERNAL_ERROR,
+                        message: e.to_string(),
+                        data: None,
+                    },
+                });
+            JSONRPCMessage::Response(JSONRPCResponse::Error(error))
         }
     }
 }
