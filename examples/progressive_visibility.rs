@@ -38,7 +38,7 @@ impl VisibilityServer {
         tools
             .register_with_visibility(
                 "beta_greet",
-                Tool::new("beta_greet", ToolSchema::empty())
+                Tool::new("beta_greet", ToolSchema::default())
                     .with_description("Greet from a beta-only tool"),
                 Visibility::When(Arc::new(move |_view| flag.load(Ordering::Relaxed))),
                 beta_greet,

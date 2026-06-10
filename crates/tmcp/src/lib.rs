@@ -102,12 +102,14 @@ mod context;
 /// Error types and Result alias.
 mod error;
 /// HTTP transport implementation.
+#[cfg(feature = "http")]
 mod http;
 /// JSON-RPC message definitions.
 mod jsonrpc;
 /// Helpers for inspecting a server's MCP API.
 mod mcp_api;
 /// Human-oriented rendering for MCP API snapshots.
+#[cfg(feature = "render")]
 mod mcp_api_render;
 /// Request/response routing and tracking.
 mod request_handler;
@@ -119,10 +121,12 @@ mod toolset;
 mod transport;
 
 /// OAuth and authorization helpers.
+#[cfg(feature = "auth")]
 pub mod auth;
 /// Public schema types for MCP messages.
 pub mod schema;
 /// Test utilities for building tmcp integration tests.
+#[cfg(feature = "testutils")]
 pub mod testutils;
 
 pub use arguments::Arguments;
@@ -133,22 +137,27 @@ pub use error::{
     Error, Result, TOOL_ERROR_INTERNAL, TOOL_ERROR_INVALID_INPUT, TOOL_ERROR_NOT_FOUND,
     TOOL_ERROR_TIMEOUT, ToolError, ToolResult,
 };
+#[cfg(feature = "http")]
 pub use http::CorsPolicy;
 pub use mcp_api::{
     McpApi, McpApiOptions, McpApiRefreshSnapshot, McpApiRefreshState, collect_client_prompts,
     collect_client_resource_templates, collect_client_resources, collect_client_tools,
     inspect_client, inspect_server, inspect_server_with,
 };
+#[cfg(feature = "render")]
 pub use mcp_api_render::{McpApiRenderOptions, render_mcp_api};
 pub use schema::ToolResponse;
-pub use server::{EmbeddedHttpServer, HttpBuilder, Server, ServerHandle, TcpServerHandle};
+#[cfg(feature = "http")]
+pub use server::{EmbeddedHttpServer, HttpBuilder};
+pub use server::{Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root
 pub use tmcp_macros::{Group, ToolResponse, group, mcp_server, tool, tool_params, tool_result};
 pub use toolset::{
-    ActivationHook, Group, GroupConfig, GroupInfo, ToolSet, ToolSetView, Visibility,
+    ActivationHook, Group, GroupConfig, GroupInfo, ToolCallFuture, ToolFuture, ToolSet,
+    ToolSetView, Visibility,
 };
 #[doc(hidden)]
-pub use toolset::{GroupDispatch, GroupRegistration, ToolCallFuture, ToolFuture};
+pub use toolset::{GroupDispatch, GroupRegistration};
 
 // Keep the full macros module available for internal use
 /// Re-exported macros module for internal use.

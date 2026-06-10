@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+#[cfg(feature = "http")]
 use axum::Router;
 use futures::{SinkExt, StreamExt};
 use tokio::{
@@ -18,12 +19,14 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "auth")]
+use crate::auth::server::{AuthConfig, BearerAuthLayer, protected_resource_handler};
+#[cfg(feature = "http")]
+use crate::http::{CorsPolicy, EmbeddedHttpRoutes, HttpServer, normalize_endpoint_path};
 use crate::{
-    auth::server::{AuthConfig, BearerAuthLayer, protected_resource_handler},
     connection::ServerHandler,
     context::ServerCtx,
     error::{Error, Result},
-    http::{CorsPolicy, EmbeddedHttpRoutes, HttpServer, normalize_endpoint_path},
     jsonrpc::{
         create_jsonrpc_notification, parse_typed_notification, parse_typed_request,
         result_to_jsonrpc_response,
@@ -35,15 +38,19 @@ use crate::{
 /// Fan-out delivering a server notification to every active session.
 pub type NotificationFanout = Box<dyn Fn(&ServerNotification) + Send + Sync>;
 
+/// Factory invoked once per connection to create its handler.
+pub type HandlerFactory = Arc<dyn Fn() -> Box<dyn ServerHandler> + Send + Sync>;
+
 /// Maximum number of queued outbound server notifications before backpressure applies.
 const SERVER_NOTIFICATION_BUFFER: usize = 64;
 /// Maximum number of queued server responses before request handlers backpressure.
 const SERVER_RESPONSE_BUFFER: usize = 64;
 
 /// Builder that configures and serves the HTTP transport.
-pub struct HttpBuilder<F> {
+#[cfg(feature = "http")]
+pub struct HttpBuilder {
     /// Server to serve.
-    server: Server<F>,
+    server: Server,
     /// Bind address for the HTTP listener.
     bind_addr: Option<String>,
     /// Public endpoint path where MCP is served.
@@ -57,6 +64,7 @@ pub struct HttpBuilder<F> {
 }
 
 /// Result of embedding tmcp HTTP routes into an existing Axum application.
+#[cfg(feature = "http")]
 pub struct EmbeddedHttpServer {
     /// Router containing the mounted MCP handlers and any auxiliary routes.
     ///
@@ -67,12 +75,12 @@ pub struct EmbeddedHttpServer {
 }
 
 /// MCP Server implementation
-pub struct Server<F> {
+pub struct Server {
     /// Factory for creating per-connection handlers.
-    connection_factory: F,
+    connection_factory: HandlerFactory,
 }
 
-impl Server<()> {
+impl Server {
     /// Create a new server with a handler factory.
     ///
     /// The factory function is called once for each incoming connection,
@@ -104,8 +112,8 @@ impl Server<()> {
     ///         Ok(InitializeResult::new("my-server")
     ///             .with_version("1.0.0")
     ///             .with_tools(None)           // Enable static tools capability
-    ///             .with_resources(true, true) // Enable resources with subscribe and list_changed
-    ///             .with_prompts(true)         // Enable prompts capability
+    ///             .with_resources(Some(true), Some(true)) // Enable resources with subscribe and list_changed
+    ///             .with_prompts(Some(true))   // Enable prompts capability
     ///             .with_logging()             // Enable logging capability
     ///             .with_instructions("A helpful MCP server"))
     ///     }
@@ -114,27 +122,19 @@ impl Server<()> {
     /// let server = Server::new(|| MyHandler);
     /// server.serve_stdio().await?;
     /// ```
-    pub fn new<C, G>(
-        factory: G,
-    ) -> Server<impl Fn() -> Box<dyn ServerHandler> + Clone + Send + Sync + 'static>
+    pub fn new<C, G>(factory: G) -> Self
     where
         C: ServerHandler + 'static,
-        G: Fn() -> C + Clone + Send + Sync + 'static,
+        G: Fn() -> C + Send + Sync + 'static,
     {
-        Server {
-            connection_factory: move || Box::new(factory()) as Box<dyn ServerHandler>,
+        Self {
+            connection_factory: Arc::new(move || Box::new(factory()) as Box<dyn ServerHandler>),
         }
     }
-}
 
-impl<F> Server<F>
-where
-    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
-{
-    /// Create a server from a pre-boxed handler factory.
-    ///
-    /// This is for internal use when the factory already returns `Box<dyn ServerHandler>`.
-    pub(crate) fn from_factory(factory: F) -> Self {
+    /// Create a server from a shared, pre-boxed handler factory.
+    #[cfg(feature = "http")]
+    pub(crate) fn from_factory(factory: HandlerFactory) -> Self {
         Self {
             connection_factory: factory,
         }
@@ -183,16 +183,13 @@ where
     ///
     /// Returns a [`TcpServerHandle`] that can be used to stop accepting new connections.
     /// Existing connections will continue until they complete or their clients disconnect.
-    pub async fn serve_tcp(self, addr: impl ToSocketAddrs) -> Result<TcpServerHandle>
-    where
-        F: Clone,
-    {
+    pub async fn serve_tcp(self, addr: impl ToSocketAddrs) -> Result<TcpServerHandle> {
         let listener = TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
         info!("MCP server listening on {}", bound_addr);
 
-        // Convert connection factory to Arc for sharing across tasks
-        let connection_factory = Arc::new(self.connection_factory);
+        // The shared connection factory is cloned into each connection task.
+        let connection_factory = self.connection_factory;
 
         // Create shutdown token for coordinating shutdown
         let shutdown_token = CancellationToken::new();
@@ -213,14 +210,14 @@ where
                             Ok((stream, peer_addr)) => {
                                 info!("New connection from {}", peer_addr);
 
-                                // Clone Arc reference for the spawned task
+                                // Clone the shared factory for the spawned task
                                 let factory = connection_factory.clone();
 
                                 // Handle each connection in a separate task
                                 tokio::spawn(async move {
-                                    // Create a new server with cloned factory
+                                    // Create a new server with the shared factory
                                     let server = Self {
-                                        connection_factory: factory.as_ref().clone(),
+                                        connection_factory: factory,
                                     };
 
                                     let transport = Box::new(StreamTransport::new(stream));
@@ -251,7 +248,8 @@ where
     ///
     /// Returns an [`HttpBuilder`] for further configuration; call
     /// [`HttpBuilder::serve`] to start serving.
-    pub fn http(self, addr: impl AsRef<str>) -> HttpBuilder<F> {
+    #[cfg(feature = "http")]
+    pub fn http(self, addr: impl AsRef<str>) -> HttpBuilder {
         HttpBuilder {
             server: self,
             bind_addr: Some(addr.as_ref().to_string()),
@@ -263,7 +261,8 @@ where
     }
 
     /// Configure an HTTP server for embedding into an existing Axum application.
-    pub fn http_embed(self) -> HttpBuilder<F> {
+    #[cfg(feature = "http")]
+    pub fn http_embed(self) -> HttpBuilder {
         HttpBuilder {
             server: self,
             bind_addr: None,
@@ -277,15 +276,14 @@ where
     /// Serve HTTP connections
     /// This is a convenience method for the common HTTP server use case
     /// Returns a ServerHandle that can be used to stop the server
+    #[cfg(feature = "http")]
     pub async fn serve_http(self, addr: impl AsRef<str>) -> Result<ServerHandle> {
         self.http(addr).serve().await
     }
 }
 
-impl<F> HttpBuilder<F>
-where
-    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
-{
+#[cfg(feature = "http")]
+impl HttpBuilder {
     /// Override the public endpoint path where the MCP handlers are mounted.
     pub fn with_endpoint_path(mut self, endpoint_path: impl Into<String>) -> Self {
         self.endpoint_path = normalize_endpoint_path(endpoint_path);
@@ -323,6 +321,7 @@ where
     }
 
     /// Protect the MCP routes with bearer-token auth and expose PRM discovery routes.
+    #[cfg(feature = "auth")]
     pub fn with_auth(self, config: &AuthConfig) -> Self {
         let middleware = BearerAuthLayer::new(config.validator.clone(), &config.endpoint_path)
             .with_base_url(&config.base_url)
@@ -339,7 +338,7 @@ where
                 "HTTP embed builders do not have a bind address; call into_router()".to_string(),
             )
         })?;
-        let http = HttpServer::new(Arc::new(self.server.connection_factory), self.cors);
+        let http = HttpServer::new(self.server.connection_factory, self.cors);
         let EmbeddedHttpRoutes {
             mcp_router,
             aux_routes,
@@ -357,7 +356,7 @@ where
     /// Build tmcp HTTP routers for embedding into an existing Axum application.
     pub async fn into_router(self) -> Result<EmbeddedHttpServer> {
         let endpoint_path = self.endpoint_path;
-        let http = HttpServer::new(Arc::new(self.server.connection_factory), self.cors);
+        let http = HttpServer::new(self.server.connection_factory, self.cors);
         let EmbeddedHttpRoutes {
             mcp_router,
             aux_routes,
@@ -376,6 +375,7 @@ where
 }
 
 /// Return the externally reachable HTTP endpoint address.
+#[cfg(feature = "http")]
 fn endpoint_addr(bound_addr: &str, endpoint_path: &str) -> String {
     let endpoint_path = normalize_endpoint_path(endpoint_path);
     if endpoint_path == "/" {
@@ -386,6 +386,7 @@ fn endpoint_addr(bound_addr: &str, endpoint_path: &str) -> String {
 }
 
 /// Return an embedded router mounted at the configured endpoint path.
+#[cfg(feature = "http")]
 fn mount_embedded_router(endpoint_path: &str, mcp_router: Router, aux_routes: Router) -> Router {
     let endpoint_path = normalize_endpoint_path(endpoint_path);
     if endpoint_path == "/" {
@@ -405,9 +406,12 @@ pub struct ServerHandle {
     notification_tx: mpsc::Sender<ServerNotification>,
     /// Token used to signal shutdown to the server loop.
     shutdown_token: CancellationToken,
-    /// The actual bound address (for servers that bind to a network port)
+    /// The bound listener address, when the server is bound to a network port.
+    ///
+    /// `None` for stdio and stream transports, which have no socket address.
     pub bound_addr: Option<String>,
     /// Public HTTP endpoint path, when the server is exposed over HTTP.
+    #[cfg(feature = "http")]
     endpoint_path: Option<String>,
     /// Notification fan-out override used by multi-session (HTTP) listeners.
     ///
@@ -425,10 +429,7 @@ impl Drop for ServerHandle {
 
 impl ServerHandle {
     /// Start serving connections using the provided transport, returning a handle for runtime operations
-    pub(crate) async fn new<F>(server: Server<F>, mut transport: Box<dyn Transport>) -> Result<Self>
-    where
-        F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
-    {
+    pub(crate) async fn new(server: Server, mut transport: Box<dyn Transport>) -> Result<Self> {
         transport.connect().await?;
         let remote_addr = transport.remote_addr();
         let stream = transport.framed()?;
@@ -633,6 +634,7 @@ impl ServerHandle {
             notification_tx: notification_tx_handle,
             shutdown_token,
             bound_addr: None,
+            #[cfg(feature = "http")]
             endpoint_path: None,
             fanout: None,
         })
@@ -643,6 +645,7 @@ impl ServerHandle {
     /// `task` keeps the listener alive for `join`; `shutdown_token` stops the
     /// listener and all of its sessions; `fanout` delivers server
     /// notifications to every active session.
+    #[cfg(feature = "http")]
     pub(crate) fn listener(
         task: JoinHandle<()>,
         shutdown_token: CancellationToken,
@@ -662,15 +665,15 @@ impl ServerHandle {
     }
 
     /// Signal the server loop to stop without consuming the handle.
+    #[cfg(feature = "http")]
     pub(crate) fn signal_stop(&self) {
         self.shutdown_token.cancel();
     }
 
     /// Create a ServerHandle using generic AsyncRead and AsyncWrite streams
     /// This is a convenience method that creates a StreamTransport from the provided streams
-    pub async fn from_stream<F, R, W>(server: Server<F>, reader: R, writer: W) -> Result<Self>
+    pub async fn from_stream<R, W>(server: Server, reader: R, writer: W) -> Result<Self>
     where
-        F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
         R: AsyncRead + Send + Sync + Unpin + 'static,
         W: AsyncWrite + Send + Sync + Unpin + 'static,
     {
@@ -681,10 +684,7 @@ impl ServerHandle {
 
     /// Create a ServerHandle from a transport
     /// This allows using any transport implementation
-    pub async fn from_transport<F>(server: Server<F>, transport: Box<dyn Transport>) -> Result<Self>
-    where
-        F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
-    {
+    pub async fn from_transport(server: Server, transport: Box<dyn Transport>) -> Result<Self> {
         Self::new(server, transport).await
     }
 
@@ -705,6 +705,7 @@ impl ServerHandle {
     }
 
     /// Return the externally reachable endpoint address, including any HTTP path.
+    #[cfg(feature = "http")]
     #[must_use]
     pub fn endpoint_addr(&self) -> Option<String> {
         let bound_addr = self.bound_addr.as_deref()?;
@@ -739,7 +740,9 @@ pub struct TcpServerHandle {
     handle: JoinHandle<()>,
     /// Token used to signal shutdown to the accept loop.
     shutdown_token: CancellationToken,
-    /// The actual bound address.
+    /// The bound listener address.
+    ///
+    /// Always present: TCP servers are always bound to a socket address.
     pub bound_addr: SocketAddr,
 }
 

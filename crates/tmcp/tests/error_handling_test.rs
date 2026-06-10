@@ -195,7 +195,7 @@ mod tests {
                 Ok(schema::InitializeResult::new("test-server")
                     .with_version("1.0.0")
                     .with_tools(Some(false))
-                    .with_resources(true, false))
+                    .with_resources(Some(true), Some(false)))
             }
 
             async fn list_tools(

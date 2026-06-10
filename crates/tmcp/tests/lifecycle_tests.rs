@@ -198,11 +198,9 @@ mod tests {
 
         // First connection
         let server_clone = server_impl.clone();
-        let (mut client1, handle1) = connected_client_and_server(move || {
-            Box::new(server_clone.clone()) as Box<dyn ServerHandler>
-        })
-        .await
-        .unwrap();
+        let (mut client1, handle1) = connected_client_and_server(move || server_clone.clone())
+            .await
+            .unwrap();
         client1.init().await.unwrap();
         client1.list_tools(None).await.ok();
 
@@ -210,11 +208,9 @@ mod tests {
 
         // Second connection
         let server_clone2 = server_impl.clone();
-        let (mut client2, handle2) = connected_client_and_server(move || {
-            Box::new(server_clone2.clone()) as Box<dyn ServerHandler>
-        })
-        .await
-        .unwrap();
+        let (mut client2, handle2) = connected_client_and_server(move || server_clone2.clone())
+            .await
+            .unwrap();
         client2.init().await.unwrap();
         client2.list_tools(None).await.ok();
 

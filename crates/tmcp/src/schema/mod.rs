@@ -6,7 +6,6 @@
 //!
 //! For detailed semantics of each type, refer to the
 //! [MCP specification](https://spec.modelcontextprotocol.io/).
-#![allow(missing_docs)]
 
 /// JSON-RPC 2.0 message types and constants for the MCP protocol.
 mod jsonrpc;

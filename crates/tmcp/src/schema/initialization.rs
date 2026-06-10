@@ -12,7 +12,9 @@ pub struct InitializeResult {
     /// client cannot support this version, it MUST disconnect.
     #[serde(rename = "protocolVersion")]
     pub protocol_version: String,
+    /// Capabilities the server advertises to the client.
     pub capabilities: ServerCapabilities,
+    /// Server implementation information.
     #[serde(rename = "serverInfo")]
     pub server_info: Implementation,
     /// Instructions describing how to use the server and its features.
@@ -68,22 +70,15 @@ impl InitializeResult {
         self
     }
 
-    /// Enable prompts capability
-    pub fn with_prompts(mut self, list_changed: bool) -> Self {
-        self.capabilities.prompts = Some(PromptsCapability {
-            list_changed: Some(list_changed),
-            _extra: Default::default(),
-        });
+    /// Enable prompts capability with optional list change notifications.
+    pub fn with_prompts(mut self, list_changed: Option<bool>) -> Self {
+        self.capabilities = self.capabilities.with_prompts(list_changed);
         self
     }
 
-    /// Enable resources capability
-    pub fn with_resources(mut self, subscribe: bool, list_changed: bool) -> Self {
-        self.capabilities.resources = Some(ResourcesCapability {
-            subscribe: Some(subscribe),
-            list_changed: Some(list_changed),
-            _extra: Default::default(),
-        });
+    /// Enable resources capability with optional subscribe and list change support.
+    pub fn with_resources(mut self, subscribe: Option<bool>, list_changed: Option<bool>) -> Self {
+        self.capabilities = self.capabilities.with_resources(subscribe, list_changed);
         self
     }
 

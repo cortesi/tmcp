@@ -160,7 +160,7 @@ mod tests {
         tools
             .register_with_visibility(
                 "conditional_tool",
-                Tool::new("conditional_tool", ToolSchema::empty()),
+                Tool::new("conditional_tool", ToolSchema::default()),
                 Visibility::When(Arc::new(move |_view| flag_clone.load(Ordering::Relaxed))),
                 ok_handler,
             )
@@ -289,14 +289,14 @@ mod tests {
         tools
             .register(
                 "b_tool",
-                Tool::new("b_tool", ToolSchema::empty()),
+                Tool::new("b_tool", ToolSchema::default()),
                 ok_handler,
             )
             .unwrap();
         tools
             .register(
                 "a_tool",
-                Tool::new("a_tool", ToolSchema::empty()),
+                Tool::new("a_tool", ToolSchema::default()),
                 ok_handler,
             )
             .unwrap();

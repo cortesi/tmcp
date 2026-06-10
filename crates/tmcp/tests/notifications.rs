@@ -94,10 +94,8 @@ mod tests {
         let (mut client, server_handle) = connected_client_and_server_with_conn(
             {
                 let sent_notification = sent_notification.clone();
-                move || {
-                    Box::new(NotifyingServer {
-                        sent_notification: sent_notification.clone(),
-                    })
+                move || NotifyingServer {
+                    sent_notification: sent_notification.clone(),
                 }
             },
             NotificationRecorder {

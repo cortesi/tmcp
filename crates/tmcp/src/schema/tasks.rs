@@ -1,17 +1,22 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{PaginatedResult, Result};
+use super::{JSONRPCResult, PaginatedResult};
 use crate::macros::{with_meta, with_open_meta};
 
 /// The status of a task.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// The task is executing.
     Working,
+    /// The task is waiting for additional input.
     InputRequired,
+    /// The task finished successfully.
     Completed,
+    /// The task finished with an error.
     Failed,
+    /// The task was cancelled before completion.
     Cancelled,
 }
 
@@ -21,14 +26,6 @@ pub struct TaskMetadata {
     /// Requested duration in milliseconds to retain task from creation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u64>,
-}
-
-/// Metadata for associating messages with a task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RelatedTaskMetadata {
-    /// The task identifier this message is associated with.
-    #[serde(rename = "taskId")]
-    pub task_id: String,
 }
 
 /// Data associated with a task.
@@ -59,41 +56,27 @@ pub struct Task {
 #[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTaskResult {
+    /// The task created for the request.
     pub task: Task,
 }
-
-/// Parameters for tasks/get, tasks/result, and tasks/cancel requests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskIdParams {
-    /// The task identifier to query.
-    #[serde(rename = "taskId")]
-    pub task_id: String,
-}
-
-/// Parameters for a tasks/get request.
-pub type GetTaskRequestParams = TaskIdParams;
-
-/// Parameters for a tasks/result request.
-pub type GetTaskPayloadRequestParams = TaskIdParams;
-
-/// Parameters for a tasks/cancel request.
-pub type CancelTaskRequestParams = TaskIdParams;
 
 /// The response to a tasks/get request.
 #[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetTaskResult {
+    /// The current state of the task.
     #[serde(flatten)]
     pub task: Task,
 }
 
 /// The response to a tasks/result request.
-pub type GetTaskPayloadResult = Result;
+pub type GetTaskPayloadResult = JSONRPCResult;
 
 /// The response to a tasks/cancel request.
 #[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CancelTaskResult {
+    /// The state of the task after cancellation.
     #[serde(flatten)]
     pub task: Task,
 }
@@ -101,8 +84,10 @@ pub struct CancelTaskResult {
 /// The response to a tasks/list request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListTasksResult {
+    /// Pagination state for the listing.
     #[serde(flatten)]
     pub page: PaginatedResult,
+    /// Tasks returned in this page.
     pub tasks: Vec<Task>,
 }
 

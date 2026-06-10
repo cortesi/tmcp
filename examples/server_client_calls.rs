@@ -88,15 +88,15 @@ impl ServerHandler for ClientCallsServer {
         _context: &ServerCtx,
         _cursor: Option<schema::Cursor>,
     ) -> Result<ListToolsResult> {
-        // Tools with no parameters use ToolSchema::empty() for clarity
+        // Tools with no parameters use ToolSchema::default() for clarity
         // Tools with parameters use Tool::from_schema<T>() for type-safe schema generation
         Ok(ListToolsResult::new()
             .with_tool(
-                Tool::new("ping_client", ToolSchema::empty())
+                Tool::new("ping_client", ToolSchema::default())
                     .with_description("Ping the connected client to verify the connection"),
             )
             .with_tool(
-                Tool::new("list_roots", ToolSchema::empty())
+                Tool::new("list_roots", ToolSchema::default())
                     .with_description("List filesystem roots exposed by the client"),
             )
             .with_tool(

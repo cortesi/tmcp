@@ -46,17 +46,28 @@ use super::validation::{
     parse_jsonrpc_body, read_json_body, validate_json_content_type, validate_origin,
     validate_protocol_version,
 };
+#[cfg(feature = "auth")]
+use crate::auth::server::AuthInfo;
 use crate::{
-    auth::server::AuthInfo,
-    connection::ServerHandler,
     error::{Error, Result},
     schema::{JSONRPCMessage, JSONRPCNotification, JSONRPCResponse, RequestId},
-    server::{NotificationFanout, Server, ServerHandle},
+    server::{HandlerFactory, NotificationFanout, Server, ServerHandle},
     transport::{IncomingMessage, Transport, TransportStream},
 };
 
-/// Factory producing a fresh handler for each HTTP session.
-pub type HandlerFactory = Arc<dyn Fn() -> Box<dyn ServerHandler> + Send + Sync>;
+/// Extract the authenticated subject recorded by the auth middleware, if any.
+#[cfg(feature = "auth")]
+fn auth_subject(extensions: &http::Extensions) -> Option<String> {
+    extensions
+        .get::<AuthInfo>()
+        .map(|info| info.subject.clone())
+}
+
+/// Without the `auth` feature no middleware records a subject.
+#[cfg(not(feature = "auth"))]
+fn auth_subject(_extensions: &http::Extensions) -> Option<String> {
+    None
+}
 
 /// Session inactivity timeout (1 hour).
 const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -506,10 +517,8 @@ fn session_id_header(headers: &HeaderMap) -> Option<String> {
 /// authenticated subject and the request's [`AuthInfo`] subject differs or is absent.
 fn check_session_subject(session: &HttpSession, extensions: &http::Extensions) -> Option<Response> {
     let expected = session.auth_subject.as_deref()?;
-    let actual = extensions
-        .get::<AuthInfo>()
-        .map(|info| info.subject.as_str());
-    if actual == Some(expected) {
+    let actual = auth_subject(extensions);
+    if actual.as_deref() == Some(expected) {
         None
     } else {
         Some(
@@ -639,8 +648,7 @@ async fn handle_initialize_post(
         routes: routes.clone(),
         session_id: session_id.clone(),
     };
-    let factory = state.factory.clone();
-    let server = Server::from_factory(move || factory());
+    let server = Server::from_factory(state.factory.clone());
     let handle = match ServerHandle::new(server, Box::new(transport)).await {
         Ok(handle) => handle,
         Err(error) => {
@@ -654,9 +662,7 @@ async fn handle_initialize_post(
         incoming_tx,
         routes,
         handle: Arc::new(handle),
-        auth_subject: extensions
-            .get::<AuthInfo>()
-            .map(|info| info.subject.clone()),
+        auth_subject: auth_subject(&extensions),
     };
     state.sessions.insert(session_id.clone(), session.clone());
 
@@ -771,7 +777,7 @@ async fn handle_delete(State(state): State<HttpServerState>, request: Request) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{JSONRPC_VERSION, JSONRPCResultResponse, JSONRpcResult, Notification};
+    use crate::schema::{JSONRPC_VERSION, JSONRPCResult, JSONRPCResultResponse, Notification};
 
     fn notification(method: &str) -> JSONRPCMessage {
         JSONRPCMessage::Notification(JSONRPCNotification {
@@ -793,7 +799,7 @@ mod tests {
         let response = JSONRPCMessage::Response(JSONRPCResponse::Result(JSONRPCResultResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id,
-            result: JSONRpcResult {
+            result: JSONRPCResult {
                 _meta: None,
                 other: Default::default(),
             },

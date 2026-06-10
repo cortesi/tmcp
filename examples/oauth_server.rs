@@ -70,7 +70,7 @@ impl ServerHandler for AppMcpServer {
         _cursor: Option<Cursor>,
     ) -> Result<ListToolsResult> {
         Ok(ListToolsResult::default().with_tool(
-            Tool::new("status", ToolSchema::empty())
+            Tool::new("status", ToolSchema::default())
                 .with_description("Return server status")
                 .with_read_only_hint(true),
         ))

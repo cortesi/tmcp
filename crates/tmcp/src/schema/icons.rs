@@ -50,6 +50,8 @@ impl Icon {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IconTheme {
+    /// Icon designed for light backgrounds.
     Light,
+    /// Icon designed for dark backgrounds.
     Dark,
 }

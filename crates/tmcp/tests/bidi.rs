@@ -213,12 +213,10 @@ mod tests {
         let (test_client, client_calls) = TestClient::new();
         let (test_server, server_calls) = TestServer::new();
 
-        let (mut client, server_handle) = connected_client_and_server_with_conn(
-            move || Box::new(test_server.clone()),
-            test_client,
-        )
-        .await
-        .expect("Failed to create client/server pair");
+        let (mut client, server_handle) =
+            connected_client_and_server_with_conn(move || test_server.clone(), test_client)
+                .await
+                .expect("Failed to create client/server pair");
 
         // Initialize connection
         client
@@ -301,12 +299,10 @@ mod tests {
         let (test_client, client_calls) = TestClient::new();
         let (test_server, server_calls) = TestServer::new();
 
-        let (mut client, server_handle) = connected_client_and_server_with_conn(
-            move || Box::new(test_server.clone()),
-            test_client,
-        )
-        .await
-        .expect("Failed to create client/server pair");
+        let (mut client, server_handle) =
+            connected_client_and_server_with_conn(move || test_server.clone(), test_client)
+                .await
+                .expect("Failed to create client/server pair");
 
         client
             .initialize(

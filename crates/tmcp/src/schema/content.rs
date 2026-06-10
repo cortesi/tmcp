@@ -7,10 +7,13 @@ use serde_json::{Map, Value};
 use super::{Resource, ResourceContents};
 use crate::{Arguments, macros::with_meta};
 
+/// The sender or intended audience of a message or content block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// The human user.
     User,
+    /// The AI assistant.
     Assistant,
 }
 
@@ -135,7 +138,9 @@ impl UnknownContentBlock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OneOrMany<T> {
+    /// A single value.
     One(T),
+    /// A list of values.
     Many(Vec<T>),
 }
 
@@ -224,10 +229,13 @@ impl<T> From<Vec<T>> for OneOrMany<T> {
     }
 }
 
+/// The contents of a resource, embedded into a prompt or tool call result.
 #[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddedResource {
+    /// The embedded resource contents.
     pub resource: ResourceContents,
+    /// Optional annotations for the client.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Annotations>,
 }
@@ -235,21 +243,27 @@ pub struct EmbeddedResource {
 /// A resource that the server is capable of reading, included in a prompt or tool call result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceLink {
+    /// The linked resource's descriptor.
     #[serde(flatten)]
     pub resource: Resource,
 }
 
+/// Optional annotations for the client describing how to use content.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Annotations {
+    /// Who the content is intended for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audience: Option<Vec<Role>>,
+    /// Importance from 0.0 (least) to 1.0 (most).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<f64>,
+    /// ISO 8601 timestamp of the last modification.
     #[serde(rename = "lastModified", skip_serializing_if = "Option::is_none")]
     pub last_modified: Option<String>,
 }
 
 impl Annotations {
+    /// Create empty annotations.
     pub fn new() -> Self {
         Self {
             audience: None,
@@ -258,31 +272,38 @@ impl Annotations {
         }
     }
 
+    /// Set the intended audience.
     pub fn with_audience(mut self, audience: Vec<Role>) -> Self {
         self.audience = Some(audience);
         self
     }
 
+    /// Set the priority, from 0.0 (least) to 1.0 (most important).
     pub fn with_priority(mut self, priority: f64) -> Self {
         self.priority = Some(priority);
         self
     }
 
+    /// Set the last-modified timestamp.
     pub fn with_last_modified(mut self, last_modified: impl Into<String>) -> Self {
         self.last_modified = Some(last_modified.into());
         self
     }
 }
 
+/// Text provided to or from an LLM.
 #[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextContent {
+    /// The text of the content block.
     pub text: String,
+    /// Optional annotations for the client.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Annotations>,
 }
 
 impl TextContent {
+    /// Create a text content block.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -291,23 +312,29 @@ impl TextContent {
         }
     }
 
+    /// Set the annotations.
     pub fn with_annotations(mut self, annotations: Annotations) -> Self {
         self.annotations = Some(annotations);
         self
     }
 }
 
+/// An image provided to or from an LLM.
 #[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageContent {
+    /// Base64-encoded image data.
     pub data: String,
+    /// The MIME type of the image.
     #[serde(rename = "mimeType")]
     pub mime_type: String,
+    /// Optional annotations for the client.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Annotations>,
 }
 
 impl ImageContent {
+    /// Create an image content block from base64 data and a MIME type.
     pub fn new(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
         Self {
             data: data.into(),
@@ -317,6 +344,7 @@ impl ImageContent {
         }
     }
 
+    /// Set the annotations.
     pub fn with_annotations(mut self, annotations: Annotations) -> Self {
         self.annotations = Some(annotations);
         self
@@ -334,17 +362,22 @@ impl ImageContent {
     }
 }
 
+/// Audio provided to or from an LLM.
 #[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioContent {
+    /// Base64-encoded audio data.
     pub data: String,
+    /// The MIME type of the audio.
     #[serde(rename = "mimeType")]
     pub mime_type: String,
+    /// Optional annotations for the client.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Annotations>,
 }
 
 impl AudioContent {
+    /// Create an audio content block from base64 data and a MIME type.
     pub fn new(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
         Self {
             data: data.into(),
@@ -354,6 +387,7 @@ impl AudioContent {
         }
     }
 
+    /// Set the annotations.
     pub fn with_annotations(mut self, annotations: Annotations) -> Self {
         self.annotations = Some(annotations);
         self

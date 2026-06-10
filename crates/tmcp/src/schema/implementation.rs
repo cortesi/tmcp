@@ -7,6 +7,7 @@ use super::Icon;
 pub struct Implementation {
     /// The name of the MCP implementation.
     pub name: String,
+    /// The version of the MCP implementation.
     pub version: String,
 
     /// Intended for UI and end-user contexts — optimized to be human-readable and easily understood,

@@ -118,6 +118,7 @@ impl ClientCapabilities {
     }
 }
 
+/// Capability describing the client's support for filesystem roots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootsCapability {
     /// Whether the client supports notifications for changes to the roots list.
@@ -235,6 +236,7 @@ impl ServerCapabilities {
     }
 }
 
+/// Capability describing the client's support for LLM sampling.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SamplingCapability {
     /// Whether the client supports context inclusion via includeContext parameter.
@@ -248,6 +250,7 @@ pub struct SamplingCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Capability describing the client's support for elicitation.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ElicitationCapability {
     /// Support for form-based elicitation.
@@ -261,12 +264,16 @@ pub struct ElicitationCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Capability describing the client's support for task-augmented requests.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientTasksCapability {
+    /// Present if the client supports tasks/list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub list: Option<HashMap<String, Value>>,
+    /// Present if the client supports tasks/cancel.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancel: Option<HashMap<String, Value>>,
+    /// Request types the client accepts task augmentation for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requests: Option<ClientTaskRequestsCapability>,
     /// Unknown or extension fields preserved from the wire.
@@ -274,10 +281,13 @@ pub struct ClientTasksCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Request types the client accepts task augmentation for.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientTaskRequestsCapability {
+    /// Task augmentation support for sampling requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sampling: Option<ClientTaskSamplingCapability>,
+    /// Task augmentation support for elicitation requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elicitation: Option<ClientTaskElicitationCapability>,
     /// Unknown or extension fields preserved from the wire.
@@ -285,8 +295,10 @@ pub struct ClientTaskRequestsCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Task augmentation support for sampling requests.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientTaskSamplingCapability {
+    /// Present if sampling/createMessage may be task-augmented.
     #[serde(rename = "createMessage", skip_serializing_if = "Option::is_none")]
     pub create_message: Option<HashMap<String, Value>>,
     /// Unknown or extension fields preserved from the wire.
@@ -294,8 +306,10 @@ pub struct ClientTaskSamplingCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Task augmentation support for elicitation requests.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientTaskElicitationCapability {
+    /// Present if elicitation/create may be task-augmented.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub create: Option<HashMap<String, Value>>,
     /// Unknown or extension fields preserved from the wire.
@@ -303,12 +317,16 @@ pub struct ClientTaskElicitationCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Capability describing the server's support for task-augmented requests.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerTasksCapability {
+    /// Present if the server supports tasks/list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub list: Option<HashMap<String, Value>>,
+    /// Present if the server supports tasks/cancel.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancel: Option<HashMap<String, Value>>,
+    /// Request types the server accepts task augmentation for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requests: Option<ServerTaskRequestsCapability>,
     /// Unknown or extension fields preserved from the wire.
@@ -316,8 +334,10 @@ pub struct ServerTasksCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Request types the server accepts task augmentation for.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerTaskRequestsCapability {
+    /// Task augmentation support for tool requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ServerTaskToolsCapability>,
     /// Unknown or extension fields preserved from the wire.
@@ -325,8 +345,10 @@ pub struct ServerTaskRequestsCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Task augmentation support for tool requests.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerTaskToolsCapability {
+    /// Present if tools/call may be task-augmented.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<HashMap<String, Value>>,
     /// Unknown or extension fields preserved from the wire.
@@ -334,6 +356,7 @@ pub struct ServerTaskToolsCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Capability describing the server's prompt support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptsCapability {
     /// Whether this server supports notifications for changes to the prompt
@@ -345,6 +368,7 @@ pub struct PromptsCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Capability describing the server's resource support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourcesCapability {
     /// Whether this server supports subscribing to resource updates.
@@ -359,6 +383,7 @@ pub struct ResourcesCapability {
     pub _extra: HashMap<String, Value>,
 }
 
+/// Capability describing the server's tool support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsCapability {
     /// Whether this server supports notifications for changes to the tool list.

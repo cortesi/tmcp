@@ -110,7 +110,7 @@ impl TaskProbeServer {
                 "task result payload was not an object".to_string(),
             ));
         };
-        Ok(schema::JSONRpcResult {
+        Ok(schema::JSONRPCResult {
             _meta: Some(HashMap::from([(
                 "io.modelcontextprotocol/related-task".to_string(),
                 json!({ "taskId": entry.task.task_id }),

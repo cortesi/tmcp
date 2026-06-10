@@ -117,7 +117,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
 
         let (mut client, handle) = connected_client_and_server_with_conn(
-            || Box::new(TestServerHandler),
+            || TestServerHandler,
             TestClientHandler {
                 calls: calls.clone(),
             },

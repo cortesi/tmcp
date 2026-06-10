@@ -41,6 +41,7 @@ pub struct CreateMessageParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Task metadata associated with this sampling request.
     pub task: Option<TaskMetadata>,
+    /// Request metadata reserved by the protocol.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _meta: Option<RequestMeta>,
 }

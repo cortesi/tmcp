@@ -61,14 +61,15 @@ pub fn make_duplex_pair() -> (
 /// The helper takes care of wiring up the in-memory transport and saves the
 /// caller from having to remember the exact incantations required to start the
 /// server in the background.
-pub async fn connected_client_and_server<F>(
+pub async fn connected_client_and_server<H, F>(
     handler_factory: F,
 ) -> Result<(Client<()>, ServerHandle)>
 where
-    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
+    H: ServerHandler + 'static,
+    F: Fn() -> H + Send + Sync + 'static,
 {
     // Build server.
-    let server = Server::from_factory(handler_factory);
+    let server = Server::new(handler_factory);
 
     // Two in-memory pipes to serve as the transport.
     let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
@@ -89,16 +90,17 @@ where
 
 /// Helper function to create a connected client and server with a custom client handler.
 /// The client transport is connected but not initialized.
-pub async fn connected_client_and_server_with_conn<F, C>(
+pub async fn connected_client_and_server_with_conn<H, F, C>(
     handler_factory: F,
     client_handler: C,
 ) -> Result<(Client<C>, ServerHandle)>
 where
-    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
+    H: ServerHandler + 'static,
+    F: Fn() -> H + Send + Sync + 'static,
     C: ClientHandler + 'static,
 {
     // Build server.
-    let server = Server::from_factory(handler_factory);
+    let server = Server::new(handler_factory);
 
     // Two in-memory pipes to serve as the transport.
     let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
@@ -153,11 +155,12 @@ pub struct WireConnection {
 impl WireConnection {
     /// Start a server from `handler_factory` on an in-memory transport and
     /// return a raw wire connection to it.
-    pub async fn start<F>(handler_factory: F) -> Result<Self>
+    pub async fn start<H, F>(handler_factory: F) -> Result<Self>
     where
-        F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
+        H: ServerHandler + 'static,
+        F: Fn() -> H + Send + Sync + 'static,
     {
-        let server = Server::from_factory(handler_factory);
+        let server = Server::new(handler_factory);
         let (server_reader, client_writer) = io::duplex(64 * 1024);
         let (client_reader, server_writer) = io::duplex(64 * 1024);
         let server = ServerHandle::from_stream(server, server_reader, server_writer).await?;
@@ -206,9 +209,10 @@ impl WireConnection {
 /// message, which is written to the server verbatim, and may contain an
 /// `expect` message, which is compared structurally against the next message
 /// the server sends. Steps without `expect` (notifications) produce no read.
-pub async fn run_wire_fixture<F>(handler_factory: F, fixture: &str)
+pub async fn run_wire_fixture<H, F>(handler_factory: F, fixture: &str)
 where
-    F: Fn() -> Box<dyn ServerHandler> + Send + Sync + 'static,
+    H: ServerHandler + 'static,
+    F: Fn() -> H + Send + Sync + 'static,
 {
     let steps: Vec<Value> = serde_json::from_str(fixture).expect("parse wire fixture");
     let mut conn = WireConnection::start(handler_factory)

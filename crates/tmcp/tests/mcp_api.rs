@@ -4,8 +4,8 @@
 mod tests {
     use async_trait::async_trait;
     use tmcp::{
-        Error, McpApiRefreshState, McpApiRenderOptions, Result, ServerCtx, ServerHandler,
-        inspect_client, inspect_server, render_mcp_api,
+        Error, McpApiRefreshState, Result, ServerCtx, ServerHandler, inspect_client,
+        inspect_server,
         schema::{
             ClientCapabilities, Cursor, Implementation, InitializeResult, ListPromptsResult,
             ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt, Resource,
@@ -13,6 +13,8 @@ mod tests {
         },
         testutils::{connected_client_and_server, shutdown_client_and_server},
     };
+    #[cfg(feature = "render")]
+    use tmcp::{McpApiRenderOptions, render_mcp_api};
 
     /// Server used to exercise each inspected MCP API list.
     struct ApiServer;
@@ -32,8 +34,8 @@ mod tests {
             Ok(InitializeResult::new("api-server")
                 .with_version("1.2.3")
                 .with_tools(Some(false))
-                .with_resources(false, true)
-                .with_prompts(false))
+                .with_resources(Some(false), Some(true))
+                .with_prompts(Some(false)))
         }
 
         async fn list_tools(
@@ -43,10 +45,10 @@ mod tests {
         ) -> Result<ListToolsResult> {
             match cursor.as_ref().map(|cursor| cursor.0.as_str()) {
                 None => Ok(ListToolsResult::new()
-                    .with_tool(Tool::new("first_tool", ToolSchema::empty()))
+                    .with_tool(Tool::new("first_tool", ToolSchema::default()))
                     .with_cursor("next-tools")),
                 Some("next-tools") => Ok(ListToolsResult::new().with_tool(
-                    Tool::new("second_tool", ToolSchema::empty()).with_description("Second page"),
+                    Tool::new("second_tool", ToolSchema::default()).with_description("Second page"),
                 )),
                 other => Err(Error::InvalidRequest(format!(
                     "unexpected tools cursor: {other:?}"
@@ -135,7 +137,7 @@ mod tests {
     /// The connected-client inspector collects the same advertised API over MCP.
     #[tokio::test]
     async fn inspect_client_collects_mcp_api() {
-        let (mut client, server) = connected_client_and_server(|| Box::new(ApiServer))
+        let (mut client, server) = connected_client_and_server(|| ApiServer)
             .await
             .expect("connect");
         let initialize = client.init().await.expect("initialize");
@@ -208,6 +210,7 @@ mod tests {
     }
 
     /// The public renderer formats inspected APIs as human-readable text.
+    #[cfg(feature = "render")]
     #[tokio::test]
     async fn render_mcp_api_formats_inspected_api() {
         let api = inspect_server(&ApiServer).await.expect("inspect server");

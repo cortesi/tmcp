@@ -1,15 +1,24 @@
 use serde::{Deserialize, Serialize};
 
+/// The severity of a log message, mirroring syslog levels (RFC 5424).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum LoggingLevel {
+    /// Detailed debugging information.
     Debug,
+    /// Normal operational messages.
     Info,
+    /// Normal but significant events.
     Notice,
+    /// Warning conditions.
     Warning,
+    /// Error conditions.
     Error,
+    /// Critical conditions.
     Critical,
+    /// Action must be taken immediately.
     Alert,
+    /// The system is unusable.
     Emergency,
 }
 

@@ -46,7 +46,7 @@ mod tests {
             _ctx: &ServerCtx,
             _cursor: Option<schema::Cursor>,
         ) -> Result<schema::ListToolsResult> {
-            let input_schema = schema::ToolSchema::new(json!({
+            let input_schema = schema::ToolSchema(json!({
                 "type": "object",
                 "properties": { "message": { "type": "string" } },
                 "required": ["message"],
@@ -140,7 +140,7 @@ mod tests {
         use serde_json::json;
         use tmcp::testutils::WireConnection;
 
-        let mut conn = WireConnection::start(|| Box::new(GoldenServer))
+        let mut conn = WireConnection::start(|| GoldenServer)
             .await
             .expect("start wire server");
 
@@ -192,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn golden_lifecycle() {
         run_wire_fixture(
-            || Box::new(GoldenServer),
+            || GoldenServer,
             include_str!("test_data/golden/lifecycle.json"),
         )
         .await;
@@ -200,17 +200,13 @@ mod tests {
 
     #[tokio::test]
     async fn golden_tools() {
-        run_wire_fixture(
-            || Box::new(GoldenServer),
-            include_str!("test_data/golden/tools.json"),
-        )
-        .await;
+        run_wire_fixture(|| GoldenServer, include_str!("test_data/golden/tools.json")).await;
     }
 
     #[tokio::test]
     async fn golden_resources_prompts() {
         run_wire_fixture(
-            || Box::new(GoldenServer),
+            || GoldenServer,
             include_str!("test_data/golden/resources_prompts.json"),
         )
         .await;

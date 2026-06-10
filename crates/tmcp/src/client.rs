@@ -11,12 +11,14 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "auth")]
+use crate::auth::OAuth2Client;
+#[cfg(feature = "http")]
+use crate::http::HttpClientTransport;
 use crate::{
-    auth::OAuth2Client,
     connection::ClientHandler,
     context::ClientCtx,
     error::{Error, Result},
-    http::HttpClientTransport,
     jsonrpc::{
         create_jsonrpc_notification, parse_typed_notification, parse_typed_request,
         result_to_jsonrpc_response,
@@ -243,6 +245,7 @@ where
     ///
     /// # Arguments
     /// * `endpoint` - Server URL including protocol and path (e.g., "http://localhost:3000", "<https://api.example.com/mcp>")
+    #[cfg(feature = "http")]
     pub async fn connect_http(&mut self, endpoint: impl Into<String>) -> Result<InitializeResult> {
         let transport = Box::new(HttpClientTransport::new(endpoint));
         self.connect(transport).await?;
@@ -250,6 +253,7 @@ where
     }
 
     /// Connect via HTTP/HTTPS with static headers and initialize the connection.
+    #[cfg(feature = "http")]
     pub async fn connect_http_with_headers(
         &mut self,
         endpoint: impl Into<String>,
@@ -269,6 +273,7 @@ where
     /// # Arguments
     /// * `endpoint` - Server URL including protocol and path
     /// * `oauth_client` - Pre-configured OAuth2Client instance
+    #[cfg(feature = "auth")]
     pub async fn connect_http_with_oauth(
         &mut self,
         endpoint: impl Into<String>,
@@ -280,6 +285,7 @@ where
     }
 
     /// Connect via HTTP/HTTPS with OAuth authentication plus static headers.
+    #[cfg(feature = "auth")]
     pub async fn connect_http_with_oauth_and_headers(
         &mut self,
         endpoint: impl Into<String>,
@@ -835,22 +841,19 @@ where
     }
 
     /// Read a resource by URI
-    pub async fn resources_read(
-        &self,
-        uri: impl Into<String> + Send,
-    ) -> Result<ReadResourceResult> {
+    pub async fn read_resource(&self, uri: impl Into<String> + Send) -> Result<ReadResourceResult> {
         self.request_and_wait(ClientRequest::read_resource(uri))
             .await
     }
 
     /// Subscribe to resource updates
-    pub async fn resources_subscribe(&self, uri: impl Into<String> + Send) -> Result<()> {
+    pub async fn subscribe_resource(&self, uri: impl Into<String> + Send) -> Result<()> {
         let _: EmptyResult = self.request_and_wait(ClientRequest::subscribe(uri)).await?;
         Ok(())
     }
 
     /// Unsubscribe from resource updates
-    pub async fn resources_unsubscribe(&self, uri: impl Into<String> + Send) -> Result<()> {
+    pub async fn unsubscribe_resource(&self, uri: impl Into<String> + Send) -> Result<()> {
         let _: EmptyResult = self
             .request_and_wait(ClientRequest::unsubscribe(uri))
             .await?;

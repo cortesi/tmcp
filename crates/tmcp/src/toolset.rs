@@ -20,12 +20,12 @@ pub struct ToolSetView<'a> {
     groups: &'a HashMap<String, GroupSnapshot>,
 }
 
-/// Boxed future type returned by tool handlers.
-#[doc(hidden)]
+/// Boxed future returned by tool handlers registered with [`ToolSet::register`]
+/// and [`ToolSet::register_with_visibility`].
 pub type ToolFuture<'a> = BoxFuture<'a, Result<CallToolResult>>;
 
-/// Boxed future type returned by generated tool-call dispatch.
-#[doc(hidden)]
+/// Boxed future returned by tool-call dispatch, as used by
+/// [`ToolSet::call_tool_with`] and [`GroupDispatch::call_tool`].
 pub type ToolCallFuture<'a> = BoxFuture<'a, Result<CallToolResponse>>;
 
 impl ToolSetView<'_> {
@@ -1034,7 +1034,7 @@ fn collect_descendants(
 
 /// Build an auto activation or deactivation tool.
 fn activation_tool(name: &str, description: &str, activate: bool) -> Tool {
-    let mut tool = Tool::new(name.to_string(), ToolSchema::empty());
+    let mut tool = Tool::new(name.to_string(), ToolSchema::default());
     if !description.is_empty() {
         let label = if activate { "Activate" } else { "Deactivate" };
         tool = tool.with_description(format!("{label} {description}"));

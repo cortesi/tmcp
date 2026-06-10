@@ -1,4 +1,4 @@
-use std::{collections::HashMap, mem, result::Result as StdResult};
+use std::{collections::HashMap, mem};
 
 use schemars::generate::SchemaSettings;
 use serde::{
@@ -79,16 +79,21 @@ impl CallToolResult {
     }
 
     /// Create a tool result with structured content.
-    pub fn structured(content: impl Serialize) -> StdResult<Self, serde_json::Error> {
+    pub fn structured(content: impl Serialize) -> Result<Self, serde_json::Error> {
         Ok(Self::new().with_structured_content(serde_json::to_value(content)?))
     }
 
     /// Create a tool error result with a structured error payload.
+    ///
+    /// `code` is a static identifier such as [`crate::TOOL_ERROR_INVALID_INPUT`],
+    /// matching the [`crate::ToolError`] code convention.
     pub fn error(code: &'static str, message: impl Into<String>) -> Self {
-        Self::new().mark_as_error().with_structured_content(json!({
-            "code": code,
-            "message": message.into(),
-        }))
+        Self::new()
+            .with_is_error(true)
+            .with_structured_content(json!({
+                "code": code,
+                "message": message.into(),
+            }))
     }
 
     /// Append a content item to the result.
@@ -108,18 +113,18 @@ impl CallToolResult {
     }
 
     /// Serialize data to JSON and append it as a text content item.
-    pub fn with_json_text(self, data: impl Serialize) -> StdResult<Self, serde_json::Error> {
+    pub fn with_json_text(self, data: impl Serialize) -> Result<Self, serde_json::Error> {
         let text = serde_json::to_string(&data)?;
         Ok(self.with_text_content(text))
     }
 
-    /// Mark this result as indicating an error.
+    /// Set whether this result represents an error.
     ///
     /// Tool results are successful by default (when `is_error` is `None`),
     /// so this method only needs to be called when the tool execution failed
     /// but you still want to return content describing the failure.
-    pub fn mark_as_error(mut self) -> Self {
-        self.is_error = Some(true);
+    pub fn with_is_error(mut self, is_error: bool) -> Self {
+        self.is_error = Some(is_error);
         self
     }
 
@@ -168,7 +173,7 @@ impl CallToolResult {
     /// # Errors
     ///
     /// Returns an error if there is no text content or if JSON parsing fails.
-    pub fn json<T: DeserializeOwned>(&self) -> StdResult<T, serde_json::Error> {
+    pub fn json<T: DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
         let text = self
             .text()
             .ok_or_else(|| DeError::custom("no text content in tool result"))?;
@@ -180,7 +185,7 @@ impl CallToolResult {
     /// # Errors
     ///
     /// Returns an error if there is no structured content or deserialization fails.
-    pub fn structured_as<T: DeserializeOwned>(&self) -> StdResult<T, serde_json::Error> {
+    pub fn structured_as<T: DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
         let value = self
             .structured_content
             .as_ref()
@@ -191,16 +196,6 @@ impl CallToolResult {
     /// Borrow structured content, if present.
     pub fn structured_content(&self) -> Option<&Value> {
         self.structured_content.as_ref()
-    }
-
-    /// Return the number of content blocks.
-    pub fn content_len(&self) -> usize {
-        self.content.len()
-    }
-
-    /// Return whether there are no content blocks.
-    pub fn content_is_empty(&self) -> bool {
-        self.content.is_empty()
     }
 
     /// Return a human-oriented error message for an error result.
@@ -331,6 +326,7 @@ pub struct ToolAnnotations {
 /// Execution-related properties for a tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolExecution {
+    /// Whether the tool supports task-augmented invocation.
     #[serde(rename = "taskSupport", skip_serializing_if = "Option::is_none")]
     pub task_support: Option<ToolTaskSupport>,
 }
@@ -339,8 +335,11 @@ pub struct ToolExecution {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolTaskSupport {
+    /// The tool must not be invoked as a task.
     Forbidden,
+    /// The tool may be invoked directly or as a task.
     Optional,
+    /// The tool must be invoked as a task.
     Required,
 }
 
@@ -514,33 +513,13 @@ pub struct ToolSchema(pub Value);
 
 impl Default for ToolSchema {
     fn default() -> Self {
-        Self::new(serde_json::json!({
+        Self(serde_json::json!({
             "type": "object"
         }))
     }
 }
 
 impl ToolSchema {
-    /// Create a new schema from a JSON value.
-    pub fn new(schema: Value) -> Self {
-        Self(schema)
-    }
-
-    /// Create an empty schema for tools that take no arguments.
-    ///
-    /// This is an alias for `ToolSchema::default()` that makes the intent
-    /// clearer when a tool genuinely takes no parameters.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let tool = Tool::new("ping", ToolSchema::empty())
-    ///     .with_description("Ping the server");
-    /// ```
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
     /// Get the schema description if present.
     ///
     /// This extracts the "description" field from the root of the JSON Schema.
@@ -553,16 +532,6 @@ impl ToolSchema {
     /// This extracts the "title" field from the root of the JSON Schema.
     pub fn title(&self) -> Option<&str> {
         self.0.get("title").and_then(|v| v.as_str())
-    }
-
-    /// Get the underlying JSON value.
-    pub fn as_value(&self) -> &Value {
-        &self.0
-    }
-
-    /// Get a mutable reference to the underlying JSON value.
-    pub fn as_value_mut(&mut self) -> &mut Value {
-        &mut self.0
     }
 
     /// Get the schema type (e.g., "object", "string").
@@ -715,11 +684,17 @@ fn simplify_nullable_anyof(map: &serde_json::Map<String, Value>) -> Option<Value
 }
 
 /// Collapse `oneOf` const enums into a plain `enum`.
+///
+/// Variants that carry a `description` or `title` are left as `oneOf` so the
+/// per-variant documentation reaches clients.
 fn simplify_oneof_enum(map: &mut serde_json::Map<String, Value>) {
     let Some(Value::Array(one_of)) = map.get("oneOf") else {
         return;
     };
     if one_of.is_empty() || !one_of.iter().all(is_const_variant) {
+        return;
+    }
+    if one_of.iter().any(has_variant_docs) {
         return;
     }
 
@@ -779,6 +754,14 @@ fn simplify_oneof_enum(map: &mut serde_json::Map<String, Value>) {
             }
         }
     }
+}
+
+/// Check whether a const variant carries documentation that must be preserved.
+fn has_variant_docs(value: &Value) -> bool {
+    let Value::Object(obj) = value else {
+        return false;
+    };
+    obj.contains_key("description") || obj.contains_key("title")
 }
 
 /// Check whether a schema entry looks like a simple const enum variant.
@@ -1131,7 +1114,7 @@ mod tests {
         }
 
         let schema = ToolSchema::from_json_schema::<Node>();
-        let value = schema.as_value();
+        let value = &schema.0;
         let mut refs = Vec::new();
         collect_refs(value, &mut refs);
         assert!(!refs.is_empty(), "expected schema to contain $ref entries");
@@ -1161,7 +1144,7 @@ mod tests {
         }
 
         // Start with default schema, then replace with typed schema
-        let tool = Tool::new("test", ToolSchema::empty())
+        let tool = Tool::new("test", ToolSchema::default())
             .with_description("A test tool")
             .with_schema::<MyParams>();
 
@@ -1175,7 +1158,7 @@ mod tests {
 
     #[test]
     fn test_tool_with_title() {
-        let tool = Tool::new("test", ToolSchema::empty())
+        let tool = Tool::new("test", ToolSchema::default())
             .with_title("Test Tool")
             .with_description("A test tool");
 
@@ -1185,15 +1168,15 @@ mod tests {
 
     #[test]
     fn test_tool_schema_empty() {
-        let schema = ToolSchema::empty();
+        let schema = ToolSchema::default();
         assert_eq!(schema.schema_type(), Some("object"));
         assert!(schema.properties().is_none());
-        assert!(schema.as_value().get("$schema").is_none());
+        assert!(schema.0.get("$schema").is_none());
     }
 
     #[test]
     fn test_tool_schema_description_and_title() {
-        let schema = ToolSchema::new(serde_json::json!({
+        let schema = ToolSchema(serde_json::json!({
             "type": "object",
             "title": "My Schema",
             "description": "A schema for testing"
@@ -1203,9 +1186,66 @@ mod tests {
         assert_eq!(schema.description(), Some("A schema for testing"));
 
         // Empty schema has no title or description
-        let empty = ToolSchema::empty();
+        let empty = ToolSchema::default();
         assert!(empty.title().is_none());
         assert!(empty.description().is_none());
+    }
+
+    #[test]
+    fn undocumented_oneof_const_variants_collapse_to_enum() {
+        use schemars::JsonSchema;
+
+        #[derive(JsonSchema)]
+        #[allow(dead_code)] // Variants are read via JsonSchema derivation
+        enum Plain {
+            Alpha,
+            Beta,
+        }
+
+        #[derive(JsonSchema)]
+        #[allow(dead_code)] // Fields are read via JsonSchema derivation
+        struct Params {
+            mode: Plain,
+        }
+
+        let schema = ToolSchema::from_json_schema::<Params>();
+        let mode = &schema.properties().unwrap()["mode"];
+        assert!(mode.get("oneOf").is_none(), "oneOf should collapse: {mode}");
+        assert_eq!(mode["enum"], json!(["Alpha", "Beta"]));
+        assert_eq!(mode["type"], json!("string"));
+    }
+
+    #[test]
+    fn documented_oneof_variants_are_preserved() {
+        use schemars::JsonSchema;
+
+        #[derive(JsonSchema)]
+        #[allow(dead_code)] // Variants are read via JsonSchema derivation
+        enum Documented {
+            /// Run in fast mode.
+            Fast,
+            /// Run in thorough mode.
+            Thorough,
+        }
+
+        #[derive(JsonSchema)]
+        #[allow(dead_code)] // Fields are read via JsonSchema derivation
+        struct Params {
+            mode: Documented,
+        }
+
+        let schema = ToolSchema::from_json_schema::<Params>();
+        let mode = &schema.properties().unwrap()["mode"];
+        assert!(
+            mode.get("enum").is_none(),
+            "enum must not replace documented oneOf: {mode}"
+        );
+        let variants = mode["oneOf"].as_array().expect("oneOf retained");
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0]["const"], json!("Fast"));
+        assert_eq!(variants[0]["description"], json!("Run in fast mode."));
+        assert_eq!(variants[1]["const"], json!("Thorough"));
+        assert_eq!(variants[1]["description"], json!("Run in thorough mode."));
     }
 
     #[test]
@@ -1223,6 +1263,6 @@ mod tests {
         let _ = params.name;
 
         let schema = ToolSchema::from_json_schema::<Params>();
-        assert!(schema.as_value().get("$schema").is_none());
+        assert!(schema.0.get("$schema").is_none());
     }
 }

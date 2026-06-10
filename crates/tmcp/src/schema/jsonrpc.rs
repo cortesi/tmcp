@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 use std::{
     collections::HashMap,
     fmt::{self, Display, Formatter},
@@ -8,13 +6,14 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ElicitRequestURLParams, TaskMetadata};
 use crate::macros::with_meta;
 
+/// The protocol version immediately preceding the latest supported version.
 pub const PREVIOUS_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// All protocol versions this implementation accepts from peers, newest first.
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26"];
+/// The most recent protocol version this implementation supports.
 pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 /// JSON-RPC protocol version string.
 pub const JSONRPC_VERSION: &str = "2.0";
@@ -24,8 +23,11 @@ pub const JSONRPC_VERSION: &str = "2.0";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum JSONRPCMessage {
+    /// A request expecting a response.
     Request(JSONRPCRequest),
+    /// A notification with no response.
     Notification(JSONRPCNotification),
+    /// A response to a request.
     Response(JSONRPCResponse),
 }
 
@@ -34,7 +36,9 @@ pub enum JSONRPCMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ProgressToken {
+    /// String progress token.
     String(String),
+    /// Numeric progress token.
     Number(i64),
 }
 
@@ -67,24 +71,18 @@ impl fmt::Display for Cursor {
     }
 }
 
-/// Common params for any task-augmented request.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TaskAugmentedRequestParams {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<TaskMetadata>,
-    #[serde(flatten)]
-    pub params: RequestParams,
-}
-
 /// Common params for any request.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RequestParams {
+    /// Request metadata reserved by the protocol.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _meta: Option<RequestMeta>,
+    /// Method-specific parameters.
     #[serde(flatten)]
     pub other: HashMap<String, Value>,
 }
 
+/// Metadata attached to a request via the reserved `_meta` parameter.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RequestMeta {
     /// If specified, the caller is requesting out-of-band progress
@@ -94,13 +92,17 @@ pub struct RequestMeta {
     /// not obligated to provide these notifications.
     #[serde(rename = "progressToken", skip_serializing_if = "Option::is_none")]
     pub progress_token: Option<ProgressToken>,
+    /// Additional metadata fields preserved from the wire.
     #[serde(flatten)]
     pub other: HashMap<String, Value>,
 }
 
+/// The method and params of a JSON-RPC request, without the envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
+    /// The method being invoked.
     pub method: String,
+    /// Parameters for the method, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<RequestParams>,
 }
@@ -112,28 +114,30 @@ pub struct NotificationParams {
     /// attach additional metadata to their notifications.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _meta: Option<HashMap<String, Value>>,
+    /// Method-specific parameters.
     #[serde(flatten)]
     pub other: HashMap<String, Value>,
 }
 
+/// The method and params of a JSON-RPC notification, without the envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
+    /// The notification method.
     pub method: String,
+    /// Parameters for the notification, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<NotificationParams>,
 }
 
+/// The payload of a successful JSON-RPC response.
 #[with_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JSONRpcResult {
+pub struct JSONRPCResult {
     /// This result property is reserved by the protocol to allow clients and
     /// servers to attach additional metadata to their responses.
     #[serde(flatten)]
     pub other: HashMap<String, Value>,
 }
-
-/// Alias for JSON-RPC result payloads.
-pub type Result = JSONRpcResult;
 
 /// A uniquely identifying ID for a request in JSON-RPC.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -157,8 +161,11 @@ impl Display for RequestId {
 /// A request that expects a response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JSONRPCRequest {
+    /// JSON-RPC protocol version, always "2.0".
     pub jsonrpc: String,
+    /// Identifier correlating the request with its response.
     pub id: RequestId,
+    /// The method and params of the request.
     #[serde(flatten)]
     pub request: Request,
 }
@@ -166,7 +173,9 @@ pub struct JSONRPCRequest {
 /// A notification which does not expect a response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JSONRPCNotification {
+    /// JSON-RPC protocol version, always "2.0".
     pub jsonrpc: String,
+    /// The method and params of the notification.
     #[serde(flatten)]
     pub notification: Notification,
 }
@@ -174,17 +183,23 @@ pub struct JSONRPCNotification {
 /// A successful (non-error) response to a request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JSONRPCResultResponse {
+    /// JSON-RPC protocol version, always "2.0".
     pub jsonrpc: String,
+    /// Identifier of the request this responds to.
     pub id: RequestId,
-    pub result: Result,
+    /// The result payload.
+    pub result: JSONRPCResult,
 }
 
 /// A response to a request that indicates an error occurred.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JSONRPCErrorResponse {
+    /// JSON-RPC protocol version, always "2.0".
     pub jsonrpc: String,
+    /// Identifier of the request this responds to, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<RequestId>,
+    /// Details of the error.
     pub error: ErrorObject,
 }
 
@@ -192,7 +207,9 @@ pub struct JSONRPCErrorResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum JSONRPCResponse {
+    /// A successful response.
     Result(JSONRPCResultResponse),
+    /// An error response.
     Error(JSONRPCErrorResponse),
 }
 
@@ -216,6 +233,7 @@ pub const URL_ELICITATION_REQUIRED: i32 = -32042;
 /// Implementation-specific JSON-RPC error code indicating authorization failed.
 pub const AUTHORIZATION_FAILED: i32 = -32041;
 
+/// The error payload of a JSON-RPC error response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorObject {
     /// The error type that occurred.
@@ -230,30 +248,5 @@ pub struct ErrorObject {
     pub data: Option<Value>,
 }
 
-/// An error response that indicates that the server requires the client to
-/// provide additional information via an elicitation request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct URLElicitationRequiredError {
-    pub jsonrpc: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<RequestId>,
-    pub error: URLElicitationRequiredErrorObject,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct URLElicitationRequiredErrorObject {
-    pub code: i32,
-    pub message: String,
-    pub data: URLElicitationRequiredData,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct URLElicitationRequiredData {
-    pub elicitations: Vec<ElicitRequestURLParams>,
-    #[serde(flatten)]
-    pub other: HashMap<String, Value>,
-}
-
-// Empty result
 /// A response that indicates success but carries no data.
-pub type EmptyResult = Result;
+pub type EmptyResult = JSONRPCResult;

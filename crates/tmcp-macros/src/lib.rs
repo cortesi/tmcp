@@ -1446,7 +1446,7 @@ fn generate_tool_call_arm(
 fn tool_schema_expr(tool: &ToolMethod, owner_name: &str) -> TokenStream {
     match tool.params_kind {
         ParamsKind::None | ParamsKind::Unit => {
-            quote! { tmcp::schema::ToolSchema::empty() }
+            quote! { tmcp::schema::ToolSchema::default() }
         }
         ParamsKind::Typed(ref params_type) => {
             let params_type = params_type.as_ref();
@@ -1746,7 +1746,7 @@ fn generate_default_initialize_with_prologue(
 
     let resources_capability_setter = if args.has_resource_callbacks() {
         let list_changed = args.resources_list_changed();
-        quote! { init = init.with_resources(false, #list_changed); }
+        quote! { init = init.with_resources(Some(false), Some(#list_changed)); }
     } else {
         quote! {}
     };

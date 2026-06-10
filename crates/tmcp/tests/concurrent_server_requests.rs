@@ -101,12 +101,10 @@ mod tests {
             release: release.clone(),
         };
 
-        let (mut client, server) = connected_client_and_server_with_conn(
-            || Box::new(ElicitingServer) as Box<dyn ServerHandler>,
-            handler,
-        )
-        .await
-        .unwrap();
+        let (mut client, server) =
+            connected_client_and_server_with_conn(|| ElicitingServer, handler)
+                .await
+                .unwrap();
         client.init().await.unwrap();
 
         let client = Arc::new(client);

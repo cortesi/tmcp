@@ -148,7 +148,7 @@ where
             JSONRPCMessage::Response(JSONRPCResponse::Result(JSONRPCResultResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id,
-                result: schema::JSONRpcResult {
+                result: schema::JSONRPCResult {
                     _meta: None,
                     other: match json_value {
                         serde_json::Value::Object(map) => map.into_iter().collect(),

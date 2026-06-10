@@ -27,8 +27,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
+#[cfg(feature = "auth")]
+use crate::auth::{OAuth2Client, util::bearer_header};
 use crate::{
-    auth::{OAuth2Client, util::bearer_header},
     error::{Error, Result},
     schema::{
         AUTHORIZATION_FAILED, ErrorObject, INTERNAL_ERROR, JSONRPC_VERSION, JSONRPCErrorResponse,
@@ -74,6 +75,7 @@ pub struct HttpClientTransport {
     /// Cancellation token stopping background tasks.
     shutdown: CancellationToken,
     /// OAuth client for attaching bearer tokens.
+    #[cfg(feature = "auth")]
     oauth_client: Option<Arc<OAuth2Client>>,
 }
 
@@ -93,6 +95,7 @@ struct OutboundContext {
     /// Headers attached to every HTTP request.
     static_headers: HeaderMap,
     /// OAuth client for attaching bearer tokens.
+    #[cfg(feature = "auth")]
     oauth_client: Option<Arc<OAuth2Client>>,
     /// Channel delivering inbound messages to the connection loop.
     sender: mpsc::UnboundedSender<JSONRPCMessage>,
@@ -316,11 +319,13 @@ impl HttpClientTransport {
             sender: None,
             receiver: None,
             shutdown: CancellationToken::new(),
+            #[cfg(feature = "auth")]
             oauth_client: None,
         }
     }
 
     /// Attach an OAuth client used to fetch bearer tokens for requests.
+    #[cfg(feature = "auth")]
     pub fn with_oauth(mut self, oauth_client: Arc<OAuth2Client>) -> Self {
         self.oauth_client = Some(oauth_client);
         self
@@ -373,10 +378,7 @@ async fn connect_sse(ctx: &OutboundContext, shutdown: &CancellationToken) -> Res
         );
     }
 
-    if let Some(oauth_client) = &ctx.oauth_client {
-        let token = oauth_client.get_valid_token().await?;
-        headers.insert(header::AUTHORIZATION, bearer_header(&token)?);
-    }
+    attach_bearer(ctx, &mut headers).await?;
 
     let response = ctx
         .client
@@ -536,6 +538,7 @@ fn forward_prepare_error(ctx: &OutboundContext, msg: &JSONRPCMessage, error: &Er
 ///
 /// Returns None when no retry is possible (no OAuth configured, the token
 /// already changed, or the refresh failed).
+#[cfg(feature = "auth")]
 async fn retry_unauthorized(
     ctx: &OutboundContext,
     sent_token: Option<&str>,
@@ -558,6 +561,16 @@ async fn retry_unauthorized(
             None
         }
     }
+}
+
+/// Retrying a 401 requires the `auth` feature; without it the response stands.
+#[cfg(not(feature = "auth"))]
+async fn retry_unauthorized(
+    _ctx: &OutboundContext,
+    _sent_token: Option<&str>,
+    _msg: &JSONRPCMessage,
+) -> Option<reqwest::Result<reqwest::Response>> {
+    None
 }
 
 #[async_trait]
@@ -584,6 +597,7 @@ impl Transport for HttpClientTransport {
             session_set: self.session_set.clone(),
             last_event_id: self.last_event_id.clone(),
             static_headers: self.static_headers.clone(),
+            #[cfg(feature = "auth")]
             oauth_client: self.oauth_client.clone(),
             sender,
         };
@@ -658,17 +672,29 @@ async fn outbound_post_request(ctx: &OutboundContext) -> Result<OutboundPostRequ
         );
     }
 
-    let mut access_token = None;
-    if let Some(oauth_client) = &ctx.oauth_client {
-        let token = oauth_client.get_valid_token().await?;
-        headers.insert(header::AUTHORIZATION, bearer_header(&token)?);
-        access_token = Some(token);
-    }
+    let access_token = attach_bearer(ctx, &mut headers).await?;
 
     Ok(OutboundPostRequest {
         headers,
         access_token,
     })
+}
+
+/// Attach a bearer token from the configured OAuth client, returning the token used.
+#[cfg(feature = "auth")]
+async fn attach_bearer(ctx: &OutboundContext, headers: &mut HeaderMap) -> Result<Option<String>> {
+    let Some(oauth_client) = &ctx.oauth_client else {
+        return Ok(None);
+    };
+    let token = oauth_client.get_valid_token().await?;
+    headers.insert(header::AUTHORIZATION, bearer_header(&token)?);
+    Ok(Some(token))
+}
+
+/// Bearer tokens require the `auth` feature; without it no token is attached.
+#[cfg(not(feature = "auth"))]
+async fn attach_bearer(_ctx: &OutboundContext, _headers: &mut HeaderMap) -> Result<Option<String>> {
+    Ok(None)
 }
 
 /// Marks caller-supplied static headers as sensitive before attaching them.

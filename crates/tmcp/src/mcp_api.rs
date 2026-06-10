@@ -20,7 +20,10 @@ use crate::{
 };
 
 /// Notification buffer used by the synthetic inspection context.
-const INSPECTION_NOTIFICATION_BUFFER: usize = 16;
+///
+/// Notifications emitted during inspection are buffered, never drained, so the
+/// buffer bounds how often a handler can notify while being inspected.
+const INSPECTION_NOTIFICATION_BUFFER: usize = 256;
 
 /// A serializable snapshot of the static MCP API exposed by a server handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,7 +183,9 @@ pub async fn inspect_server_with(
     handler: &(impl ServerHandler + ?Sized),
     options: McpApiOptions,
 ) -> Result<McpApi> {
-    let ctx = inspection_context();
+    // The receiver must stay alive for the whole inspection so handlers that
+    // notify during initialize or listing do not fail on a closed channel.
+    let (ctx, _notification_rx) = inspection_context();
     let initialize = handler
         .initialize(
             &ctx,
@@ -259,9 +264,13 @@ where
 }
 
 /// Build a request context suitable for direct handler inspection.
-fn inspection_context() -> ServerCtx {
-    let (notification_tx, _notification_rx) = mpsc::channel(INSPECTION_NOTIFICATION_BUFFER);
-    ServerCtx::new(notification_tx, None)
+///
+/// Returns the context together with its notification receiver; the caller
+/// must keep the receiver alive so `ServerCtx::notify` succeeds during
+/// inspection.
+fn inspection_context() -> (ServerCtx, mpsc::Receiver<ServerNotification>) {
+    let (notification_tx, notification_rx) = mpsc::channel(INSPECTION_NOTIFICATION_BUFFER);
+    (ServerCtx::new(notification_tx, None), notification_rx)
 }
 
 /// Collect every page returned by `tools/list`.

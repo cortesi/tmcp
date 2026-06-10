@@ -268,12 +268,12 @@ pub trait ServerHandler: Send + Sync {
     }
 
     /// Subscribe to resource updates
-    async fn resources_subscribe(&self, _context: &ServerCtx, _uri: String) -> Result<()> {
+    async fn subscribe_resource(&self, _context: &ServerCtx, _uri: String) -> Result<()> {
         Ok(())
     }
 
     /// Unsubscribe from resource updates
-    async fn resources_unsubscribe(&self, _context: &ServerCtx, _uri: String) -> Result<()> {
+    async fn unsubscribe_resource(&self, _context: &ServerCtx, _uri: String) -> Result<()> {
         Ok(())
     }
 
@@ -443,10 +443,10 @@ pub trait ServerHandler: Send + Sync {
                 serialize_result(self.read_resource(context, uri).await)
             }
             ClientRequest::Subscribe { uri, _meta: _ } => {
-                empty_result(self.resources_subscribe(context, uri).await)
+                empty_result(self.subscribe_resource(context, uri).await)
             }
             ClientRequest::Unsubscribe { uri, _meta: _ } => {
-                empty_result(self.resources_unsubscribe(context, uri).await)
+                empty_result(self.unsubscribe_resource(context, uri).await)
             }
             ClientRequest::ListPrompts { cursor, _meta: _ } => {
                 serialize_result(self.list_prompts(context, cursor).await)
