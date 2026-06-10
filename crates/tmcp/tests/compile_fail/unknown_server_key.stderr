@@ -1,0 +1,5 @@
+error: Unknown argument: frobnicate_fn
+ --> tests/compile_fail/unknown_server_key.rs:7:14
+  |
+7 | #[mcp_server(frobnicate_fn = helper)]
+  |              ^^^^^^^^^^^^^

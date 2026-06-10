@@ -1,0 +1,5 @@
+error: tool methods must be async
+  --> tests/compile_fail/tool_not_async.rs:10:5
+   |
+10 |     fn echo(&self) -> Result<CallToolResult> {
+   |     ^^

@@ -1,0 +1,5 @@
+error: flat tool parameters cannot use the impl block's generic parameters; use a typed params struct instead
+  --> tests/compile_fail/flat_generic_param.rs:12:29
+   |
+12 |     async fn echo(&self, a: T, b: i32) -> Result<CallToolResult> {
+   |                             ^

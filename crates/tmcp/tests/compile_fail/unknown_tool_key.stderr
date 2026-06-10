@@ -1,0 +1,5 @@
+error: Unknown #[tool] flag: frobnicate
+ --> tests/compile_fail/unknown_tool_key.rs:9:12
+  |
+9 |     #[tool(frobnicate)]
+  |            ^^^^^^^^^^

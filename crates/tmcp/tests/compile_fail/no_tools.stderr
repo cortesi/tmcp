@@ -1,0 +1,5 @@
+error: No tool methods or resource callbacks found. Use #[tool] or a resource callback argument
+ --> tests/compile_fail/no_tools.rs:7:1
+  |
+7 | impl Server {
+  | ^^^^

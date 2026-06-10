@@ -165,6 +165,18 @@ mod macros {
     pub use ::tmcp_macros::*;
 }
 
+/// Crates re-exported for use by tmcp's generated macro code.
+///
+/// This module is an implementation detail of the tmcp macros and carries no
+/// stability guarantees; do not use it directly.
+#[doc(hidden)]
+pub mod __private {
+    pub use async_trait;
+    pub use schemars;
+    pub use serde;
+    pub use serde_json;
+}
+
 #[cfg(test)]
 mod tests {
     use super::schema::*;

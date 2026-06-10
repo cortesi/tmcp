@@ -100,6 +100,15 @@ pub trait Group: GroupDispatch {
     /// will qualify it with parent groups.
     fn config(&self) -> GroupConfig;
 
+    /// Local path segment name for this node.
+    ///
+    /// Dispatch consults the name on every routed call, so implementations
+    /// should avoid building the full configuration here; `#[derive(Group)]`
+    /// overrides this with the statically known name.
+    fn name(&self) -> String {
+        self.config().name
+    }
+
     /// Register tools and child groups for this node.
     fn register(&self, toolset: &ToolSet, parent: Option<&str>) -> Result<()>
     where

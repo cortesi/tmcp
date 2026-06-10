@@ -1,0 +1,5 @@
+error: duplicate tool name `echo`
+  --> tests/compile_fail/duplicate_tool_names.rs:15:14
+   |
+15 |     async fn r#echo(&self) -> Result<CallToolResult> {
+   |              ^^^^^^

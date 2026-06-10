@@ -1,0 +1,5 @@
+error: task_support = "optional" or "required" requires a TaskMetadata or Option<TaskMetadata> parameter
+  --> tests/compile_fail/task_support_without_param.rs:10:5
+   |
+10 |     async fn echo(&self) -> Result<CallToolResult> {
+   |     ^^^^^

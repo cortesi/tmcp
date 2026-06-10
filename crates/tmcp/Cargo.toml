@@ -68,3 +68,4 @@ owo-colors = { version = "4.3.0", optional = true }
 rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", branch = "main", features = ["client", "server", "transport-worker", "transport-streamable-http-server"] }
 schemars = "1.1"
 tracing-subscriber = "0.3"
+trybuild = "1.0.116"

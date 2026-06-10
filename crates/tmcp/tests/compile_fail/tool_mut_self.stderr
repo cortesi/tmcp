@@ -1,0 +1,5 @@
+error: tool methods take &self; use interior mutability for state
+  --> tests/compile_fail/tool_mut_self.rs:10:19
+   |
+10 |     async fn echo(&mut self) -> Result<CallToolResult> {
+   |                   ^

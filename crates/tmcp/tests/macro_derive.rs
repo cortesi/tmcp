@@ -538,6 +538,77 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
+    struct UndocumentedServer;
+
+    #[mcp_server]
+    impl UndocumentedServer {
+        #[tool]
+        async fn noop(&self) -> Result<CallToolResult> {
+            Ok(CallToolResult::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_empty_description_no_instructions() {
+        let server = UndocumentedServer;
+        let ctx = TestServerContext::new();
+
+        let init = server
+            .initialize(
+                ctx.ctx(),
+                "1.0.0".to_string(),
+                ClientCapabilities::default(),
+                Implementation::new("test-client", "1.0.0"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(init.instructions, None);
+    }
+
+    #[derive(Debug, Default)]
+    struct ParagraphServer;
+
+    #[mcp_server]
+    /// First paragraph.
+    ///
+    /// Second paragraph.
+    impl ParagraphServer {
+        #[tool]
+        /// Tool summary.
+        ///
+        /// Tool details.
+        async fn noop(&self) -> Result<CallToolResult> {
+            Ok(CallToolResult::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_doc_paragraphs_preserved() {
+        let server = ParagraphServer;
+        let ctx = TestServerContext::new();
+
+        let init = server
+            .initialize(
+                ctx.ctx(),
+                "1.0.0".to_string(),
+                ClientCapabilities::default(),
+                Implementation::new("test-client", "1.0.0"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            init.instructions,
+            Some("First paragraph.\n\nSecond paragraph.".to_string())
+        );
+
+        let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
+        assert_eq!(
+            tools.tools[0].description,
+            Some("Tool summary.\n\nTool details.".to_string())
+        );
+    }
+
+    #[derive(Debug, Default)]
     struct GenericServer<T> {
         marker: PhantomData<T>,
     }

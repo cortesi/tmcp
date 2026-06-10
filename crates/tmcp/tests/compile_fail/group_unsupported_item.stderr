@@ -1,0 +1,5 @@
+error: #[group] must be applied to an impl block, a struct, or a group factory method
+ --> tests/compile_fail/group_unsupported_item.rs:5:1
+  |
+5 | trait NotAGroup {}
+  | ^^^^^
