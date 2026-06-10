@@ -899,45 +899,45 @@ async fn handle_initialize_request(
     request: JSONRPCRequest,
     context: &ServerCtx,
 ) -> (JSONRPCMessage, Option<ServerCapabilities>) {
-    let ctx_with_request = context.with_request_id(request.id.clone());
+    let JSONRPCRequest {
+        id,
+        request: Request { params, .. },
+        ..
+    } = request;
+    let ctx_with_request = context.with_request_id(id.clone());
 
     // Parse the initialize parameters
-    let params = match &request.request.params {
-        Some(params) => params,
-        None => {
-            return (
-                JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: Some(request.id),
-                    error: ErrorObject {
-                        code: INVALID_PARAMS,
-                        message: "Missing initialize parameters".to_string(),
-                        data: None,
-                    },
-                })),
-                None,
-            );
-        }
+    let Some(mut params) = params else {
+        return (
+            JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: Some(id),
+                error: ErrorObject {
+                    code: INVALID_PARAMS,
+                    message: "Missing initialize parameters".to_string(),
+                    data: None,
+                },
+            })),
+            None,
+        );
     };
 
     // Extract initialize parameters
-    let protocol_version = params
-        .other
-        .get("protocolVersion")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let protocol_version = match params.other.remove("protocolVersion") {
+        Some(serde_json::Value::String(version)) => version,
+        _ => String::new(),
+    };
 
     let capabilities: ClientCapabilities = params
         .other
-        .get("capabilities")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .remove("capabilities")
+        .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
 
     let client_info: Implementation = params
         .other
-        .get("clientInfo")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .remove("clientInfo")
+        .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_else(|| Implementation::new("unknown", "0.0.0"));
 
     // Call the handler's initialize method
@@ -953,7 +953,7 @@ async fn handle_initialize_request(
         Ok(result) => (Some(result.capabilities.clone()), Ok(result)),
         Err(e) => (None, Err(e)),
     };
-    (result_to_jsonrpc_response(request.id, result), caps)
+    (result_to_jsonrpc_response(id, result), caps)
 }
 
 /// Handle a request using the Connection trait and convert result to JSONRPCMessage

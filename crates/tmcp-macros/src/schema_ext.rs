@@ -30,7 +30,7 @@ pub fn expand_meta(mut input: syn::DeriveInput, open: bool) -> TokenStream {
     let meta_field: syn::Field = syn::parse_quote! {
         /// Optional metadata field for extensions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub _meta: Option<std::collections::HashMap<String, serde_json::Value>>
+        pub _meta: Option<serde_json::Map<String, serde_json::Value>>
     };
 
     // Add the fields.
@@ -38,8 +38,8 @@ pub fn expand_meta(mut input: syn::DeriveInput, open: bool) -> TokenStream {
     if open {
         let extra_field: syn::Field = syn::parse_quote! {
             /// Unknown protocol fields preserved for forward compatibility on open MCP objects.
-            #[serde(flatten, default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-            pub _extra: std::collections::HashMap<String, serde_json::Value>
+            #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+            pub _extra: serde_json::Map<String, serde_json::Value>
         };
         fields.named.push(extra_field);
     }
@@ -54,7 +54,7 @@ pub fn expand_meta(mut input: syn::DeriveInput, open: bool) -> TokenStream {
             ///
             /// Only use this for MCP objects whose schema inherits `Result` or is otherwise
             /// explicitly open to top-level extension fields.
-            pub fn with_extra(mut self, extra: std::collections::HashMap<String, serde_json::Value>) -> Self {
+            pub fn with_extra(mut self, extra: serde_json::Map<String, serde_json::Value>) -> Self {
                 self._extra = extra;
                 self
             }
@@ -80,7 +80,7 @@ pub fn expand_meta(mut input: syn::DeriveInput, open: bool) -> TokenStream {
             ///
             /// Third-party extension keys should be namespaced, such as with reverse-DNS keys,
             /// and must not use MCP-reserved prefixes.
-            pub fn with_meta(mut self, meta: std::collections::HashMap<String, serde_json::Value>) -> Self {
+            pub fn with_meta(mut self, meta: serde_json::Map<String, serde_json::Value>) -> Self {
                 self._meta = Some(meta);
                 self
             }
@@ -91,7 +91,7 @@ pub fn expand_meta(mut input: syn::DeriveInput, open: bool) -> TokenStream {
             /// and must not use MCP-reserved prefixes.
             pub fn with_meta_entry(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
                 self._meta
-                    .get_or_insert_with(std::collections::HashMap::new)
+                    .get_or_insert_with(serde_json::Map::new)
                     .insert(key.into(), value);
                 self
             }

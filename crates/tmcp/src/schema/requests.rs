@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::*;
 use crate::{Arguments, macros::with_open_meta, request_handler::RequestMethod};
@@ -406,7 +406,7 @@ pub enum ClientNotification {
         reason: Option<String>,
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
     /// An out-of-band progress update for a long-running request.
     #[serde(rename = "notifications/progress")]
@@ -424,7 +424,7 @@ pub enum ClientNotification {
         message: Option<String>,
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
 
     /// This notification is sent from the client to the server after initialization
@@ -433,7 +433,7 @@ pub enum ClientNotification {
     Initialized {
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
 
     /// A notification from the client to the server, informing it that the list of
@@ -444,7 +444,7 @@ pub enum ClientNotification {
     RootsListChanged {
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
 
     /// An optional notification informing that a task's status has changed.
@@ -675,7 +675,7 @@ pub enum ServerNotification {
         reason: Option<String>,
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
     /// An out-of-band progress update for a long-running request.
     #[serde(rename = "notifications/progress")]
@@ -693,7 +693,7 @@ pub enum ServerNotification {
         message: Option<String>,
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
     /// Notification of a log message passed from server to client. If no
     /// logging/setLevel request has been sent from the client, the server MAY
@@ -709,7 +709,7 @@ pub enum ServerNotification {
         data: Value,
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
 
     /// A notification from the server to the client, informing it that a resource
@@ -721,7 +721,7 @@ pub enum ServerNotification {
         uri: String,
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
 
     /// An optional notification from the server to the client, informing it that
@@ -731,7 +731,7 @@ pub enum ServerNotification {
     ResourceListChanged {
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
 
     /// An optional notification from the server to the client, informing it that
@@ -741,7 +741,7 @@ pub enum ServerNotification {
     ToolListChanged {
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
 
     /// An optional notification from the server to the client, informing it that
@@ -751,7 +751,7 @@ pub enum ServerNotification {
     PromptListChanged {
         /// Notification metadata reserved by the protocol.
         #[serde(skip_serializing_if = "Option::is_none")]
-        _meta: Option<HashMap<String, Value>>,
+        _meta: Option<Map<String, Value>>,
     },
 
     /// An optional notification from the server to the client, informing it of

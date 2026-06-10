@@ -1,7 +1,7 @@
 use std::{slice, vec};
 
 use base64::{Engine, engine::general_purpose::STANDARD as Base64Standard};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de, de::DeserializeOwned, ser};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
 use super::{Resource, ResourceContents};
@@ -452,6 +452,18 @@ where
     }
 }
 
+/// Borrowed view of one tagged content payload, serialized as the `type` tag
+/// followed by the variant's fields without buffering them into a `Value`.
+#[derive(Serialize)]
+struct TaggedContent<'a, T: Serialize> {
+    /// Literal content type tag.
+    #[serde(rename = "type")]
+    content_type: &'a str,
+    /// Variant payload emitted beside the tag.
+    #[serde(flatten)]
+    content: &'a T,
+}
+
 /// Serialize one tagged content payload.
 fn serialize_tagged_content<S>(
     content_type: &str,
@@ -461,12 +473,11 @@ fn serialize_tagged_content<S>(
 where
     S: Serializer,
 {
-    let mut value = serde_json::to_value(content).map_err(ser::Error::custom)?;
-    let Value::Object(object) = &mut value else {
-        return Err(ser::Error::custom("content block must serialize as object"));
-    };
-    object.insert("type".to_owned(), Value::String(content_type.to_owned()));
-    value.serialize(serializer)
+    TaggedContent {
+        content_type,
+        content,
+    }
+    .serialize(serializer)
 }
 
 /// Deserialize one tagged content block using the provided known-variant mapping.

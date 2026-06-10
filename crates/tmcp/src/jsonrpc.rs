@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 use crate::{
     error::{Error, Result},
@@ -16,18 +15,14 @@ where
     T: DeserializeOwned,
 {
     let mut object = serde_json::Map::new();
-    object.insert(
-        "method".to_string(),
-        serde_json::Value::String(method.to_string()),
-    );
+    object.insert("method".to_string(), Value::String(method.to_string()));
     if let Some(params) = params {
         if let Some(meta) = params._meta {
             object.insert("_meta".to_string(), serde_json::to_value(meta)?);
         }
         object.extend(params.other);
     }
-    serde_json::from_value(serde_json::Value::Object(object))
-        .map_err(|err| classify_parse_error(method, &err))
+    serde_json::from_value(Value::Object(object)).map_err(|err| classify_parse_error(method, &err))
 }
 
 /// Parse a typed inbound notification from its JSON-RPC envelope.
@@ -40,18 +35,14 @@ where
 {
     let method = notification.method;
     let mut object = serde_json::Map::new();
-    object.insert(
-        "method".to_string(),
-        serde_json::Value::String(method.clone()),
-    );
+    object.insert("method".to_string(), Value::String(method.clone()));
     if let Some(params) = notification.params {
         if let Some(meta) = params._meta {
-            object.insert("_meta".to_string(), serde_json::to_value(meta)?);
+            object.insert("_meta".to_string(), Value::Object(meta));
         }
         object.extend(params.other);
     }
-    serde_json::from_value(serde_json::Value::Object(object))
-        .map_err(|err| classify_parse_error(&method, &err))
+    serde_json::from_value(Value::Object(object)).map_err(|err| classify_parse_error(&method, &err))
 }
 
 /// Classify a deserialization failure as method-not-found or invalid params.
@@ -76,24 +67,24 @@ where
     T: serde::Serialize + NotificationTrait,
 {
     let method = notification.method();
-    let params = serde_json::to_value(notification)
-        .ok()
-        .and_then(|v| v.as_object().cloned())
-        .and_then(|mut obj| {
-            obj.remove("method");
-            let meta = obj
-                .remove("_meta")
-                .and_then(|value| value.as_object().cloned())
-                .map(|map| map.into_iter().collect::<HashMap<_, _>>());
-            if obj.is_empty() && meta.is_none() {
+    let params = match serde_json::to_value(notification) {
+        Ok(Value::Object(mut object)) => {
+            object.remove("method");
+            let meta = match object.remove("_meta") {
+                Some(Value::Object(map)) => Some(map),
+                _ => None,
+            };
+            if object.is_empty() && meta.is_none() {
                 None
             } else {
                 Some(NotificationParams {
                     _meta: meta,
-                    other: obj.into_iter().collect(),
+                    other: object,
                 })
             }
-        });
+        }
+        _ => None,
+    };
 
     JSONRPCNotification {
         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -151,8 +142,8 @@ where
                 result: schema::JSONRPCResult {
                     _meta: None,
                     other: match json_value {
-                        serde_json::Value::Object(map) => map.into_iter().collect(),
-                        other => HashMap::from([("result".to_string(), other)]),
+                        Value::Object(map) => map,
+                        other => serde_json::Map::from_iter([("result".to_string(), other)]),
                     },
                 },
             }))

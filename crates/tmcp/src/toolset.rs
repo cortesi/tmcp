@@ -43,6 +43,10 @@ pub enum Visibility {
     /// Tool is visible only when the named group is active.
     Group(String),
     /// Tool is visible when the predicate returns true.
+    ///
+    /// Predicates are evaluated while the tool registry's read lock is held,
+    /// so they must be fast and must not call back into the owning
+    /// [`ToolSet`].
     When(Arc<dyn Fn(&ToolSetView) -> bool + Send + Sync>),
 }
 
@@ -306,17 +310,13 @@ impl ToolSet {
     pub fn list_tools(&self, cursor: Option<Cursor>) -> Result<ListToolsResult> {
         let snapshot = self.groups.snapshot();
         let view = ToolSetView { groups: &snapshot };
-        let entries = self
+        let mut tools = self
             .tools
             .read()
             .unwrap_or_else(|err| err.into_inner())
             .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut tools = entries
-            .into_iter()
             .filter(|entry| entry.visibility.is_visible(&view))
-            .map(|entry| entry.tool)
+            .map(|entry| entry.tool.clone())
             .collect::<Vec<_>>();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         let offset = cursor.map(parse_cursor_offset).transpose()?.unwrap_or(0);
@@ -336,11 +336,9 @@ impl ToolSet {
         name: &str,
         arguments: Option<Arguments>,
     ) -> Result<CallToolResult> {
-        if !self.is_tool_visible(name) {
-            return Err(Error::ToolNotFound(name.to_string()));
-        }
-        let handler = self.tool_handler(name);
-        let handler = handler.ok_or_else(|| Error::ToolNotFound(name.to_string()))?;
+        let handler = self
+            .visible_handler(name)?
+            .ok_or_else(|| Error::ToolNotFound(name.to_string()))?;
         handler(ctx, arguments).await
     }
 
@@ -363,10 +361,7 @@ impl ToolSet {
             Option<TaskMetadata>,
         ) -> ToolCallFuture<'a>,
     {
-        if !self.is_tool_visible(name) {
-            return Err(Error::ToolNotFound(name.to_string()));
-        }
-        if let Some(tool_handler) = self.tool_handler(name) {
+        if let Some(tool_handler) = self.visible_handler(name)? {
             return tool_handler(ctx, arguments).await.map(Into::into);
         }
         dispatch(handler, ctx, name, arguments, task).await
@@ -389,17 +384,6 @@ impl ToolSet {
         F: FnOnce() -> Result<()>,
     {
         self.registration.get_or_init(register).clone()
-    }
-
-    /// Check visibility by name using the current snapshot.
-    #[doc(hidden)]
-    pub fn is_tool_visible(&self, name: &str) -> bool {
-        let Some(entry) = self.tool_entry(name) else {
-            return false;
-        };
-        let snapshot = self.groups.snapshot();
-        let view = ToolSetView { groups: &snapshot };
-        entry.visibility.is_visible(&view)
     }
 
     /// Dispatch dynamic tools registered with handlers (macro fallback).
@@ -485,18 +469,22 @@ impl ToolSet {
         Ok(())
     }
 
-    /// Retrieve a tool entry clone by name.
-    fn tool_entry(&self, name: &str) -> Option<ToolEntry> {
+    /// Resolve a tool's handler in a single read-lock lookup.
+    ///
+    /// Returns `ToolNotFound` when the tool is missing or not currently
+    /// visible, and `Ok(None)` when the tool is visible but has no dynamic
+    /// handler. Only the handler `Arc` is cloned; the tool definition and its
+    /// schema stay behind the lock.
+    fn visible_handler(&self, name: &str) -> Result<Option<ToolHandler>> {
+        let snapshot = self.groups.snapshot();
+        let view = ToolSetView { groups: &snapshot };
         self.tools
             .read()
             .unwrap_or_else(|err| err.into_inner())
             .get(name)
-            .cloned()
-    }
-
-    /// Retrieve a cloned handler for a tool, if present.
-    fn tool_handler(&self, name: &str) -> Option<ToolHandler> {
-        self.tool_entry(name).and_then(|entry| entry.handler)
+            .filter(|entry| entry.visibility.is_visible(&view))
+            .map(|entry| entry.handler.clone())
+            .ok_or_else(|| Error::ToolNotFound(name.to_string()))
     }
 
     /// Register auto-generated activation and deactivation tools.
@@ -575,7 +563,6 @@ type ToolHandler =
 type SharedActivationHook = Arc<dyn Fn(&ServerCtx) -> BoxFuture<'static, Result<()>> + Send + Sync>;
 
 /// A registered tool with its metadata, visibility rule, and handler.
-#[derive(Clone)]
 struct ToolEntry {
     /// Tool definition used for listing.
     tool: Tool,

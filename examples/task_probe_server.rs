@@ -5,7 +5,7 @@
 //! `tasks/get`, `tasks/result`, `tasks/list`, and `tasks/cancel`.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fs::OpenOptions,
     io::Write,
     path::PathBuf,
@@ -104,21 +104,17 @@ impl TaskProbeServer {
     fn task_result_payload(entry: &TaskEntry) -> Result<schema::GetTaskPayloadResult> {
         let result =
             CallToolResult::new().with_text_content(format!("task-probe-ok:{}", entry.token));
-        let value = serde_json::to_value(result)?;
-        let Some(object) = value.as_object() else {
+        let serde_json::Value::Object(object) = serde_json::to_value(result)? else {
             return Err(Error::Protocol(
                 "task result payload was not an object".to_string(),
             ));
         };
         Ok(schema::JSONRPCResult {
-            _meta: Some(HashMap::from([(
+            _meta: Some(serde_json::Map::from_iter([(
                 "io.modelcontextprotocol/related-task".to_string(),
                 json!({ "taskId": entry.task.task_id }),
             )])),
-            other: object
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
+            other: object,
         })
     }
 

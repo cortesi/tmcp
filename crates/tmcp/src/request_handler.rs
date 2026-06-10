@@ -4,7 +4,6 @@
 //! with incoming responses, handles timeouts, and supports cancellation.
 
 use std::{
-    collections::HashMap,
     future::Future,
     pin::Pin,
     result::Result as StdResult,
@@ -341,10 +340,9 @@ impl RequestHandler {
     ) -> Result<()> {
         let notification_params = params.map(|v| NotificationParams {
             _meta: None,
-            other: if let Some(obj) = v.as_object() {
-                obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-            } else {
-                HashMap::new()
+            other: match v {
+                serde_json::Value::Object(map) => map,
+                _ => serde_json::Map::new(),
             },
         });
 
@@ -371,10 +369,10 @@ impl RequestHandler {
     where
         Req: serde::Serialize + RequestMethod,
     {
-        let mut params_obj = serde_json::to_value(request)?
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        let mut params_obj = match serde_json::to_value(request)? {
+            serde_json::Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
         params_obj.remove("method");
         let meta = params_obj
             .remove("_meta")
@@ -384,7 +382,7 @@ impl RequestHandler {
         } else {
             Some(RequestParams {
                 _meta: meta,
-                other: params_obj.into_iter().collect(),
+                other: params_obj,
             })
         };
         Ok(JSONRPCRequest {
@@ -404,14 +402,9 @@ impl RequestHandler {
     {
         match response {
             JSONRPCResponse::Result(response) => {
-                let mut result_value = serde_json::Map::new();
-
+                let mut result_value = response.result.other;
                 if let Some(meta) = response.result._meta {
-                    result_value.insert("_meta".to_string(), serde_json::to_value(meta)?);
-                }
-
-                for (key, value) in response.result.other {
-                    result_value.insert(key, value);
+                    result_value.insert("_meta".to_string(), serde_json::Value::Object(meta));
                 }
 
                 serde_json::from_value(serde_json::Value::Object(result_value))

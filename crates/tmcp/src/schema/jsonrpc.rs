@@ -1,10 +1,7 @@
-use std::{
-    collections::HashMap,
-    fmt::{self, Display, Formatter},
-};
+use std::fmt::{self, Display, Formatter};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::macros::with_meta;
 
@@ -79,7 +76,7 @@ pub struct RequestParams {
     pub _meta: Option<RequestMeta>,
     /// Method-specific parameters.
     #[serde(flatten)]
-    pub other: HashMap<String, Value>,
+    pub other: Map<String, Value>,
 }
 
 /// Metadata attached to a request via the reserved `_meta` parameter.
@@ -94,7 +91,7 @@ pub struct RequestMeta {
     pub progress_token: Option<ProgressToken>,
     /// Additional metadata fields preserved from the wire.
     #[serde(flatten)]
-    pub other: HashMap<String, Value>,
+    pub other: Map<String, Value>,
 }
 
 /// The method and params of a JSON-RPC request, without the envelope.
@@ -113,10 +110,10 @@ pub struct NotificationParams {
     /// This parameter name is reserved by MCP to allow clients and servers to
     /// attach additional metadata to their notifications.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub _meta: Option<HashMap<String, Value>>,
+    pub _meta: Option<Map<String, Value>>,
     /// Method-specific parameters.
     #[serde(flatten)]
-    pub other: HashMap<String, Value>,
+    pub other: Map<String, Value>,
 }
 
 /// The method and params of a JSON-RPC notification, without the envelope.
@@ -136,7 +133,7 @@ pub struct JSONRPCResult {
     /// This result property is reserved by the protocol to allow clients and
     /// servers to attach additional metadata to their responses.
     #[serde(flatten)]
-    pub other: HashMap<String, Value>,
+    pub other: Map<String, Value>,
 }
 
 /// A uniquely identifying ID for a request in JSON-RPC.

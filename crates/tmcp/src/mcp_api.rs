@@ -50,19 +50,56 @@ impl McpApi {
     /// Treat the value as stable for one tmcp release series; downstream caches
     /// should tolerate invalidation when tmcp changes the protocol model.
     pub fn surface_digest(&self) -> String {
-        let mut api = self.clone();
-        api.tools.sort_by(|left, right| left.name.cmp(&right.name));
-        api.resources
-            .sort_by(|left, right| left.uri.cmp(&right.uri));
-        api.resource_templates
-            .sort_by(|left, right| left.uri_template.cmp(&right.uri_template));
-        api.prompts
-            .sort_by(|left, right| left.name.cmp(&right.name));
+        let mut tools: Vec<&Tool> = self.tools.iter().collect();
+        tools.sort_by(|left, right| left.name.cmp(&right.name));
+        let mut resources: Vec<&Resource> = self.resources.iter().collect();
+        resources.sort_by(|left, right| left.uri.cmp(&right.uri));
+        let mut resource_templates: Vec<&ResourceTemplate> =
+            self.resource_templates.iter().collect();
+        resource_templates.sort_by(|left, right| left.uri_template.cmp(&right.uri_template));
+        let mut prompts: Vec<&Prompt> = self.prompts.iter().collect();
+        prompts.sort_by(|left, right| left.name.cmp(&right.name));
 
-        let bytes = serde_json::to_vec(&api).expect("McpApi can be serialized to JSON");
-        let digest = Sha256::digest(bytes);
-        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+        let surface = McpApiSurface {
+            initialize: &self.initialize,
+            tools,
+            resources,
+            resource_templates,
+            prompts,
+        };
+        let bytes = serde_json::to_vec(&surface).expect("McpApi can be serialized to JSON");
+        hex_encode(&Sha256::digest(bytes))
     }
+}
+
+/// Borrowed, canonically ordered view of [`McpApi`] hashed by `surface_digest`.
+///
+/// Serializes byte-identically to a sorted [`McpApi`], so digests stay stable
+/// without cloning the snapshot.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpApiSurface<'a> {
+    /// The server's initialize response.
+    initialize: &'a InitializeResult,
+    /// Tools sorted by name.
+    tools: Vec<&'a Tool>,
+    /// Resources sorted by URI.
+    resources: Vec<&'a Resource>,
+    /// Resource templates sorted by URI template.
+    resource_templates: Vec<&'a ResourceTemplate>,
+    /// Prompts sorted by name.
+    prompts: Vec<&'a Prompt>,
+}
+
+/// Encode bytes as lowercase hex into one pre-allocated string.
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        hex.push(HEX_DIGITS[usize::from(byte >> 4)] as char);
+        hex.push(HEX_DIGITS[usize::from(byte & 0x0f)] as char);
+    }
+    hex
 }
 
 /// Coalesced MCP API refresh flags from server list-change notifications.

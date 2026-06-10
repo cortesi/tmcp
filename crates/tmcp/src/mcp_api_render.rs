@@ -1,6 +1,9 @@
 //! Human-oriented rendering for MCP API snapshots.
 
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    fmt::{Arguments, Write},
+};
 
 use owo_colors::{OwoColorize, Style};
 use serde_json::{Map, Value};
@@ -423,10 +426,10 @@ fn render_schema_body(
     }
     render_description(out, object, theme, indent);
     if should_render_schema_type(object, context) {
-        push_line(
+        push_line_fmt(
             out,
             indent,
-            &format!(
+            format_args!(
                 "{} {}",
                 theme.label("Type:"),
                 theme.literal(&schema_kind(schema))
@@ -476,10 +479,10 @@ fn render_schema_property(
     if let Some(object) = schema.as_object() {
         summary.extend(schema_constraint_parts(object));
     }
-    push_line(
+    push_line_fmt(
         out,
         indent,
-        &format!("- {} ({})", theme.literal(name), summary.join(", ")),
+        format_args!("- {} ({})", theme.literal(name), summary.join(", ")),
     );
     if let Some(object) = schema.as_object() {
         render_description(out, object, theme, indent + 1);
@@ -630,10 +633,10 @@ fn render_schema_choices(
         };
         push_line(out, indent, &theme.label(title));
         for choice in choices {
-            push_line(
+            push_line_fmt(
                 out,
                 indent + 1,
-                &format!("- {}", theme.literal(&schema_choice_summary(choice))),
+                format_args!("- {}", theme.literal(&schema_choice_summary(choice))),
             );
             render_schema_choice_body(out, choice, theme, indent + 2);
         }
@@ -653,17 +656,17 @@ fn render_schema_constants(
             .map(value_inline)
             .collect::<Vec<_>>()
             .join(", ");
-        push_line(
+        push_line_fmt(
             out,
             indent,
-            &format!("{} {values}", theme.label("Allowed values:")),
+            format_args!("{} {values}", theme.label("Allowed values:")),
         );
     }
     if let Some(value) = object.get("const") {
-        push_line(
+        push_line_fmt(
             out,
             indent,
-            &format!("{} {}", theme.label("Constant:"), value_inline(value)),
+            format_args!("{} {}", theme.label("Constant:"), value_inline(value)),
         );
     }
     render_schema_default(out, object, theme, indent);
@@ -707,10 +710,10 @@ fn render_schema_constraints(
 ) {
     let constraints = schema_constraint_parts(object);
     if !constraints.is_empty() {
-        push_line(
+        push_line_fmt(
             out,
             indent,
-            &format!("{} {}", theme.label("Constraints:"), constraints.join(", ")),
+            format_args!("{} {}", theme.label("Constraints:"), constraints.join(", ")),
         );
     }
 }
@@ -723,10 +726,10 @@ fn render_schema_default(
     indent: usize,
 ) {
     if let Some(default) = object.get("default") {
-        push_line(
+        push_line_fmt(
             out,
             indent,
-            &format!("{} {}", theme.label("Default:"), value_inline(default)),
+            format_args!("{} {}", theme.label("Default:"), value_inline(default)),
         );
     }
 }
@@ -883,10 +886,10 @@ fn render_json_field(
             push_line(out, indent, &theme.label(&display_key(key)));
             render_value_tree(out, value, theme, indent + 1);
         }
-        value => push_line(
+        value => push_line_fmt(
             out,
             indent,
-            &format!(
+            format_args!(
                 "{} {}",
                 theme.label(&format!("{}:", display_key(key))),
                 value_inline(value)
@@ -905,10 +908,10 @@ fn render_multiline_field(
 ) {
     let mut lines = value.lines();
     let first = lines.next().unwrap_or_default();
-    push_line(
+    push_line_fmt(
         out,
         indent,
-        &format!("{} {first}", theme.label(&format!("{key}:"))),
+        format_args!("{} {first}", theme.label(&format!("{key}:"))),
     );
     for line in lines {
         push_line(out, indent + 1, line);
@@ -940,7 +943,7 @@ fn render_array_tree(out: &mut String, items: &[Value], theme: RenderTheme, inde
                 push_line(out, indent, "-");
                 render_value_tree(out, item, theme, indent + 1);
             }
-            value => push_line(out, indent, &format!("- {}", value_inline(value))),
+            value => push_line_fmt(out, indent, format_args!("- {}", value_inline(value))),
         }
     }
 }
@@ -1001,9 +1004,24 @@ fn push_blank(out: &mut String) {
 
 /// Append an indented line.
 fn push_line(out: &mut String, indent: usize, line: &str) {
-    out.push_str(&"  ".repeat(indent));
+    push_indent(out, indent);
     out.push_str(line);
     out.push('\n');
+}
+
+/// Append an indented line built from format arguments.
+fn push_line_fmt(out: &mut String, indent: usize, args: Arguments<'_>) {
+    push_indent(out, indent);
+    out.write_fmt(args)
+        .expect("writing to a String cannot fail");
+    out.push('\n');
+}
+
+/// Append two-space indentation without allocating.
+fn push_indent(out: &mut String, indent: usize) {
+    for _ in 0..indent {
+        out.push_str("  ");
+    }
 }
 
 /// JSON Schema keys that receive explicit rendering.
