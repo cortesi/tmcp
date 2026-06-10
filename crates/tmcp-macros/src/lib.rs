@@ -148,14 +148,14 @@
 
 #![warn(missing_docs)]
 
-use std::result::Result as StdResult;
+use std::{collections::HashSet, result::Result as StdResult};
 
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    Expr, ExprLit, ImplItem, ItemImpl, Lit, Meta, parse::Parse, punctuated::Punctuated,
-    spanned::Spanned,
+    Expr, ExprLit, ImplItem, ItemImpl, Lit, Meta, ext::IdentExt, parse::Parse,
+    punctuated::Punctuated, spanned::Spanned,
 };
 
 /// Internal result type for macro parsing.
@@ -164,7 +164,9 @@ type Result<T> = StdResult<T, syn::Error>;
 #[derive(Debug)]
 /// Description of an impl method tagged as a tool.
 struct ToolMethod {
-    /// Name of the tool method.
+    /// Method identifier for the tool.
+    ident: syn::Ident,
+    /// Tool name advertised to clients (identifier without any raw prefix).
     name: String,
     /// Collected doc comments for the tool.
     docs: String,
@@ -296,7 +298,11 @@ enum ToolTaskSupport {
 #[derive(Debug)]
 /// Summary of the server impl block and its tool methods.
 struct ServerInfo {
-    /// Name of the server struct.
+    /// Self type of the annotated impl block.
+    self_ty: syn::Type,
+    /// Generics declared on the annotated impl block.
+    generics: syn::Generics,
+    /// Identifier of the server type (last path segment, without any raw prefix).
     struct_name: String,
     /// Doc comment used as the server description.
     description: String,
@@ -545,17 +551,41 @@ fn is_option_task_metadata_type(ty: &syn::Type) -> bool {
     }
 }
 
+/// Whether a parameter attribute is harvested onto generated flat-argument structs.
+fn is_flat_param_attr(attr: &syn::Attribute) -> bool {
+    attr.path().is_ident("serde") || attr.path().is_ident("schemars") || attr.path().is_ident("doc")
+}
+
 /// Filter parameter attributes to those relevant for serde/schemars/docs.
 fn filter_flat_param_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
     attrs
         .iter()
-        .filter(|attr| {
-            attr.path().is_ident("serde")
-                || attr.path().is_ident("schemars")
-                || attr.path().is_ident("doc")
-        })
+        .filter(|attr| is_flat_param_attr(attr))
         .cloned()
         .collect()
+}
+
+/// Remove harvested parameter attributes from `#[tool]` methods in an impl block.
+///
+/// Serde, schemars, and doc attributes on tool parameters feed the generated
+/// flat-argument structs; they are not legal on function parameters, so they
+/// must not survive in the re-emitted impl block.
+fn strip_tool_param_attrs(impl_block: &mut ItemImpl) {
+    for item in &mut impl_block.items {
+        let ImplItem::Fn(method) = item else { continue };
+        if !method.attrs.iter().any(|attr| attr.path().is_ident("tool")) {
+            continue;
+        }
+        for input in &mut method.sig.inputs {
+            let syn::FnArg::Typed(pat_type) = input else {
+                continue;
+            };
+            if is_server_ctx_type(&pat_type.ty) {
+                continue;
+            }
+            pat_type.attrs.retain(|attr| !is_flat_param_attr(attr));
+        }
+    }
 }
 
 /// Parse a flat parameter definition from a typed function argument.
@@ -962,7 +992,11 @@ fn normalize_task_support(
     match (task_param, task_support) {
         (TaskParamKind::None, Some(ToolTaskSupport::Forbidden) | None) => Ok(task_support),
         (TaskParamKind::None, Some(ToolTaskSupport::Optional | ToolTaskSupport::Required)) => {
-            Ok(task_support)
+            Err(syn::Error::new(
+                method.sig.span(),
+                "task_support = \"optional\" or \"required\" requires a TaskMetadata or \
+                 Option<TaskMetadata> parameter",
+            ))
         }
         (TaskParamKind::Required, None) => Ok(Some(ToolTaskSupport::Required)),
         (TaskParamKind::Required, Some(ToolTaskSupport::Required)) => {
@@ -993,7 +1027,8 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
         return Ok(None);
     };
 
-    let name = method.sig.ident.to_string();
+    let ident = method.sig.ident.clone();
+    let name = ident.unraw().to_string();
     let docs = extract_doc_comment(&method.attrs);
 
     // Validate method signature
@@ -1009,19 +1044,24 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
     if params.is_empty() {
         return Err(syn::Error::new(
             method.sig.inputs.span(),
-            "tool methods must include &self or &mut self",
+            "tool methods must take &self",
         ));
     }
 
-    // Validate &self or &mut self
+    // Validate the receiver: generated dispatch calls tools through &self.
     match params[0] {
-        syn::FnArg::Receiver(_) => {
-            // Accept both &self and &mut self
+        syn::FnArg::Receiver(receiver)
+            if receiver.reference.is_some() && receiver.mutability.is_none() => {}
+        syn::FnArg::Receiver(receiver) => {
+            return Err(syn::Error::new(
+                receiver.span(),
+                "tool methods take &self; use interior mutability for state",
+            ));
         }
         _ => {
             return Err(syn::Error::new(
                 params[0].span(),
-                "first parameter must be &self or &mut self",
+                "first parameter must be &self",
             ));
         }
     }
@@ -1129,6 +1169,7 @@ fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>> {
     let return_kind = parse_tool_return(&method.sig.output)?;
 
     Ok(Some(ToolMethod {
+        ident,
         name,
         docs,
         has_ctx,
@@ -1209,16 +1250,24 @@ fn parse_group_method(method: &syn::ImplItemFn) -> Result<Option<GroupMethod>> {
     if params.is_empty() {
         return Err(syn::Error::new(
             method.sig.inputs.span(),
-            "group methods must include &self or &mut self",
+            "group methods must take &self",
         ));
     }
 
+    // Validate the receiver: generated dispatch calls group factories through &self.
     match params[0] {
-        syn::FnArg::Receiver(_) => {}
+        syn::FnArg::Receiver(receiver)
+            if receiver.reference.is_some() && receiver.mutability.is_none() => {}
+        syn::FnArg::Receiver(receiver) => {
+            return Err(syn::Error::new(
+                receiver.span(),
+                "group methods take &self; use interior mutability for state",
+            ));
+        }
         _ => {
             return Err(syn::Error::new(
                 params[0].span(),
-                "first parameter must be &self or &mut self",
+                "first parameter must be &self",
             ));
         }
     }
@@ -1243,11 +1292,60 @@ fn parse_group_method(method: &syn::ImplItemFn) -> Result<Option<GroupMethod>> {
     }))
 }
 
+/// Collect the type and const parameter identifiers declared on an impl block.
+fn generic_param_idents(generics: &syn::Generics) -> Vec<&syn::Ident> {
+    generics
+        .params
+        .iter()
+        .filter_map(|param| match param {
+            syn::GenericParam::Type(param) => Some(&param.ident),
+            syn::GenericParam::Const(param) => Some(&param.ident),
+            syn::GenericParam::Lifetime(_) => None,
+        })
+        .collect()
+}
+
+/// Check whether a token stream mentions any of the given identifiers.
+fn tokens_mention_ident(tokens: TokenStream, idents: &[&syn::Ident]) -> bool {
+    tokens.into_iter().any(|token| match token {
+        proc_macro2::TokenTree::Ident(ident) => idents.iter().any(|target| **target == ident),
+        proc_macro2::TokenTree::Group(group) => tokens_mention_ident(group.stream(), idents),
+        _ => false,
+    })
+}
+
+/// Reject flat tool parameters whose types mention impl generic parameters.
+///
+/// Flat parameters are lifted into a standalone arguments struct emitted next
+/// to the impl block, where the impl's generic parameters are not in scope.
+fn validate_flat_params(info: &ServerInfo) -> Result<()> {
+    let idents = generic_param_idents(&info.generics);
+    if idents.is_empty() {
+        return Ok(());
+    }
+    for tool in &info.tools {
+        let ParamsKind::Flat(params) = &tool.params_kind else {
+            continue;
+        };
+        for param in params {
+            let ty = &param.ty;
+            if tokens_mention_ident(quote! { #ty }, &idents) {
+                return Err(syn::Error::new(
+                    param.ty.span(),
+                    "flat tool parameters cannot use the impl block's generic parameters; \
+                     use a typed params struct instead",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Parse a server impl block and gather tool metadata.
 fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
-    let impl_block = syn::parse2::<ItemImpl>(input.clone())?;
+    let mut impl_block = syn::parse2::<ItemImpl>(input.clone())?;
 
-    // Extract struct name
+    // Extract the server type name from the last path segment of the self type.
     let struct_name = match &*impl_block.self_ty {
         syn::Type::Path(type_path) => type_path
             .path
@@ -1255,6 +1353,7 @@ fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
             .last()
             .ok_or_else(|| syn::Error::new(impl_block.self_ty.span(), "Invalid type name"))?
             .ident
+            .unraw()
             .to_string(),
         _ => {
             return Err(syn::Error::new(
@@ -1263,6 +1362,8 @@ fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
             ));
         }
     };
+    let self_ty = (*impl_block.self_ty).clone();
+    let generics = impl_block.generics.clone();
 
     // Extract description from doc comment
     let description = extract_doc_comment(&impl_block.attrs);
@@ -1289,15 +1390,29 @@ fn parse_impl_block(input: &TokenStream) -> Result<(ItemImpl, ServerInfo)> {
         }
     }
 
-    Ok((
-        impl_block,
-        ServerInfo {
-            struct_name,
-            description,
-            tools,
-            groups,
-        },
-    ))
+    let mut seen_names = HashSet::new();
+    for tool in &tools {
+        if !seen_names.insert(tool.name.as_str()) {
+            return Err(syn::Error::new(
+                tool.ident.span(),
+                format!("duplicate tool name `{}`", tool.name),
+            ));
+        }
+    }
+
+    strip_tool_param_attrs(&mut impl_block);
+
+    let info = ServerInfo {
+        self_ty,
+        generics,
+        struct_name,
+        description,
+        tools,
+        groups,
+    };
+    validate_flat_params(&info)?;
+
+    Ok((impl_block, info))
 }
 
 /// Generate the ServerHandler::call_tool implementation.
@@ -1332,7 +1447,7 @@ fn generate_tool_call_arm(
     owner_name: &str,
 ) -> TokenStream {
     let name = &tool.name;
-    let method = syn::Ident::new(name, proc_macro2::Span::call_site());
+    let method = &tool.ident;
     let defaults = tool.attrs.defaults;
     let ctx_arg = if tool.has_ctx {
         quote! { context, }
@@ -1340,7 +1455,14 @@ fn generate_tool_call_arm(
         quote! {}
     };
     let task_prelude = match tool.task_param {
-        TaskParamKind::None => quote! {},
+        TaskParamKind::None => {
+            let message = format!("tool '{name}' does not accept task-augmented calls");
+            quote! {
+                if task.is_some() {
+                    return Err(tmcp::Error::InvalidParams(#message.to_string()));
+                }
+            }
+        }
         TaskParamKind::Required => quote! {
             let task = task.ok_or_else(|| {
                 tmcp::Error::InvalidParams("tool requires task metadata".to_string())
@@ -1404,23 +1526,23 @@ fn generate_tool_call_arm(
 
     let call = match &tool.return_kind {
         ToolReturnKind::CallResult => quote! {
-            #args_prelude
             #task_prelude
+            #args_prelude
             #call_expr.map(tmcp::schema::CallToolResponse::Result)
         },
         ToolReturnKind::TaskResult => quote! {
-            #args_prelude
             #task_prelude
+            #args_prelude
             #call_expr.map(tmcp::schema::CallToolResponse::Task)
         },
         ToolReturnKind::CallResponse => quote! {
-            #args_prelude
             #task_prelude
+            #args_prelude
             #call_expr
         },
         ToolReturnKind::ToolResult { .. } => quote! {
-            #args_prelude
             #task_prelude
+            #args_prelude
             let result = #call_expr;
             Ok(match result {
                 Ok(value) => {
@@ -1594,15 +1716,15 @@ fn generate_list_tools(info: &ServerInfo) -> TokenStream {
 }
 
 /// Generate struct definitions for flat tool argument lists.
-fn generate_flat_arg_structs_for(struct_name: &str, tools: &[ToolMethod]) -> Vec<TokenStream> {
-    tools
+fn generate_flat_arg_structs(info: &ServerInfo) -> Vec<TokenStream> {
+    info.tools
         .iter()
         .filter_map(|tool| match &tool.params_kind {
             ParamsKind::Flat(params) => Some((tool, params)),
             _ => None,
         })
         .map(|(tool, params)| {
-            let struct_ident = flat_args_struct_ident(struct_name, &tool.name);
+            let struct_ident = flat_args_struct_ident(&info.struct_name, &tool.name);
             let fields = params.iter().map(|param| {
                 let ident = &param.ident;
                 let ty = &param.ty;
@@ -1623,11 +1745,6 @@ fn generate_flat_arg_structs_for(struct_name: &str, tools: &[ToolMethod]) -> Vec
             }
         })
         .collect()
-}
-
-/// Generate struct definitions for flat tool argument lists.
-fn generate_flat_arg_structs(info: &ServerInfo) -> Vec<TokenStream> {
-    generate_flat_arg_structs_for(&info.struct_name, &info.tools)
 }
 
 /// Generate the ServerHandler::initialize implementation.
@@ -1809,8 +1926,7 @@ fn generate_toolset_registration(info: &ServerInfo, toolset_field: &syn::Ident) 
                     &self.#toolset_field,
                     None,
                     #override_expr,
-                )
-                .expect("group registration failed");
+                )?;
             }
         }
     });
@@ -1824,8 +1940,7 @@ fn generate_toolset_registration(info: &ServerInfo, toolset_field: &syn::Ident) 
             {
                 let tool = #tool_expr;
                 self.#toolset_field
-                    .register_schema(#name, tool, tmcp::Visibility::Always)
-                    .expect("tool registration failed");
+                    .register_schema(#name, tool, tmcp::Visibility::Always)?;
             }
         }
     });
@@ -1844,10 +1959,11 @@ fn generate_toolset_ensure_registered(
     let registrations = generate_toolset_registration(info, toolset_field);
     quote! {
         #[doc(hidden)]
-        fn __ensure_tools_registered(&self) {
+        fn __ensure_tools_registered(&self) -> tmcp::Result<()> {
             self.#toolset_field.ensure_registered(|| {
                 #registrations
-            });
+                Ok(())
+            })
         }
     }
 }
@@ -1860,7 +1976,7 @@ fn generate_toolset_list_tools(toolset_field: &syn::Ident) -> TokenStream {
             _context: &tmcp::ServerCtx,
             cursor: Option<tmcp::schema::Cursor>,
         ) -> tmcp::Result<tmcp::schema::ListToolsResult> {
-            self.__ensure_tools_registered();
+            self.__ensure_tools_registered()?;
             self.#toolset_field.list_tools(cursor)
         }
     }
@@ -1911,7 +2027,7 @@ fn generate_toolset_call_tool(info: &ServerInfo, toolset_field: &syn::Ident) -> 
             arguments: Option<tmcp::Arguments>,
             task: Option<tmcp::schema::TaskMetadata>,
         ) -> tmcp::Result<tmcp::schema::CallToolResponse> {
-            self.__ensure_tools_registered();
+            self.__ensure_tools_registered()?;
             self.#toolset_field
                 .call_tool_with(self, context, &name, arguments, task, |handler, context, name, arguments, task| -> tmcp::ToolCallFuture<'_> {
                     Box::pin(async move {
@@ -1948,13 +2064,13 @@ fn generate_toolset_initialize(
                 capabilities: tmcp::schema::ClientCapabilities,
                 client_info: tmcp::schema::Implementation,
             ) -> tmcp::Result<tmcp::schema::InitializeResult> {
-                self.__ensure_tools_registered();
+                self.__ensure_tools_registered()?;
                 self.#init_fn(context, protocol_version, capabilities, client_info).await
             }
         }
     } else {
         let prologue = quote! {
-            self.__ensure_tools_registered();
+            self.__ensure_tools_registered()?;
         };
         generate_default_initialize_with_prologue(info, args, ToolCapability::Dynamic, &prologue)
     }
@@ -1962,7 +2078,8 @@ fn generate_toolset_initialize(
 
 /// Generate the GroupDispatch implementation for a group impl block.
 fn generate_group_dispatch_impl(info: &ServerInfo) -> TokenStream {
-    let struct_ident = syn::Ident::new(&info.struct_name, proc_macro2::Span::call_site());
+    let self_ty = &info.self_ty;
+    let (impl_generics, _, where_clause) = info.generics.split_for_impl();
 
     let tool_registrations = info.tools.iter().map(|tool| {
         let name = &tool.name;
@@ -2012,7 +2129,7 @@ fn generate_group_dispatch_impl(info: &ServerInfo) -> TokenStream {
     let group_dispatch = generate_group_dispatch_chain(&info.groups, &receiver);
 
     quote! {
-        impl tmcp::GroupDispatch for #struct_ident {
+        impl #impl_generics tmcp::GroupDispatch for #self_ty #where_clause {
             fn register_tools(&self, toolset: &tmcp::ToolSet, group_name: &str) -> tmcp::Result<()> {
                 #(#tool_registrations)*
                 #(#group_registrations)*
@@ -2206,7 +2323,7 @@ fn expand_group_impl(input: &TokenStream) -> Result<TokenStream> {
     }
 
     let (impl_block, info) = parse_impl_block(input)?;
-    let flat_structs = generate_flat_arg_structs_for(&info.struct_name, &info.tools);
+    let flat_structs = generate_flat_arg_structs(&info);
     let dispatch_impl = generate_group_dispatch_impl(&info);
 
     Ok(quote! {
@@ -2607,7 +2724,8 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
     }
     validate_server_forwarders(&impl_block, &args)?;
 
-    let struct_name = syn::Ident::new(&info.struct_name, proc_macro2::Span::call_site());
+    let self_ty = &info.self_ty;
+    let (impl_generics, _, where_clause) = info.generics.split_for_impl();
     let toolset_field = args.toolset.as_ref();
     let call_tool = if let Some(toolset_field) = toolset_field {
         generate_toolset_call_tool(&info, toolset_field)
@@ -2633,12 +2751,12 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
             #(#flat_structs)*
             #impl_block
 
-            impl #struct_name {
+            impl #impl_generics #self_ty #where_clause {
                 #ensure_registered
             }
 
             #[async_trait::async_trait]
-            impl tmcp::ServerHandler for #struct_name {
+            impl #impl_generics tmcp::ServerHandler for #self_ty #where_clause {
                 #initialize
                 #server_forwarders
                 #list_tools
@@ -2651,7 +2769,7 @@ fn inner_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<TokenStrea
             #impl_block
 
             #[async_trait::async_trait]
-            impl tmcp::ServerHandler for #struct_name {
+            impl #impl_generics tmcp::ServerHandler for #self_ty #where_clause {
                 #initialize
                 #server_forwarders
                 #list_tools
@@ -3209,7 +3327,7 @@ mod tests {
     fn test_parse_tool_method_wrong_params() {
         let method: syn::ImplItemFn = syn::parse_quote! {
             #[tool]
-            async fn test_tool(&mut self, context: &ServerCtx, other: &ServerCtx) -> Result<schema::CallToolResult> {
+            async fn test_tool(&self, context: &ServerCtx, other: &ServerCtx) -> Result<schema::CallToolResult> {
                 Ok(schema::CallToolResult::new())
             }
         };
@@ -3270,23 +3388,155 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tool_method_both_self_types() {
-        // Test that both &self and &mut self are accepted
-        let method1: syn::ImplItemFn = syn::parse_quote! {
+    fn test_parse_tool_method_rejects_mut_self() {
+        let method: syn::ImplItemFn = syn::parse_quote! {
             #[tool]
             async fn test_tool(&self, context: &ServerCtx, params: TestParams) -> Result<schema::CallToolResult> {
                 Ok(schema::CallToolResult::new())
             }
         };
-        assert!(parse_tool_method(&method1).unwrap().is_some());
+        assert!(parse_tool_method(&method).unwrap().is_some());
 
-        let method2: syn::ImplItemFn = syn::parse_quote! {
+        let method: syn::ImplItemFn = syn::parse_quote! {
             #[tool]
             async fn test_tool(&mut self, context: &ServerCtx, params: TestParams) -> Result<schema::CallToolResult> {
                 Ok(schema::CallToolResult::new())
             }
         };
-        assert!(parse_tool_method(&method2).unwrap().is_some());
+        let err = parse_tool_method(&method).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("tool methods take &self; use interior mutability for state")
+        );
+    }
+
+    #[test]
+    fn test_parse_tool_method_raw_ident() {
+        let method: syn::ImplItemFn = syn::parse_quote! {
+            #[tool]
+            async fn r#move(&self, params: TestParams) -> Result<schema::CallToolResult> {
+                Ok(schema::CallToolResult::new())
+            }
+        };
+
+        let tool = parse_tool_method(&method).unwrap().unwrap();
+        assert_eq!(tool.name, "move");
+        assert_eq!(tool.ident.to_string(), "r#move");
+    }
+
+    #[test]
+    fn test_task_support_requires_task_param() {
+        let method: syn::ImplItemFn = syn::parse_quote! {
+            #[tool(task_support = "optional")]
+            async fn test_tool(&self, params: TestParams) -> Result<schema::CallToolResult> {
+                Ok(schema::CallToolResult::new())
+            }
+        };
+
+        let err = parse_tool_method(&method).unwrap_err();
+        assert!(err.to_string().contains("requires a TaskMetadata"));
+    }
+
+    #[test]
+    fn test_duplicate_tool_names_rejected() {
+        let input = quote! {
+            impl TestServer {
+                #[tool]
+                async fn echo(&self, params: EchoParams) -> Result<schema::CallToolResult> {
+                    Ok(schema::CallToolResult::new())
+                }
+
+                #[tool]
+                async fn echo(&self, params: OtherParams) -> Result<schema::CallToolResult> {
+                    Ok(schema::CallToolResult::new())
+                }
+            }
+        };
+
+        let err = parse_impl_block(&input).unwrap_err();
+        assert!(err.to_string().contains("duplicate tool name `echo`"));
+    }
+
+    #[test]
+    fn test_generic_impl_expansion() {
+        let input = quote! {
+            impl<T: Send + Sync + 'static> GenericServer<T> {
+                #[tool]
+                async fn echo(&self, params: EchoParams) -> Result<schema::CallToolResult> {
+                    Ok(schema::CallToolResult::new())
+                }
+            }
+        };
+
+        let result = inner_mcp_server(TokenStream::new(), &input).unwrap();
+        let result_str = result.to_string();
+        assert!(result_str.contains(
+            "impl < T : Send + Sync + 'static > tmcp :: ServerHandler for GenericServer < T >"
+        ));
+    }
+
+    #[test]
+    fn test_generic_impl_rejects_generic_flat_params() {
+        let input = quote! {
+            impl<T: Send + Sync + 'static> GenericServer<T> {
+                #[tool]
+                async fn echo(&self, a: T, b: i32) -> Result<schema::CallToolResult> {
+                    Ok(schema::CallToolResult::new())
+                }
+            }
+        };
+
+        let err = inner_mcp_server(TokenStream::new(), &input).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("flat tool parameters cannot use the impl block's generic parameters")
+        );
+    }
+
+    #[test]
+    fn test_path_qualified_impl_expansion() {
+        let input = quote! {
+            impl inner::PathServer {
+                #[tool]
+                async fn echo(&self, params: EchoParams) -> Result<schema::CallToolResult> {
+                    Ok(schema::CallToolResult::new())
+                }
+            }
+        };
+
+        let result = inner_mcp_server(TokenStream::new(), &input).unwrap();
+        let result_str = result.to_string();
+        assert!(result_str.contains("impl tmcp :: ServerHandler for inner :: PathServer"));
+        assert!(result_str.contains(r#"InitializeResult :: new ("path_server")"#));
+    }
+
+    #[test]
+    fn test_flat_param_attrs_stripped_from_impl() {
+        let input = quote! {
+            impl TestServer {
+                #[tool]
+                async fn label(
+                    &self,
+                    /// The label text
+                    text: String,
+                    #[serde(default)] count: i64,
+                ) -> Result<schema::CallToolResult> {
+                    Ok(schema::CallToolResult::new())
+                }
+            }
+        };
+
+        let (impl_block, info) = parse_impl_block(&input).unwrap();
+
+        let ParamsKind::Flat(params) = &info.tools[0].params_kind else {
+            panic!("expected flat params");
+        };
+        assert_eq!(params[0].attrs.len(), 1);
+        assert_eq!(params[1].attrs.len(), 1);
+
+        let impl_str = quote! { #impl_block }.to_string();
+        assert!(!impl_str.contains("serde"));
+        assert!(!impl_str.contains("The label text"));
     }
 
     #[test]
@@ -3359,10 +3609,13 @@ mod tests {
     #[test]
     fn test_generate_call_tool() {
         let info = ServerInfo {
+            self_ty: syn::parse_quote! { TestServer },
+            generics: syn::Generics::default(),
             struct_name: "TestServer".to_string(),
             description: "Test description".to_string(),
             tools: vec![
                 ToolMethod {
+                    ident: syn::parse_quote! { echo },
                     name: "echo".to_string(),
                     docs: "Echo tool".to_string(),
                     has_ctx: true,
@@ -3372,6 +3625,7 @@ mod tests {
                     attrs: ToolAttrs::default(),
                 },
                 ToolMethod {
+                    ident: syn::parse_quote! { ping },
                     name: "ping".to_string(),
                     docs: "Ping tool".to_string(),
                     has_ctx: true,
@@ -3398,9 +3652,12 @@ mod tests {
     #[test]
     fn test_generate_list_tools() {
         let info = ServerInfo {
+            self_ty: syn::parse_quote! { TestServer },
+            generics: syn::Generics::default(),
             struct_name: "TestServer".to_string(),
             description: "Test description".to_string(),
             tools: vec![ToolMethod {
+                ident: syn::parse_quote! { echo },
                 name: "echo".to_string(),
                 docs: "Echo tool".to_string(),
                 has_ctx: true,

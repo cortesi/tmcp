@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, marker::PhantomData};
 
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
@@ -405,5 +405,181 @@ mod tests {
 
         let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
         assert!(tools.tools.is_empty());
+    }
+
+    #[derive(Debug, Default)]
+    struct FlatAttrServer;
+
+    #[mcp_server]
+    /// Server exercising flat-parameter attributes
+    impl FlatAttrServer {
+        #[tool]
+        /// Repeat a label
+        async fn label(
+            &self,
+            /// The label text
+            text: String,
+            /// Number of repetitions
+            #[serde(default)]
+            count: i64,
+        ) -> Result<CallToolResult> {
+            Ok(CallToolResult::new().with_text_content(format!("{text}:{count}")))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_flat_param_attrs_reach_schema() {
+        let server = FlatAttrServer;
+        let ctx = TestServerContext::new();
+
+        let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
+        let tool = tools.tools.iter().find(|t| t.name == "label").unwrap();
+        let properties = &tool.input_schema.0["properties"];
+        assert_eq!(
+            properties["text"]["description"],
+            serde_json::json!("The label text")
+        );
+        assert_eq!(
+            properties["count"]["description"],
+            serde_json::json!("Number of repetitions")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_flat_param_serde_default() {
+        let server = FlatAttrServer;
+        let ctx = TestServerContext::new();
+
+        let mut args = HashMap::new();
+        args.insert("text".to_string(), serde_json::json!("x"));
+
+        let result = server
+            .call_tool(ctx.ctx(), "label".to_string(), Some(args.into()), None)
+            .await
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
+        match &result.content[0] {
+            ContentBlock::Text(text) => assert_eq!(text.text, "x:0"),
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_task_rejected_for_non_task_tool() {
+        let server = TestServer;
+        let ctx = TestServerContext::new();
+
+        let err = server
+            .call_tool(
+                ctx.ctx(),
+                "ping".to_string(),
+                None,
+                Some(TaskMetadata { ttl: None }),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidParams(_)));
+        assert!(err.to_string().contains("task-augmented"));
+    }
+
+    mod inner {
+        /// Server type defined behind a module path.
+        #[derive(Debug, Default)]
+        pub struct PathServer;
+    }
+
+    #[mcp_server]
+    /// Path-qualified server
+    impl inner::PathServer {
+        #[tool]
+        /// Say hello
+        async fn hello(&self) -> Result<CallToolResult> {
+            Ok(CallToolResult::new().with_text_content("hello"))
+        }
+
+        #[tool]
+        /// Move something
+        async fn r#move(&self) -> Result<CallToolResult> {
+            Ok(CallToolResult::new().with_text_content("moved"))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_path_qualified_impl() {
+        let server = inner::PathServer;
+        let ctx = TestServerContext::new();
+
+        let init = server
+            .initialize(
+                ctx.ctx(),
+                "1.0.0".to_string(),
+                ClientCapabilities::default(),
+                Implementation::new("test-client", "1.0.0"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(init.server_info.name, "path_server");
+
+        let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
+        assert!(tools.tools.iter().any(|t| t.name == "hello"));
+        assert!(tools.tools.iter().any(|t| t.name == "move"));
+
+        let result = server
+            .call_tool(ctx.ctx(), "move".to_string(), None, None)
+            .await
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
+        match &result.content[0] {
+            ContentBlock::Text(text) => assert_eq!(text.text, "moved"),
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct GenericServer<T> {
+        marker: PhantomData<T>,
+    }
+
+    #[mcp_server]
+    /// Generic server
+    impl<T: Send + Sync + 'static> GenericServer<T> {
+        #[tool]
+        /// Echo the message
+        async fn echo(&self, params: EchoParams) -> Result<CallToolResult> {
+            Ok(CallToolResult::new().with_text_content(params.message))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generic_impl() {
+        let server = GenericServer::<u8>::default();
+        let ctx = TestServerContext::new();
+
+        let init = server
+            .initialize(
+                ctx.ctx(),
+                "1.0.0".to_string(),
+                ClientCapabilities::default(),
+                Implementation::new("test-client", "1.0.0"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(init.server_info.name, "generic_server");
+
+        let mut args = HashMap::new();
+        args.insert("message".to_string(), serde_json::json!("hi"));
+
+        let result = server
+            .call_tool(ctx.ctx(), "echo".to_string(), Some(args.into()), None)
+            .await
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
+        match &result.content[0] {
+            ContentBlock::Text(text) => assert_eq!(text.text, "hi"),
+            _ => panic!("Expected text content"),
+        }
     }
 }

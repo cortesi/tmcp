@@ -170,8 +170,8 @@ pub struct ToolSet {
     tools: Arc<RwLock<HashMap<String, ToolEntry>>>,
     /// Tool group state and configuration.
     groups: ToolGroups,
-    /// Ensures macro-generated registration runs once per toolset instance.
-    registration: Arc<OnceLock<()>>,
+    /// Outcome of macro-generated registration, recorded once per instance.
+    registration: Arc<OnceLock<Result<()>>>,
     /// Serialize activation and deactivation to preserve group invariants.
     activation_lock: Arc<Mutex<()>>,
 }
@@ -369,15 +369,17 @@ impl ToolSet {
         self.register_entry(name, tool, visibility, None, ToolOrigin::Explicit)
     }
 
-    /// Ensure macro-generated registration runs once per ToolSet instance.
+    /// Run macro-generated registration once per ToolSet instance.
+    ///
+    /// The first call runs `register` and records its outcome; later calls
+    /// return the recorded outcome without running `register` again, so a
+    /// failed registration is reported consistently on every request.
     #[doc(hidden)]
-    pub fn ensure_registered<F>(&self, register: F)
+    pub fn ensure_registered<F>(&self, register: F) -> Result<()>
     where
-        F: FnOnce(),
+        F: FnOnce() -> Result<()>,
     {
-        let _ = self.registration.get_or_init(|| {
-            register();
-        });
+        self.registration.get_or_init(register).clone()
     }
 
     /// Check visibility by name using the current snapshot.
