@@ -818,8 +818,8 @@ mod tests {
         routes.deliver(notification("notifications/tools/list_changed"));
         routes.deliver(notification("notifications/prompts/list_changed"));
 
-        let (id1, _) = rx.try_next().unwrap().unwrap();
-        let (id2, _) = rx.try_next().unwrap().unwrap();
+        let (id1, _) = rx.try_recv().unwrap();
+        let (id2, _) = rx.try_recv().unwrap();
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
     }
@@ -834,8 +834,8 @@ mod tests {
         routes.deliver(notification("notifications/three"));
 
         let mut rx = routes.attach_stream(Some(1));
-        let (id2, msg2) = rx.try_next().unwrap().unwrap();
-        let (id3, _) = rx.try_next().unwrap().unwrap();
+        let (id2, msg2) = rx.try_recv().unwrap();
+        let (id3, _) = rx.try_recv().unwrap();
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
         let JSONRPCMessage::Notification(n) = msg2 else {

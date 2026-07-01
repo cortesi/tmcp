@@ -133,19 +133,14 @@ mod tests {
         args.insert("message".to_string(), json!("Hello from rmcp!"));
 
         let result = client
-            .call_tool(rmcp_model::CallToolRequestParams {
-                meta: None,
-                name: "echo".into(),
-                arguments: Some(args),
-                task: None,
-            })
+            .call_tool(rmcp_model::CallToolRequestParams::new("echo").with_arguments(args))
             .await
             .unwrap();
 
         // Verify result
         assert_eq!(result.content.len(), 1);
-        match &result.content[0].raw {
-            rmcp_model::RawContent::Text(text_content) => {
+        match &result.content[0] {
+            rmcp_model::ContentBlock::Text(text_content) => {
                 assert_eq!(&text_content.text, "Hello from rmcp!");
             }
             _ => panic!("Expected text content"),
@@ -182,18 +177,13 @@ mod tests {
                 _request: InitializeRequestParams,
                 _ctx: RequestContext<RoleServer>,
             ) -> StdResult<rmcp_model::InitializeResult, rmcp::ErrorData> {
-                Ok(rmcp_model::InitializeResult {
-                    protocol_version: rmcp_model::ProtocolVersion::default(),
-                    capabilities: rmcp_model::ServerCapabilities::default(),
-                    server_info: rmcp_model::Implementation {
-                        name: "test-rmcp-server".to_string(),
-                        title: None,
-                        version: "0.1.0".to_string(),
-                        icons: None,
-                        website_url: None,
-                    },
-                    instructions: None,
-                })
+                Ok(
+                    rmcp_model::InitializeResult::new(rmcp_model::ServerCapabilities::default())
+                        .with_server_info(rmcp_model::Implementation::new(
+                            "test-rmcp-server",
+                            "0.1.0",
+                        )),
+                )
             }
 
             async fn list_tools(
@@ -201,35 +191,23 @@ mod tests {
                 _params: Option<PaginatedRequestParams>,
                 _ctx: RequestContext<RoleServer>,
             ) -> StdResult<rmcp_model::ListToolsResult, rmcp::ErrorData> {
-                Ok(rmcp_model::ListToolsResult {
-                    meta: None,
-                    next_cursor: None,
-                    tools: vec![rmcp_model::Tool {
-                        name: "reverse".into(),
-                        title: None,
-                        description: Some("Reverses a string".into()),
-                        input_schema: {
-                            let mut schema = serde_json::Map::new();
-                            schema.insert("type".to_string(), json!("object"));
+                let mut schema = serde_json::Map::new();
+                schema.insert("type".to_string(), json!("object"));
 
-                            let mut properties = serde_json::Map::new();
-                            properties.insert(
-                                "text".to_string(),
-                                json!({
-                                    "type": "string",
-                                    "description": "Text to reverse"
-                                }),
-                            );
-                            schema.insert("properties".to_string(), json!(properties));
-                            schema.insert("required".to_string(), json!(["text"]));
-                            Arc::new(schema)
-                        },
-                        output_schema: None,
-                        annotations: None,
-                        icons: None,
-                        meta: None,
-                    }],
-                })
+                let mut properties = serde_json::Map::new();
+                properties.insert(
+                    "text".to_string(),
+                    json!({
+                        "type": "string",
+                        "description": "Text to reverse"
+                    }),
+                );
+                schema.insert("properties".to_string(), json!(properties));
+                schema.insert("required".to_string(), json!(["text"]));
+
+                Ok(rmcp_model::ListToolsResult::with_all_items(vec![
+                    rmcp_model::Tool::new("reverse", "Reverses a string", Arc::new(schema)),
+                ]))
             }
 
             async fn call_tool(
@@ -249,12 +227,9 @@ mod tests {
 
                     let reversed = text.chars().rev().collect::<String>();
 
-                    Ok(rmcp_model::CallToolResult {
-                        content: vec![rmcp_model::Content::text(reversed)],
-                        structured_content: None,
-                        is_error: None,
-                        meta: None,
-                    })
+                    Ok(rmcp_model::CallToolResult::success(vec![
+                        rmcp_model::ContentBlock::text(reversed),
+                    ]))
                 } else {
                     Err(rmcp::ErrorData::invalid_request("Unknown tool", None))
                 }

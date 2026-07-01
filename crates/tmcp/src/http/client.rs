@@ -811,7 +811,7 @@ mod tests {
 
         forward_status_error(&request, StatusCode::UNAUTHORIZED, &tx);
 
-        let response = rx.try_next().unwrap().expect("response");
+        let response = rx.try_recv().unwrap();
         let JSONRPCMessage::Response(JSONRPCResponse::Error(error)) = response else {
             panic!("expected error response");
         };
