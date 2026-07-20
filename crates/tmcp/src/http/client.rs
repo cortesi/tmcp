@@ -31,6 +31,7 @@ use tracing::{debug, error, info};
 use crate::auth::{OAuth2Client, util::bearer_header};
 use crate::{
     error::{Error, Result},
+    http::is_loopback_http_url,
     schema::{
         AUTHORIZATION_FAILED, ErrorObject, INTERNAL_ERROR, JSONRPC_VERSION, JSONRPCErrorResponse,
         JSONRPCMessage, JSONRPCResponse, LATEST_PROTOCOL_VERSION,
@@ -303,10 +304,7 @@ impl HttpClientTransport {
         let mut client = HttpClient::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(READ_TIMEOUT);
-        if endpoint.starts_with("http://127.0.0.1:")
-            || endpoint.starts_with("http://localhost:")
-            || endpoint.starts_with("http://[::1]:")
-        {
+        if is_loopback_http_url(&endpoint) {
             client = client.no_proxy();
         }
         Self {
@@ -769,6 +767,19 @@ mod tests {
     async fn test_http_client_transport_creation() {
         let transport = HttpClientTransport::new("http://localhost:8080");
         assert_eq!(transport.endpoint, "http://localhost:8080");
+    }
+
+    #[test]
+    fn transport_accepts_loopback_and_remote_http_endpoints() {
+        for endpoint in [
+            "http://localhost",
+            "https://LOCALHOST/path",
+            "http://127.99.1.2:8080/mcp",
+            "https://[::1]/mcp",
+            "https://example.com/mcp",
+        ] {
+            assert_eq!(HttpClientTransport::new(endpoint).endpoint, endpoint);
+        }
     }
 
     #[test]

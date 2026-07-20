@@ -235,7 +235,7 @@ where
 /// Create a ServerCtx for testing purposes.
 /// This creates a ServerCtx with only notification capability (no request/response).
 pub fn test_server_ctx(notification_tx: mpsc::Sender<ServerNotification>) -> ServerCtx {
-    ServerCtx::new(notification_tx, None)
+    ServerCtx::notification_only(notification_tx)
 }
 
 /// Create a ClientCtx for testing purposes.

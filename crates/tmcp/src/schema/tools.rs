@@ -1,4 +1,6 @@
-use std::{collections::HashMap, mem};
+use std::{borrow::Cow, collections::HashMap, mem};
+#[cfg(feature = "schema-validation")]
+use std::{fmt::Display, sync::Arc};
 
 use schemars::generate::SchemaSettings;
 use serde::{
@@ -6,6 +8,7 @@ use serde::{
     de::{DeserializeOwned, Error as DeError},
 };
 use serde_json::{Value, json};
+use thiserror::Error;
 
 use super::*;
 use crate::macros::{with_basename, with_meta, with_open_meta};
@@ -64,6 +67,85 @@ pub struct CallToolResult {
     #[serde(rename = "structuredContent", skip_serializing_if = "Option::is_none")]
     /// Structured payload returned by the tool, if any.
     pub structured_content: Option<Value>,
+}
+
+/// Strategy for extracting the semantic value from a tool result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolResultMode {
+    /// Prefer structured content and otherwise preserve the natural content shape.
+    Auto,
+    /// Require structured content.
+    Structured,
+    /// Prefer structured content and otherwise parse exactly one text block as JSON.
+    StructuredOrJsonText,
+    /// Prefer structured content and otherwise parse the first text block as JSON.
+    StructuredOrFirstJsonText,
+    /// Prefer structured content, one text block, or the complete content sequence.
+    StructuredOrText,
+    /// Parse exactly one text block as JSON.
+    JsonText,
+    /// Parse the first text block as JSON.
+    FirstJsonText,
+    /// Require exactly one text block and return it as a JSON string.
+    Text,
+    /// Return the complete content sequence.
+    Content,
+}
+
+/// Semantic value extracted from a tool result.
+#[derive(Debug)]
+pub enum ExtractedToolResult<'a> {
+    /// A structured, parsed, or synthesized JSON value.
+    Json(Cow<'a, Value>),
+    /// The single non-text block produced by automatic extraction.
+    ContentBlock(&'a ContentBlock),
+    /// The complete content sequence.
+    Content(&'a [ContentBlock]),
+}
+
+/// Failure to extract the requested semantic shape from a tool result.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ToolResultExtractError {
+    /// Structured content was required but absent.
+    #[error("tool result did not include structured content")]
+    MissingStructuredContent,
+    /// Text content was required but absent.
+    #[error("tool result did not include text content")]
+    MissingTextContent,
+    /// A mode required exactly one content block.
+    #[error(
+        "tool result contained {content_count} content blocks; expected exactly one text block"
+    )]
+    ExpectedSingleTextContent {
+        /// Number of content blocks in the result.
+        content_count: usize,
+    },
+    /// A mode required text but found another content type.
+    #[error("tool result content block was not text")]
+    ExpectedTextContent,
+    /// A text block was not valid JSON.
+    #[error("tool result text was not valid JSON: {message}")]
+    InvalidJsonText {
+        /// Parser diagnostic.
+        message: String,
+    },
+}
+
+/// Failure to extract and deserialize a typed tool result.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ToolResultDecodeError {
+    /// Semantic extraction failed.
+    #[error(transparent)]
+    Extract(#[from] ToolResultExtractError),
+    /// The selected mode produced protocol content rather than JSON.
+    #[error("tool result mode produced protocol content rather than JSON")]
+    UnexpectedContent,
+    /// The extracted JSON value did not match the requested Rust type.
+    #[error("tool result JSON could not be deserialized: {message}")]
+    Deserialize {
+        /// Deserializer diagnostic.
+        message: String,
+    },
 }
 
 impl CallToolResult {
@@ -216,6 +298,123 @@ impl CallToolResult {
         }
         Some("tool returned an error".to_owned())
     }
+
+    /// Extract the semantic result shape selected by `mode`.
+    ///
+    /// Protocol-level `isError` state is deliberately left to the caller.
+    pub fn extract(
+        &self,
+        mode: ToolResultMode,
+    ) -> Result<ExtractedToolResult<'_>, ToolResultExtractError> {
+        match mode {
+            ToolResultMode::Auto => self.extract_auto(),
+            ToolResultMode::Structured => self.extract_structured(),
+            ToolResultMode::StructuredOrJsonText => self
+                .extract_structured()
+                .or_else(|_| self.extract_json_text()),
+            ToolResultMode::StructuredOrFirstJsonText => self
+                .extract_structured()
+                .or_else(|_| self.extract_first_json_text()),
+            ToolResultMode::StructuredOrText => {
+                if self.structured_content.is_some() {
+                    self.extract_structured()
+                } else if let [ContentBlock::Text(text)] = self.content.as_slice() {
+                    Ok(ExtractedToolResult::Json(Cow::Owned(Value::String(
+                        text.text.clone(),
+                    ))))
+                } else {
+                    Ok(ExtractedToolResult::Content(&self.content))
+                }
+            }
+            ToolResultMode::JsonText => self.extract_json_text(),
+            ToolResultMode::FirstJsonText => self.extract_first_json_text(),
+            ToolResultMode::Text => {
+                let text = self.single_text()?;
+                Ok(ExtractedToolResult::Json(Cow::Owned(Value::String(
+                    text.to_owned(),
+                ))))
+            }
+            ToolResultMode::Content => Ok(ExtractedToolResult::Content(&self.content)),
+        }
+    }
+
+    /// Extract JSON and deserialize it into an owned Rust value.
+    pub fn extract_as<T: DeserializeOwned>(
+        &self,
+        mode: ToolResultMode,
+    ) -> Result<T, ToolResultDecodeError> {
+        let ExtractedToolResult::Json(value) = self.extract(mode)? else {
+            return Err(ToolResultDecodeError::UnexpectedContent);
+        };
+        T::deserialize(value.as_ref()).map_err(|error| ToolResultDecodeError::Deserialize {
+            message: error.to_string(),
+        })
+    }
+
+    /// Extract structured content.
+    fn extract_structured(&self) -> Result<ExtractedToolResult<'_>, ToolResultExtractError> {
+        self.structured_content
+            .as_ref()
+            .map(|value| ExtractedToolResult::Json(Cow::Borrowed(value)))
+            .ok_or(ToolResultExtractError::MissingStructuredContent)
+    }
+
+    /// Extract exactly one text block and parse it as JSON.
+    fn extract_json_text(&self) -> Result<ExtractedToolResult<'_>, ToolResultExtractError> {
+        parse_json_text(self.single_text()?)
+    }
+
+    /// Extract the first text block and parse it as JSON.
+    fn extract_first_json_text(&self) -> Result<ExtractedToolResult<'_>, ToolResultExtractError> {
+        let text = self
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .ok_or(ToolResultExtractError::MissingTextContent)?;
+        parse_json_text(text)
+    }
+
+    /// Extract the natural automatic result shape.
+    fn extract_auto(&self) -> Result<ExtractedToolResult<'_>, ToolResultExtractError> {
+        if self.structured_content.is_some() {
+            return self.extract_structured();
+        }
+        match self.content.as_slice() {
+            [] => Ok(ExtractedToolResult::Json(Cow::Owned(Value::Null))),
+            [ContentBlock::Text(text)] => match serde_json::from_str(&text.text) {
+                Ok(value) => Ok(ExtractedToolResult::Json(Cow::Owned(value))),
+                Err(_) => Ok(ExtractedToolResult::Json(Cow::Owned(Value::String(
+                    text.text.clone(),
+                )))),
+            },
+            [block] => Ok(ExtractedToolResult::ContentBlock(block)),
+            blocks => Ok(ExtractedToolResult::Content(blocks)),
+        }
+    }
+
+    /// Require exactly one text content block.
+    fn single_text(&self) -> Result<&str, ToolResultExtractError> {
+        match self.content.as_slice() {
+            [] => Err(ToolResultExtractError::MissingTextContent),
+            [ContentBlock::Text(text)] => Ok(&text.text),
+            [_] => Err(ToolResultExtractError::ExpectedTextContent),
+            blocks => Err(ToolResultExtractError::ExpectedSingleTextContent {
+                content_count: blocks.len(),
+            }),
+        }
+    }
+}
+
+/// Parse one text block into an owned JSON result.
+fn parse_json_text(text: &str) -> Result<ExtractedToolResult<'static>, ToolResultExtractError> {
+    serde_json::from_str(text)
+        .map(|value| ExtractedToolResult::Json(Cow::Owned(value)))
+        .map_err(|error| ToolResultExtractError::InvalidJsonText {
+            message: error.to_string(),
+        })
 }
 
 /// Convert a response type into a tool result with structured content.
@@ -511,6 +710,48 @@ impl Tool {
 #[serde(transparent)]
 pub struct ToolSchema(pub Value);
 
+/// Reusable validator compiled from a tool schema.
+#[cfg(feature = "schema-validation")]
+#[derive(Clone)]
+pub struct ToolSchemaValidator {
+    /// Shared compiled validator.
+    validator: Arc<jsonschema::Validator>,
+}
+
+/// Failure to compile a tool schema.
+#[cfg(feature = "schema-validation")]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("tool schema compilation failed: {message}")]
+pub struct ToolSchemaCompileError {
+    /// Underlying schema diagnostic.
+    message: String,
+}
+
+#[cfg(feature = "schema-validation")]
+impl ToolSchemaCompileError {
+    /// Return the underlying schema diagnostic without tmcp's display prefix.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// Failure to validate a value against a compiled tool schema.
+#[cfg(feature = "schema-validation")]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("tool result did not match its schema: {message}")]
+pub struct ToolSchemaValidationError {
+    /// Underlying validation diagnostic.
+    message: String,
+}
+
+#[cfg(feature = "schema-validation")]
+impl ToolSchemaValidationError {
+    /// Return the underlying validation diagnostic without tmcp's display prefix.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 impl Default for ToolSchema {
     fn default() -> Self {
         Self(serde_json::json!({
@@ -520,6 +761,19 @@ impl Default for ToolSchema {
 }
 
 impl ToolSchema {
+    /// Compile this schema for repeated validation.
+    #[cfg(feature = "schema-validation")]
+    pub fn compile(&self) -> Result<ToolSchemaValidator, ToolSchemaCompileError> {
+        jsonschema::Validator::options()
+            .build(&self.0)
+            .map(|validator| ToolSchemaValidator {
+                validator: Arc::new(validator),
+            })
+            .map_err(|error| ToolSchemaCompileError {
+                message: error.to_string(),
+            })
+    }
+
     /// Get the schema description if present.
     ///
     /// This extracts the "description" field from the root of the JSON Schema.
@@ -628,6 +882,28 @@ impl ToolSchema {
             .map(|req| req.contains(&name))
             .unwrap_or(false)
     }
+}
+
+#[cfg(feature = "schema-validation")]
+impl ToolSchemaValidator {
+    /// Validate a value against the compiled schema.
+    pub fn validate(&self, value: &Value) -> Result<(), ToolSchemaValidationError> {
+        if self.validator.is_valid(value) {
+            return Ok(());
+        }
+        let message = first_error_message(self.validator.iter_errors(value));
+        Err(ToolSchemaValidationError { message })
+    }
+}
+
+/// Return the first validation diagnostic or a deterministic fallback.
+#[cfg(feature = "schema-validation")]
+fn first_error_message(errors: impl IntoIterator<Item = impl Display>) -> String {
+    errors
+        .into_iter()
+        .next()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "result did not match output schema".to_owned())
 }
 
 /// Normalize generated schemas for stricter JSON-schema consumers.
@@ -878,6 +1154,23 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct ExtractedAnswer {
+        answer: u64,
+    }
+
+    fn extracted_json(result: &CallToolResult, mode: ToolResultMode) -> Value {
+        match result.extract(mode).expect("extract result") {
+            ExtractedToolResult::Json(value) => value.into_owned(),
+            ExtractedToolResult::ContentBlock(_) | ExtractedToolResult::Content(_) => {
+                panic!("expected JSON result")
+            }
+        }
+    }
+
+    #[cfg(feature = "schema-validation")]
+    fn assert_send_sync<T: Send + Sync>() {}
+
     #[test]
     fn tool_annotations_wire_format_is_camel_case() {
         let annotations = ToolAnnotations {
@@ -1031,6 +1324,191 @@ mod tests {
     }
 
     #[test]
+    fn call_tool_result_auto_preserves_natural_shapes() {
+        let structured = CallToolResult::new().with_structured_content(Value::Null);
+        let ExtractedToolResult::Json(Cow::Borrowed(value)) =
+            structured.extract(ToolResultMode::Auto).unwrap()
+        else {
+            panic!("structured content should be borrowed");
+        };
+        assert_eq!(value, &Value::Null);
+
+        assert_eq!(
+            extracted_json(&CallToolResult::new(), ToolResultMode::Auto),
+            Value::Null
+        );
+        assert_eq!(
+            extracted_json(
+                &CallToolResult::new().with_text_content(r#"{"answer":42}"#),
+                ToolResultMode::Auto,
+            ),
+            json!({"answer": 42})
+        );
+        assert_eq!(
+            extracted_json(
+                &CallToolResult::new().with_text_content("plain text"),
+                ToolResultMode::Auto,
+            ),
+            json!("plain text")
+        );
+
+        let image = CallToolResult::new().with_content(ContentBlock::image("AA==", "image/png"));
+        assert!(matches!(
+            image.extract(ToolResultMode::Auto).unwrap(),
+            ExtractedToolResult::ContentBlock(ContentBlock::Image(_))
+        ));
+
+        let mixed = CallToolResult::new()
+            .with_text_content("one")
+            .with_content(ContentBlock::audio("AA==", "audio/wav"));
+        let ExtractedToolResult::Content(blocks) = mixed.extract(ToolResultMode::Auto).unwrap()
+        else {
+            panic!("multiple blocks should remain content");
+        };
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn call_tool_result_strict_modes_enforce_their_shapes() {
+        let structured = CallToolResult::new()
+            .with_text_content(r#"{"ignored":true}"#)
+            .with_structured_content(json!({"answer": 42}));
+        assert_eq!(
+            extracted_json(&structured, ToolResultMode::Structured),
+            json!({"answer": 42})
+        );
+        assert_eq!(
+            extracted_json(&structured, ToolResultMode::StructuredOrJsonText),
+            json!({"answer": 42})
+        );
+
+        let json_text = CallToolResult::new().with_text_content(r#"{"answer":42}"#);
+        assert_eq!(
+            extracted_json(&json_text, ToolResultMode::StructuredOrJsonText),
+            json!({"answer": 42})
+        );
+        assert_eq!(
+            extracted_json(&json_text, ToolResultMode::JsonText),
+            json!({"answer": 42})
+        );
+        assert_eq!(
+            extracted_json(
+                &CallToolResult::new().with_text_content("hello"),
+                ToolResultMode::Text,
+            ),
+            json!("hello")
+        );
+
+        let sidecars = CallToolResult::new()
+            .with_content(ContentBlock::image("AA==", "image/png"))
+            .with_text_content(r#"{"answer":42}"#)
+            .with_content(ContentBlock::audio("AA==", "audio/wav"));
+        assert_eq!(
+            extracted_json(&sidecars, ToolResultMode::FirstJsonText),
+            json!({"answer": 42})
+        );
+        assert_eq!(
+            extracted_json(&sidecars, ToolResultMode::StructuredOrFirstJsonText),
+            json!({"answer": 42})
+        );
+        assert_eq!(
+            sidecars.extract(ToolResultMode::JsonText).unwrap_err(),
+            ToolResultExtractError::ExpectedSingleTextContent { content_count: 3 }
+        );
+    }
+
+    #[test]
+    fn call_tool_result_structured_or_text_preserves_sidecars() {
+        let structured = CallToolResult::new().with_structured_content(json!({"answer": 42}));
+        assert_eq!(
+            extracted_json(&structured, ToolResultMode::StructuredOrText),
+            json!({"answer": 42})
+        );
+
+        let text = CallToolResult::new().with_text_content("hello");
+        assert_eq!(
+            extracted_json(&text, ToolResultMode::StructuredOrText),
+            json!("hello")
+        );
+
+        for block in [
+            ContentBlock::image("AA==", "image/png"),
+            ContentBlock::audio("AA==", "audio/wav"),
+            ContentBlock::resource(ResourceContents::text("file:///note", "note")),
+        ] {
+            let result = CallToolResult::new().with_content(block);
+            let ExtractedToolResult::Content(content) =
+                result.extract(ToolResultMode::StructuredOrText).unwrap()
+            else {
+                panic!("non-text sidecar should remain content");
+            };
+            assert_eq!(content.len(), 1);
+        }
+
+        let empty = CallToolResult::new();
+        assert!(matches!(
+            empty.extract(ToolResultMode::StructuredOrText).unwrap(),
+            ExtractedToolResult::Content([])
+        ));
+        assert!(matches!(
+            empty.extract(ToolResultMode::Content).unwrap(),
+            ExtractedToolResult::Content([])
+        ));
+    }
+
+    #[test]
+    fn call_tool_result_reports_extraction_and_decode_errors() {
+        assert_eq!(
+            CallToolResult::new()
+                .extract(ToolResultMode::Structured)
+                .unwrap_err(),
+            ToolResultExtractError::MissingStructuredContent
+        );
+        assert_eq!(
+            CallToolResult::new()
+                .extract(ToolResultMode::Text)
+                .unwrap_err(),
+            ToolResultExtractError::MissingTextContent
+        );
+        assert_eq!(
+            CallToolResult::new()
+                .with_content(ContentBlock::image("AA==", "image/png"))
+                .extract(ToolResultMode::Text)
+                .unwrap_err(),
+            ToolResultExtractError::ExpectedTextContent
+        );
+        assert!(matches!(
+            CallToolResult::new()
+                .with_text_content("not json")
+                .extract(ToolResultMode::JsonText),
+            Err(ToolResultExtractError::InvalidJsonText { .. })
+        ));
+
+        let result = CallToolResult::new()
+            .with_is_error(true)
+            .with_text_content(r#"{"answer":42}"#);
+        assert_eq!(
+            result
+                .extract_as::<ExtractedAnswer>(ToolResultMode::JsonText)
+                .unwrap(),
+            ExtractedAnswer { answer: 42 }
+        );
+        assert!(matches!(
+            CallToolResult::new()
+                .with_text_content(r#"{"answer":"wrong"}"#)
+                .extract_as::<ExtractedAnswer>(ToolResultMode::JsonText),
+            Err(ToolResultDecodeError::Deserialize { .. })
+        ));
+        assert_eq!(
+            CallToolResult::new()
+                .with_content(ContentBlock::image("AA==", "image/png"))
+                .extract_as::<ExtractedAnswer>(ToolResultMode::Content)
+                .unwrap_err(),
+            ToolResultDecodeError::UnexpectedContent
+        );
+    }
+
+    #[test]
     fn call_tool_result_preserves_extension_fields() {
         let result: CallToolResult = serde_json::from_value(json!({
             "content": [],
@@ -1172,6 +1650,73 @@ mod tests {
         assert_eq!(schema.schema_type(), Some("object"));
         assert!(schema.properties().is_none());
         assert!(schema.0.get("$schema").is_none());
+    }
+
+    #[cfg(feature = "schema-validation")]
+    #[test]
+    fn tool_schema_compiles_and_reuses_validation() {
+        assert_send_sync::<ToolSchemaValidator>();
+
+        let schema = ToolSchema(json!({
+            "type": "object",
+            "properties": {
+                "answer": {"type": "integer"}
+            },
+            "required": ["answer"],
+            "additionalProperties": false
+        }));
+        let validator = schema.compile().expect("compile schema");
+        let shared = validator.clone();
+
+        for _ in 0..2 {
+            validator
+                .validate(&json!({"answer": 42}))
+                .expect("valid result");
+        }
+        shared
+            .validate(&json!({"answer": 7}))
+            .expect("shared validator");
+
+        let error = validator
+            .validate(&json!({"answer": "wrong"}))
+            .expect_err("invalid result");
+        assert!(!error.message().is_empty());
+        assert_eq!(
+            error.to_string(),
+            format!("tool result did not match its schema: {}", error.message())
+        );
+    }
+
+    #[cfg(feature = "schema-validation")]
+    #[test]
+    fn tool_schema_reports_compile_errors_and_matches_default_options() {
+        let invalid = ToolSchema(json!({"type": 42}));
+        let Err(error) = invalid.compile() else {
+            panic!("invalid schema should not compile");
+        };
+        assert!(!error.message().is_empty());
+        assert_eq!(
+            error.to_string(),
+            format!("tool schema compilation failed: {}", error.message())
+        );
+
+        let schema = ToolSchema(json!({
+            "type": "array",
+            "prefixItems": [{"type": "integer"}],
+            "items": false
+        }));
+        let tmcp = schema.compile().expect("tmcp validator");
+        let direct = jsonschema::Validator::options()
+            .build(&schema.0)
+            .expect("direct validator");
+        for value in [json!([1]), json!(["wrong"]), json!([1, 2])] {
+            assert_eq!(tmcp.validate(&value).is_ok(), direct.is_valid(&value));
+        }
+
+        assert_eq!(
+            first_error_message(Vec::<String>::new()),
+            "result did not match output schema"
+        );
     }
 
     #[test]

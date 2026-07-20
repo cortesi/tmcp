@@ -10,7 +10,7 @@ use serde_json::Value;
 use url::Url;
 
 use super::dynamic_registration::ClientMetadata;
-use crate::error::Error;
+use crate::{error::Error, http::is_loopback_http_url};
 
 /// Well-known path segment for protected resource metadata discovery.
 const WELL_KNOWN_PROTECTED_RESOURCE: &str = "oauth-protected-resource";
@@ -141,6 +141,19 @@ impl AuthorizationDiscoveryClient {
         Self {
             http_client: Client::new(),
         }
+    }
+
+    /// Create a discovery client configured for one protected resource.
+    pub fn for_resource(resource: &str) -> Result<Self, Error> {
+        parse_http_url(resource, "resource URL")?;
+        let mut builder = Client::builder();
+        if is_loopback_http_url(resource) {
+            builder = builder.no_proxy();
+        }
+        let http_client = builder.build().map_err(|error| {
+            Error::Transport(format!("Failed to build discovery HTTP client: {error}"))
+        })?;
+        Ok(Self { http_client })
     }
 
     /// Create a new discovery client using the provided HTTP client.
@@ -803,6 +816,26 @@ mod tests {
             bearer_methods_supported: None,
             resource_documentation: None,
             additional: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn discovery_client_validates_resource_urls() {
+        for resource in [
+            "http://localhost",
+            "https://LOCALHOST/path",
+            "http://127.7.8.9:8080/mcp",
+            "https://[::1]/mcp",
+            "https://example.com/mcp",
+        ] {
+            AuthorizationDiscoveryClient::for_resource(resource).expect(resource);
+        }
+
+        for resource in ["not a url", "ftp://localhost/mcp"] {
+            assert!(matches!(
+                AuthorizationDiscoveryClient::for_resource(resource),
+                Err(Error::InvalidConfiguration(_))
+            ));
         }
     }
 

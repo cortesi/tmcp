@@ -3,11 +3,8 @@ use std::collections::HashMap;
 use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    discovery::AuthorizationDiscoveryClient,
-    util::{bearer_header, is_loopback_url},
-};
-use crate::error::Error;
+use super::{discovery::AuthorizationDiscoveryClient, util::bearer_header};
+use crate::{error::Error, http::is_loopback_http_url};
 
 /// Client metadata for dynamic registration as per RFC7591
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,7 +186,7 @@ impl DynamicRegistrationClient {
     /// Create a registration client for one endpoint.
     pub fn for_endpoint(endpoint: &str) -> Result<Self, Error> {
         let mut builder = reqwest::Client::builder();
-        if is_loopback_url(endpoint) {
+        if is_loopback_http_url(endpoint) {
             builder = builder.no_proxy();
         }
         let http_client = builder.build().map_err(|error| {
@@ -327,6 +324,19 @@ mod tests {
             metadata.grant_types,
             Some(vec!["authorization_code".to_string()])
         );
+    }
+
+    #[test]
+    fn registration_client_accepts_loopback_and_remote_http_endpoints() {
+        for endpoint in [
+            "http://localhost",
+            "https://LOCALHOST/register",
+            "http://127.20.30.40:8080/register",
+            "https://[::1]/register",
+            "https://example.com/register",
+        ] {
+            DynamicRegistrationClient::for_endpoint(endpoint).expect(endpoint);
+        }
     }
 
     #[test]

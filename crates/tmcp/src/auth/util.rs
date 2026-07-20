@@ -1,19 +1,9 @@
 //! Shared URL and header helpers used across the OAuth client and server code.
 
 use reqwest::header::HeaderValue;
-use url::{Host, Url};
+use url::Url;
 
-use crate::error::Error;
-
-/// Returns whether `url` targets this machine.
-pub fn is_loopback_url(url: &str) -> bool {
-    Url::parse(url).is_ok_and(|url| match url.host() {
-        Some(Host::Domain(domain)) => domain == "localhost",
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
-        None => false,
-    })
-}
+use crate::{error::Error, http::is_loopback_http_url};
 
 /// Validate that a URL uses HTTPS, permitting plain HTTP only for loopback hosts.
 pub fn require_https_or_loopback(url: &str, context: &str) -> Result<(), Error> {
@@ -21,7 +11,7 @@ pub fn require_https_or_loopback(url: &str, context: &str) -> Result<(), Error> 
         .map_err(|e| Error::InvalidConfiguration(format!("Invalid {context}: {e}")))?;
     match parsed.scheme() {
         "https" => Ok(()),
-        "http" if is_loopback_url(url) => Ok(()),
+        "http" if is_loopback_http_url(url) => Ok(()),
         "http" => Err(Error::InvalidConfiguration(format!(
             "Invalid {context}: plain HTTP is only allowed for loopback hosts"
         ))),
@@ -42,15 +32,6 @@ pub fn bearer_header(token: &str) -> Result<HeaderValue, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn loopback_urls_are_detected() {
-        assert!(is_loopback_url("http://127.0.0.1:8080/callback"));
-        assert!(is_loopback_url("http://localhost/callback"));
-        assert!(is_loopback_url("http://[::1]:9000/callback"));
-        assert!(!is_loopback_url("http://example.com/callback"));
-        assert!(!is_loopback_url("not a url"));
-    }
 
     #[test]
     fn https_is_required_for_remote_hosts() {

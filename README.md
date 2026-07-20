@@ -44,6 +44,23 @@ both client and server roles with async/await APIs.
 
 ---
 
+## Cargo features
+
+tmcp's default feature set is empty. Core stdio and TCP clients and servers require no feature.
+Enable only the optional capabilities an application uses:
+
+- `http` provides streamable HTTP client and server transports.
+- `auth` provides OAuth client flows and bearer-token protection, and enables `http`.
+- `render` provides human-oriented MCP API rendering.
+- `schema-validation` compiles advertised tool schemas for repeated output validation.
+- `testutils` provides integration-test harnesses and transports.
+
+```toml
+tmcp = { version = "0.5", features = ["auth"] }
+```
+
+---
+
 ## OAuth discovery flow
 
 When a protected resource challenges a request, inspect any `WWW-Authenticate` header for a

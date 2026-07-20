@@ -6,10 +6,12 @@
 //! ([`server::HttpServerTransport`]) that exposes an MCP server over axum.
 
 mod client;
+mod endpoint;
 mod server;
 mod validation;
 
 pub use client::HttpClientTransport;
+pub use endpoint::is_loopback_http_url;
 pub use server::{CorsPolicy, EmbeddedHttpRoutes, HttpServer};
 
 /// Normalize an HTTP endpoint path to a canonical form.

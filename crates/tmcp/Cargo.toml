@@ -13,7 +13,7 @@ readme.workspace = true
 workspace = true
 
 [features]
-default = ["http", "auth", "testutils"]
+default = []
 # Streamable HTTP transport (client and server) built on axum/reqwest.
 http = [
     "dep:axum",
@@ -30,6 +30,8 @@ http = [
 auth = ["http", "dep:oauth2", "dep:jsonwebtoken", "dep:subtle"]
 # Human-oriented terminal rendering for MCP API snapshots.
 render = ["dep:owo-colors"]
+# Reusable JSON Schema validation for advertised tool outputs.
+schema-validation = ["dep:jsonschema"]
 # Test helpers for building integration tests against tmcp.
 testutils = []
 
@@ -63,9 +65,90 @@ oauth2 = { version = "5.0", features = ["reqwest"], optional = true }
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto", "pem", "simple_asn1", "use_pem"], optional = true }
 subtle = { version = "2.6.1", optional = true }
 owo-colors = { version = "4.3.0", optional = true }
+jsonschema = { version = "0.48.1", default-features = false, optional = true }
 
 [dev-dependencies]
 rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", branch = "main", features = ["client", "server", "transport-worker", "transport-streamable-http-server"] }
 schemars = "1.1"
 tracing-subscriber = "0.3"
 trybuild = "1.0.116"
+
+[[test]]
+name = "bidi"
+required-features = ["testutils"]
+
+[[test]]
+name = "cancellation"
+required-features = ["testutils"]
+
+[[test]]
+name = "client_server_ping"
+required-features = ["testutils"]
+
+[[test]]
+name = "concurrent_server_requests"
+required-features = ["testutils"]
+
+[[test]]
+name = "dynamic_registration_test"
+required-features = ["auth"]
+
+[[test]]
+name = "error_handling_test"
+required-features = ["testutils"]
+
+[[test]]
+name = "golden_wire"
+required-features = ["testutils"]
+
+[[test]]
+name = "http_auth_integration"
+required-features = ["auth"]
+
+[[test]]
+name = "http_integration"
+required-features = ["http"]
+
+[[test]]
+name = "inflight_disconnect"
+required-features = ["testutils"]
+
+[[test]]
+name = "lifecycle_tests"
+required-features = ["http", "testutils"]
+
+[[test]]
+name = "macro_derive"
+required-features = ["testutils"]
+
+[[test]]
+name = "mcp_api"
+required-features = ["testutils"]
+
+[[test]]
+name = "notification_meta"
+required-features = ["testutils"]
+
+[[test]]
+name = "notifications"
+required-features = ["testutils"]
+
+[[test]]
+name = "oauth_test"
+required-features = ["auth"]
+
+[[test]]
+name = "progress_token"
+required-features = ["testutils"]
+
+[[test]]
+name = "progressive_discovery"
+required-features = ["testutils"]
+
+[[test]]
+name = "protocol_compliance"
+required-features = ["testutils"]
+
+[[test]]
+name = "rmcp_integration"
+required-features = ["testutils"]

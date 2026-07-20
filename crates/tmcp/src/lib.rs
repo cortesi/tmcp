@@ -19,8 +19,11 @@
 //! ## Transport Options
 //!
 //! - **TCP**: `server.listen_tcp("127.0.0.1:3000")`
-//! - **HTTP**: `server.listen_http("127.0.0.1:3000")` (uses SSE for server->client)
+//! - **HTTP**: `server.listen_http("127.0.0.1:3000")` with the `http` feature
 //! - **Stdio**: `server.listen_stdio()` for subprocess integration
+//!
+//! The default feature set is empty. Enable `http`, `auth`, `render`, `schema-validation`, or
+//! `testutils` only where those optional capabilities are needed; `auth` enables `http`.
 //!
 //! ## Building Servers: Macro vs Trait
 //!

@@ -104,6 +104,11 @@ pub struct ServerCtx {
 }
 
 impl ServerCtx {
+    /// Create a context that can emit notifications but cannot request client actions.
+    pub fn notification_only(notification_tx: mpsc::Sender<schema::ServerNotification>) -> Self {
+        Self::new(notification_tx, None)
+    }
+
     /// Create a new ServerCtx with notification channel and transport
     pub(crate) fn new(
         notification_tx: mpsc::Sender<schema::ServerNotification>,
@@ -505,5 +510,24 @@ mod tests {
         assert_eq!(level, LoggingLevel::Info);
         assert_eq!(logger.as_deref(), Some("test"));
         assert_eq!(data["event"], "ready");
+    }
+
+    #[tokio::test]
+    async fn notification_only_context_has_no_request_transport() {
+        let (notification_tx, mut notification_rx) = mpsc::channel(2);
+        let ctx = ServerCtx::notification_only(notification_tx);
+
+        ctx.notify(ServerNotification::logging_message(
+            LoggingLevel::Info,
+            None,
+            serde_json::json!({"event": "ready"}),
+        ))
+        .expect("send notification");
+        assert!(notification_rx.recv().await.is_some());
+
+        assert!(matches!(
+            ctx.ping().await,
+            Err(Error::Transport(message)) if message == "Not connected"
+        ));
     }
 }

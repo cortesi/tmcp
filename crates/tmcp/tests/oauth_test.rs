@@ -343,6 +343,8 @@ mod tests {
             expires_at: Some(Instant::now() - Duration::from_secs(1)), // Already expired
         };
         oauth_client.set_token(token).await;
+        let revisions = oauth_client.subscribe_token_revisions();
+        let revision = *revisions.borrow();
 
         // Try to get a valid token - this should trigger a refresh
         // In a real scenario, this would make an HTTP request to the token endpoint
@@ -351,6 +353,8 @@ mod tests {
 
         // This will fail because we don't have a real OAuth server, but the logic is tested
         assert!(result.is_err());
+        assert_eq!(*revisions.borrow(), revision);
+        assert!(!revisions.has_changed().unwrap());
     }
 
     #[tokio::test]
@@ -495,6 +499,8 @@ mod tests {
                 expires_at: Some(Instant::now() + Duration::from_secs(3600)),
             })
             .await;
+        let mut revisions = oauth_client.subscribe_token_revisions();
+        let initial_revision = *revisions.borrow_and_update();
 
         let token = oauth_client
             .refresh_access_token_if_current("old_access_token")
@@ -503,6 +509,7 @@ mod tests {
 
         assert_eq!(token, "new_access_token");
         assert_eq!(counter.load(Ordering::SeqCst), 0);
+        assert!(!revisions.has_changed().unwrap());
 
         let token = oauth_client
             .refresh_access_token_if_current("new_access_token")
@@ -511,6 +518,27 @@ mod tests {
 
         assert_eq!(token, "refreshed_access_token");
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+        revisions.changed().await.unwrap();
+        assert_eq!(*revisions.borrow_and_update(), initial_revision + 1);
+        assert_eq!(
+            oauth_client
+                .current_token()
+                .await
+                .unwrap()
+                .refresh_token
+                .as_deref(),
+            Some("new_refresh_token")
+        );
+
+        let refreshed = oauth_client.refresh_access_token().await.unwrap();
+        assert_eq!(refreshed.access_token, "refreshed_access_token");
+        assert_eq!(
+            refreshed.refresh_token.as_deref(),
+            Some("new_refresh_token")
+        );
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+        revisions.changed().await.unwrap();
+        assert_eq!(*revisions.borrow_and_update(), initial_revision + 2);
 
         tx.send(()).ok();
     }

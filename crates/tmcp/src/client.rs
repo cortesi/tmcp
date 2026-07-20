@@ -786,13 +786,22 @@ where
             return Err(Error::tool_execution_failed(tool_name, message));
         }
 
-        let text = result
-            .text()
-            .ok_or_else(|| Error::Protocol("Tool returned no text content".into()))?;
-
-        serde_json::from_str(text).map_err(|e| Error::JsonParse {
-            message: format!("Failed to parse tool response: {e}"),
-        })
+        result
+            .extract_as(ToolResultMode::FirstJsonText)
+            .map_err(|error| match error {
+                ToolResultDecodeError::Extract(ToolResultExtractError::MissingTextContent) => {
+                    Error::Protocol("Tool returned no text content".into())
+                }
+                ToolResultDecodeError::Extract(ToolResultExtractError::InvalidJsonText {
+                    message,
+                })
+                | ToolResultDecodeError::Deserialize { message } => Error::JsonParse {
+                    message: format!("Failed to parse tool response: {message}"),
+                },
+                other => Error::JsonParse {
+                    message: format!("Failed to parse tool response: {other}"),
+                },
+            })
     }
 
     /// Call a tool and deserialize the structured content into a typed result.
@@ -817,9 +826,20 @@ where
             return Err(Error::tool_execution_failed(tool_name, message));
         }
 
-        result.structured_as().map_err(|e| Error::JsonParse {
-            message: format!("Failed to parse tool structured content: {e}"),
-        })
+        result
+            .extract_as(ToolResultMode::Structured)
+            .map_err(|error| {
+                let message = match error {
+                    ToolResultDecodeError::Extract(
+                        ToolResultExtractError::MissingStructuredContent,
+                    ) => "no structured content in tool result".to_owned(),
+                    ToolResultDecodeError::Deserialize { message } => message,
+                    other => other.to_string(),
+                };
+                Error::JsonParse {
+                    message: format!("Failed to parse tool structured content: {message}"),
+                }
+            })
     }
 
     /// List available resources with optional pagination
@@ -1594,6 +1614,18 @@ mod tests {
                         "ERR",
                         "Tool failed details",
                     )))
+                } else if name == "sidecar" {
+                    Ok(CallToolResponse::result(
+                        CallToolResult::new()
+                            .with_content(ContentBlock::image("AA==", "image/png"))
+                            .with_text_content(r#"{"answer":42}"#)
+                            .with_content(ContentBlock::audio("AA==", "audio/wav")),
+                    ))
+                } else if name == "structured" {
+                    Ok(CallToolResponse::result(
+                        CallToolResult::new()
+                            .with_structured_content(serde_json::json!({"answer": 42})),
+                    ))
                 } else {
                     Ok(CallToolResponse::result(
                         CallToolResult::new().with_text_content("{}"),
@@ -1614,6 +1646,13 @@ mod tests {
             .await
             .expect("Failed to connect");
         client.init().await.expect("Failed to initialize");
+
+        let sidecar: serde_json::Value = client.call_tool_json("sidecar", ()).await.unwrap();
+        assert_eq!(sidecar, serde_json::json!({"answer": 42}));
+
+        let structured: serde_json::Value =
+            client.call_tool_structured("structured", ()).await.unwrap();
+        assert_eq!(structured, serde_json::json!({"answer": 42}));
 
         // Call the failing tool
         let result: Result<serde_json::Value> = client.call_tool_json("fail", ()).await;
