@@ -20,7 +20,8 @@ use tmcp::{
     auth::server::{AuthConfig, AuthError, AuthInfo, TokenValidator},
     schema::{
         CallToolResponse, CallToolResult, ClientCapabilities, Cursor, Implementation,
-        InitializeResult, ListToolsResult, ServerCapabilities, TaskMetadata, Tool, ToolSchema,
+        InitializeResult, ListToolsResult, ProtocolVersion, ServerCapabilities, TaskMetadata, Tool,
+        ToolSchema,
     },
 };
 use tracing_subscriber::fmt;
@@ -54,7 +55,7 @@ impl ServerHandler for AppMcpServer {
     async fn initialize(
         &self,
         _context: &ServerCtx,
-        _protocol_version: String,
+        _protocol_version: ProtocolVersion,
         _capabilities: ClientCapabilities,
         _client_info: Implementation,
     ) -> Result<InitializeResult> {

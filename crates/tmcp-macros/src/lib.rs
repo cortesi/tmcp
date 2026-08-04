@@ -14,7 +14,6 @@
 //! - `name`: Override the server name used in initialization
 //! - `version`: Override the server version used in initialization
 //! - `instructions`: Override the server instructions used in initialization
-//! - `protocol_version`: Control protocol version negotiation ("latest" or "client")
 //! - `toolset`: Use a ToolSet field for progressive discovery
 //! - `resources_fn`: Forward `resources/list` to an async method
 //! - `read_resource_fn`: Forward `resources/read` to an async method
@@ -120,12 +119,12 @@
 //!     async fn my_custom_initialize(
 //!         &self,
 //!         context: &ServerCtx,
-//!         protocol_version: String,
+//!         protocol_version: schema::ProtocolVersion,
 //!         capabilities: schema::ClientCapabilities,
 //!         client_info: schema::Implementation,
 //!     ) -> Result<schema::InitializeResult> {
 //!         Ok(schema::InitializeResult {
-//!             protocol_version: schema::LATEST_PROTOCOL_VERSION.to_string(),
+//!             protocol_version,
 //!             capabilities: schema::ServerCapabilities {
 //!                 tools: Some(schema::ToolsCapability {
 //!                     list_changed: Some(true),

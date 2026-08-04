@@ -11,7 +11,7 @@ pub struct InitializeResult {
     /// This may not match the version that the client requested. If the
     /// client cannot support this version, it MUST disconnect.
     #[serde(rename = "protocolVersion")]
-    pub protocol_version: String,
+    pub protocol_version: ProtocolVersion,
     /// Capabilities the server advertises to the client.
     pub capabilities: ServerCapabilities,
     /// Server implementation information.
@@ -28,7 +28,7 @@ impl InitializeResult {
     /// The default server version is set to "0.0.1". Use `with_version()` to set a custom version.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            protocol_version: LATEST_PROTOCOL_VERSION.to_string(),
+            protocol_version: SupportedProtocolVersions::default().latest().clone(),
             capabilities: ServerCapabilities::default(),
             server_info: Implementation::new(name, "0.0.1"),
             instructions: None,
@@ -47,8 +47,8 @@ impl InitializeResult {
     }
 
     /// Set the MCP protocol version
-    pub fn with_mcp_version(mut self, version: impl Into<String>) -> Self {
-        self.protocol_version = version.into();
+    pub fn with_mcp_version(mut self, version: ProtocolVersion) -> Self {
+        self.protocol_version = version;
         self
     }
 

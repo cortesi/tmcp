@@ -68,7 +68,7 @@ mod tests {
         let result = server
             .initialize(
                 ctx.ctx(),
-                "1.0.0".to_string(),
+                "2025-11-25".parse().unwrap(),
                 ClientCapabilities::default(),
                 Implementation::new("test-client", "1.0.0"),
             )
@@ -225,7 +225,7 @@ mod tests {
         async fn custom_init(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> Result<InitializeResult> {
@@ -250,7 +250,7 @@ mod tests {
         let result = server
             .initialize(
                 ctx.ctx(),
-                "1.0.0".to_string(),
+                "2025-11-25".parse().unwrap(),
                 ClientCapabilities::default(),
                 Implementation::new("test-client", "1.0.0"),
             )
@@ -260,7 +260,7 @@ mod tests {
         // Verify custom initialization was used
         assert_eq!(result.server_info.name, "custom_init_server");
         assert_eq!(result.server_info.version, "2.0.0");
-        assert_eq!(result.protocol_version, LATEST_PROTOCOL_VERSION);
+        assert_eq!(result.protocol_version.as_str(), "2025-11-25");
         assert_eq!(
             result.instructions,
             Some("Custom initialized server".to_string())
@@ -366,7 +366,7 @@ mod tests {
         let init = server
             .initialize(
                 ctx.ctx(),
-                "1.0.0".to_string(),
+                "2025-11-25".parse().unwrap(),
                 ClientCapabilities::default(),
                 Implementation::new("test-client", "1.0.0"),
             )
@@ -513,7 +513,7 @@ mod tests {
         let init = server
             .initialize(
                 ctx.ctx(),
-                "1.0.0".to_string(),
+                "2025-11-25".parse().unwrap(),
                 ClientCapabilities::default(),
                 Implementation::new("test-client", "1.0.0"),
             )
@@ -556,7 +556,7 @@ mod tests {
         let init = server
             .initialize(
                 ctx.ctx(),
-                "1.0.0".to_string(),
+                "2025-11-25".parse().unwrap(),
                 ClientCapabilities::default(),
                 Implementation::new("test-client", "1.0.0"),
             )
@@ -590,7 +590,7 @@ mod tests {
         let init = server
             .initialize(
                 ctx.ctx(),
-                "1.0.0".to_string(),
+                "2025-11-25".parse().unwrap(),
                 ClientCapabilities::default(),
                 Implementation::new("test-client", "1.0.0"),
             )
@@ -631,7 +631,7 @@ mod tests {
         let init = server
             .initialize(
                 ctx.ctx(),
-                "1.0.0".to_string(),
+                "2025-11-25".parse().unwrap(),
                 ClientCapabilities::default(),
                 Implementation::new("test-client", "1.0.0"),
             )

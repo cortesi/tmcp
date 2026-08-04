@@ -122,7 +122,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> Result<InitializeResult> {
@@ -221,7 +221,6 @@ mod tests {
         // Initialize connection
         client
             .initialize(
-                LATEST_PROTOCOL_VERSION.to_string(),
                 ClientCapabilities::default(),
                 Implementation::new("test-client", "1.0.0"),
             )
@@ -306,7 +305,6 @@ mod tests {
 
         client
             .initialize(
-                LATEST_PROTOCOL_VERSION.to_string(),
                 ClientCapabilities::default(),
                 Implementation::new("test-client", "1.0.0"),
             )

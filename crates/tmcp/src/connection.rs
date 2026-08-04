@@ -214,7 +214,7 @@ pub trait ServerHandler: Send + Sync {
     async fn initialize(
         &self,
         _context: &ServerCtx,
-        _protocol_version: String,
+        _protocol_version: schema::ProtocolVersion,
         _capabilities: schema::ClientCapabilities,
         _client_info: schema::Implementation,
     ) -> Result<InitializeResult>;

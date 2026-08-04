@@ -144,18 +144,16 @@ impl WeatherServer {
     async fn initialize(
         &self,
         _ctx: &ServerCtx,
-        protocol_version: String,
+        protocol_version: schema::ProtocolVersion,
         _capabilities: ClientCapabilities,
         _client_info: Implementation,
     ) -> Result<InitializeResult> {
-        let mut init = InitializeResult::new("weather_server")
+        let init = InitializeResult::new("weather_server")
             .with_version(env!("CARGO_PKG_VERSION"))
-            .with_tools(true)
+            .with_tools(Some(true))
             .with_logging()
-            .with_instructions("Minimal weather server example");
-        if !protocol_version.is_empty() {
-            init = init.with_mcp_version(protocol_version);
-        }
+            .with_instructions("Minimal weather server example")
+            .with_mcp_version(protocol_version);
         Ok(init)
     }
 
@@ -210,6 +208,33 @@ async fn main() -> Result<()> {
 When you serve MCP over stdio, `stdout` is reserved for JSON-RPC messages. Do not attach a
 tracing/logging subscriber that writes human-readable logs to `stdout`, and do not print with
 `println!`. Route diagnostics to `stderr`, a file, or another sink instead.
+
+### Protocol versions
+
+`Client` and `Server` use the same ordered protocol-version configuration. The first client value
+is its preferred version. The first server value is its latest version. Each value must be a valid
+MCP release date.
+
+```rust
+use tmcp::schema::{ProtocolVersion, SupportedProtocolVersions};
+
+let versions = SupportedProtocolVersions::new([
+    "2025-11-25".parse::<ProtocolVersion>().unwrap(),
+    "2025-06-18".parse::<ProtocolVersion>().unwrap(),
+]).unwrap();
+
+let client = tmcp::Client::new("example-client", "1.0.0")
+    .with_protocol_versions(versions.clone());
+let server = tmcp::Server::new(WeatherServer::default)
+    .with_protocol_versions(versions);
+```
+
+The server returns the requested version when it supports that version. Otherwise, it returns its
+latest version. The client disconnects if the returned version is not in its configured set.
+
+With the `schema-validation` feature, `PreparedToolResultContract` compiles an output schema once.
+It also selects the extraction mode for each call. `Text` and `Content` modes do not validate the
+output schema.
 
 Flat tool arguments can be declared directly in the tool signature for multi-argument tools:
 

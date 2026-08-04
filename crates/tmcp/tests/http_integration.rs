@@ -34,12 +34,16 @@ mod tests {
     #[derive(Default)]
     struct EchoConnection;
 
+    fn versions(values: &[&str]) -> SupportedProtocolVersions {
+        SupportedProtocolVersions::new(values.iter().map(|value| value.parse().unwrap())).unwrap()
+    }
+
     #[async_trait]
     impl ServerHandler for EchoConnection {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> Result<InitializeResult> {
@@ -138,7 +142,7 @@ mod tests {
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": LATEST_PROTOCOL_VERSION,
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {
                     "name": "http-test-client",
@@ -153,6 +157,7 @@ mod tests {
         fmt::try_init().ok();
 
         let server_handle = Server::new(EchoConnection::default)
+            .with_protocol_versions(versions(&["2025-06-18"]))
             .serve_http("127.0.0.1:0")
             .await
             .unwrap();
@@ -160,12 +165,14 @@ mod tests {
         let bound_addr = server_handle.bound_addr.as_ref().unwrap();
         sleep(Duration::from_millis(100)).await;
 
-        let mut client = Client::new("http-test-client", "0.1.0");
+        let mut client = Client::new("http-test-client", "0.1.0")
+            .with_protocol_versions(versions(&["2025-11-25", "2025-06-18"]));
         let init = client
             .connect_http(&format!("http://{bound_addr}"))
             .await
             .unwrap();
         assert_eq!(init.server_info.name, "http-echo-server");
+        assert_eq!(init.protocol_version.as_str(), "2025-06-18");
 
         let mut args = HashMap::new();
         args.insert("message".to_string(), json!("hello"));
@@ -203,7 +210,7 @@ mod tests {
         let response = HttpClient::new()
             .post(format!("{base_url}/"))
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .json(&initialize_payload())
             .send()
             .await
@@ -345,7 +352,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> Result<InitializeResult> {
@@ -412,22 +419,24 @@ mod tests {
 
     #[tokio::test]
     async fn session_lifecycle_over_raw_http() {
-        let server = Server::new(EchoConnection::default);
+        let server =
+            Server::new(EchoConnection::default).with_protocol_versions(versions(&["2025-06-18"]));
         let handle = server.serve_http("127.0.0.1:0").await.unwrap();
         let addr = handle.bound_addr.clone().unwrap();
         let base = format!("http://{addr}");
         let http = HttpClient::new();
 
-        // Initialize with the previous protocol version header is accepted.
+        // An unsupported request falls back to the server's latest version.
         let response = http
             .post(&base)
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", "2025-06-18")
+            .header("MCP-Protocol-Version", "2025-11-25")
             .json(&initialize_payload())
             .send()
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["MCP-Protocol-Version"], "2025-06-18");
         let session_id = response
             .headers()
             .get("Mcp-Session-Id")
@@ -435,8 +444,13 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
+        let initialize_response: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(
+            initialize_response["result"]["protocolVersion"],
+            "2025-06-18"
+        );
 
-        // An unsupported protocol version is rejected.
+        // A version that does not match the session is rejected.
         let response = http
             .post(&base)
             .header("Content-Type", "application/json")

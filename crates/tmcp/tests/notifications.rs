@@ -6,7 +6,8 @@ mod tests {
 
     use async_trait::async_trait;
     use tmcp::{
-        ClientCtx, ClientHandler, Result, ServerCtx, ServerHandler, schema,
+        ClientCtx, ClientHandler, Result, ServerCtx, ServerHandler,
+        schema::{self, ProtocolVersion},
         testutils::{connected_client_and_server_with_conn, shutdown_client_and_server},
     };
     use tokio::{
@@ -69,7 +70,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: schema::ClientCapabilities,
             _client_info: schema::Implementation,
         ) -> Result<schema::InitializeResult> {

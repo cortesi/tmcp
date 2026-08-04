@@ -16,7 +16,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use tmcp::{Error, Result, Server, ServerCtx, ServerHandler, schema};
+use tmcp::{
+    Error, Result, Server, ServerCtx, ServerHandler,
+    schema::{self, ProtocolVersion},
+};
 use tokio::{signal::ctrl_c, time::sleep};
 use tracing::{info, warn};
 
@@ -57,7 +60,7 @@ impl ServerHandler for TimeoutTestConnection {
     async fn initialize(
         &self,
         _context: &ServerCtx,
-        _protocol_version: String,
+        _protocol_version: ProtocolVersion,
         _capabilities: schema::ClientCapabilities,
         _client_info: schema::Implementation,
     ) -> Result<schema::InitializeResult> {

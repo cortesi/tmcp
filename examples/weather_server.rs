@@ -4,7 +4,8 @@ use serde_json::json;
 use tmcp::{
     Result, Server, ServerCtx, ToolError, ToolResult, mcp_server,
     schema::{
-        ClientCapabilities, Implementation, InitializeResult, LoggingLevel, ServerNotification,
+        ClientCapabilities, Implementation, InitializeResult, LoggingLevel, ProtocolVersion,
+        ServerNotification,
     },
     tool, tool_params, tool_result,
 };
@@ -65,18 +66,16 @@ impl WeatherServer {
     async fn initialize(
         &self,
         _ctx: &ServerCtx,
-        protocol_version: String,
+        protocol_version: ProtocolVersion,
         _capabilities: ClientCapabilities,
         _client_info: Implementation,
     ) -> Result<InitializeResult> {
-        let mut init = InitializeResult::new("weather_server")
+        let init = InitializeResult::new("weather_server")
             .with_version(env!("CARGO_PKG_VERSION"))
             .with_tools(Some(true))
             .with_logging()
-            .with_instructions("Minimal weather server example");
-        if !protocol_version.is_empty() {
-            init = init.with_mcp_version(protocol_version);
-        }
+            .with_instructions("Minimal weather server example")
+            .with_mcp_version(protocol_version);
         Ok(init)
     }
 

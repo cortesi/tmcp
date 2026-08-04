@@ -70,7 +70,7 @@ impl ServerHandler for TestConnection {
     async fn initialize(
         &self,
         _context: &ServerCtx,
-        _protocol_version: String,
+        _protocol_version: ProtocolVersion,
         _capabilities: ClientCapabilities,
         _client_info: Implementation,
     ) -> Result<InitializeResult> {

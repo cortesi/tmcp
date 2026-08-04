@@ -10,7 +10,7 @@ use axum::{
 use url::Url;
 
 use super::CorsPolicy;
-use crate::schema::{JSONRPCMessage, SUPPORTED_PROTOCOL_VERSIONS};
+use crate::schema::{JSONRPCMessage, ProtocolVersion};
 
 /// Maximum accepted HTTP request body size.
 const MAX_HTTP_BODY_SIZE: usize = 2 * 1024 * 1024;
@@ -89,7 +89,10 @@ fn validate_same_origin(headers: &HeaderMap) -> OriginResult {
 ///
 /// A missing header is accepted and treated as the oldest supported version,
 /// per the streamable HTTP specification.
-pub(super) fn validate_protocol_version(headers: &HeaderMap) -> StdResult<(), Box<Response>> {
+pub(super) fn validate_protocol_version(
+    headers: &HeaderMap,
+    expected: Option<&ProtocolVersion>,
+) -> StdResult<(), Box<Response>> {
     let Some(version) = headers.get("MCP-Protocol-Version") else {
         return Ok(());
     };
@@ -98,12 +101,21 @@ pub(super) fn validate_protocol_version(headers: &HeaderMap) -> StdResult<(), Bo
             (StatusCode::BAD_REQUEST, "Invalid protocol version").into_response(),
         ));
     };
-    if SUPPORTED_PROTOCOL_VERSIONS.contains(&version) {
-        Ok(())
-    } else {
+    let Ok(version) = version.parse::<ProtocolVersion>() else {
+        return Err(Box::new(
+            (StatusCode::BAD_REQUEST, "Invalid protocol version").into_response(),
+        ));
+    };
+    if expected.is_some_and(|expected| expected != &version) {
         Err(Box::new(
-            (StatusCode::BAD_REQUEST, "Unsupported protocol version").into_response(),
+            (
+                StatusCode::BAD_REQUEST,
+                "Protocol version does not match session",
+            )
+                .into_response(),
         ))
+    } else {
+        Ok(())
     }
 }
 
@@ -241,21 +253,25 @@ mod tests {
     #[test]
     fn test_protocol_version_validation() {
         let headers = HeaderMap::new();
-        assert!(validate_protocol_version(&headers).is_ok());
+        assert!(validate_protocol_version(&headers, None).is_ok());
 
         let mut headers = HeaderMap::new();
         headers.insert(
             "MCP-Protocol-Version",
             HeaderValue::from_static("2025-06-18"),
         );
-        assert!(validate_protocol_version(&headers).is_ok());
+        assert!(validate_protocol_version(&headers, None).is_ok());
+
+        let expected = "2025-11-25".parse().unwrap();
+        let response = validate_protocol_version(&headers, Some(&expected)).unwrap_err();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let mut headers = HeaderMap::new();
         headers.insert(
             "MCP-Protocol-Version",
-            HeaderValue::from_static("1999-01-01"),
+            HeaderValue::from_static("not-a-version"),
         );
-        let response = validate_protocol_version(&headers).unwrap_err();
+        let response = validate_protocol_version(&headers, None).unwrap_err();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

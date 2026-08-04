@@ -78,6 +78,8 @@ pub struct EmbeddedHttpServer {
 pub struct Server {
     /// Factory for creating per-connection handlers.
     connection_factory: HandlerFactory,
+    /// MCP protocol versions in server preference order.
+    protocol_versions: SupportedProtocolVersions,
 }
 
 impl Server {
@@ -104,7 +106,7 @@ impl Server {
     ///     async fn initialize(
     ///         &self,
     ///         _ctx: &ServerCtx,
-    ///         _protocol_version: String,
+    ///         _protocol_version: ProtocolVersion,
     ///         _capabilities: ClientCapabilities,
     ///         _client_info: Implementation,
     ///     ) -> Result<InitializeResult> {
@@ -129,14 +131,25 @@ impl Server {
     {
         Self {
             connection_factory: Arc::new(move || Box::new(factory()) as Box<dyn ServerHandler>),
+            protocol_versions: SupportedProtocolVersions::default(),
         }
+    }
+
+    /// Replace the MCP protocol versions accepted by this server.
+    pub fn with_protocol_versions(mut self, versions: SupportedProtocolVersions) -> Self {
+        self.protocol_versions = versions;
+        self
     }
 
     /// Create a server from a shared, pre-boxed handler factory.
     #[cfg(feature = "http")]
-    pub(crate) fn from_factory(factory: HandlerFactory) -> Self {
+    pub(crate) fn from_factory(
+        factory: HandlerFactory,
+        protocol_versions: SupportedProtocolVersions,
+    ) -> Self {
         Self {
             connection_factory: factory,
+            protocol_versions,
         }
     }
 
@@ -190,6 +203,7 @@ impl Server {
 
         // The shared connection factory is cloned into each connection task.
         let connection_factory = self.connection_factory;
+        let protocol_versions = self.protocol_versions;
 
         // Create shutdown token for coordinating shutdown
         let shutdown_token = CancellationToken::new();
@@ -212,12 +226,14 @@ impl Server {
 
                                 // Clone the shared factory for the spawned task
                                 let factory = connection_factory.clone();
+                                let protocol_versions = protocol_versions.clone();
 
                                 // Handle each connection in a separate task
                                 tokio::spawn(async move {
                                     // Create a new server with the shared factory
                                     let server = Self {
                                         connection_factory: factory,
+                                        protocol_versions,
                                     };
 
                                     let transport = Box::new(StreamTransport::new(stream));
@@ -338,7 +354,11 @@ impl HttpBuilder {
                 "HTTP embed builders do not have a bind address; call into_router()".to_string(),
             )
         })?;
-        let http = HttpServer::new(self.server.connection_factory, self.cors);
+        let http = HttpServer::new(
+            self.server.connection_factory,
+            self.server.protocol_versions,
+            self.cors,
+        );
         let EmbeddedHttpRoutes {
             mcp_router,
             aux_routes,
@@ -356,7 +376,11 @@ impl HttpBuilder {
     /// Build tmcp HTTP routers for embedding into an existing Axum application.
     pub async fn into_router(self) -> Result<EmbeddedHttpServer> {
         let endpoint_path = self.endpoint_path;
-        let http = HttpServer::new(self.server.connection_factory, self.cors);
+        let http = HttpServer::new(
+            self.server.connection_factory,
+            self.server.protocol_versions,
+            self.cors,
+        );
         let EmbeddedHttpRoutes {
             mcp_router,
             aux_routes,
@@ -452,6 +476,7 @@ impl ServerHandle {
 
         // Create connection instance wrapped in Arc for shared access
         let connection: Arc<dyn ServerHandler> = Arc::from((server.connection_factory)());
+        let protocol_versions = server.protocol_versions;
 
         // Create a single ServerCtx instance that will be used throughout the connection
         let server_ctx = ServerCtx::new(notification_tx, Some(sink_tx.clone()));
@@ -498,7 +523,8 @@ impl ServerHandle {
                                                 handle_initialize_request(
                                                     connection.as_ref(),
                                                     request,
-                                                    &context
+                                                    &context,
+                                                    &protocol_versions,
                                                 ).await;
 
                                             // Store capabilities from the handler's response
@@ -898,6 +924,7 @@ async fn handle_initialize_request(
     connection: &dyn ServerHandler,
     request: JSONRPCRequest,
     context: &ServerCtx,
+    protocol_versions: &SupportedProtocolVersions,
 ) -> (JSONRPCMessage, Option<ServerCapabilities>) {
     let JSONRPCRequest {
         id,
@@ -906,51 +933,44 @@ async fn handle_initialize_request(
     } = request;
     let ctx_with_request = context.with_request_id(id.clone());
 
-    // Parse the initialize parameters
-    let Some(mut params) = params else {
-        return (
-            JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: Some(id),
-                error: ErrorObject {
-                    code: INVALID_PARAMS,
-                    message: "Missing initialize parameters".to_string(),
-                    data: None,
-                },
-            })),
-            None,
-        );
+    let initialize = match parse_typed_request::<ClientRequest>("initialize", params) {
+        Ok(initialize) => initialize,
+        Err(error) => {
+            return (
+                result_to_jsonrpc_response::<InitializeResult>(id, Err(error)),
+                None,
+            );
+        }
     };
-
-    // Extract initialize parameters
-    let protocol_version = match params.other.remove("protocolVersion") {
-        Some(serde_json::Value::String(version)) => version,
-        _ => String::new(),
+    let ClientRequest::Initialize {
+        protocol_version: requested_version,
+        capabilities,
+        client_info,
+        ..
+    } = initialize
+    else {
+        unreachable!("initialize method deserialized as another request")
     };
-
-    let capabilities: ClientCapabilities = params
-        .other
-        .remove("capabilities")
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
-
-    let client_info: Implementation = params
-        .other
-        .remove("clientInfo")
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_else(|| Implementation::new("unknown", "0.0.0"));
+    let protocol_version = if protocol_versions.contains(&requested_version) {
+        requested_version
+    } else {
+        protocol_versions.latest().clone()
+    };
 
     // Call the handler's initialize method
     let (caps, result) = match connection
         .initialize(
             &ctx_with_request,
-            protocol_version,
-            capabilities,
+            protocol_version.clone(),
+            *capabilities,
             client_info,
         )
         .await
     {
-        Ok(result) => (Some(result.capabilities.clone()), Ok(result)),
+        Ok(mut result) => {
+            result.protocol_version = protocol_version;
+            (Some(result.capabilities.clone()), Ok(result))
+        }
         Err(e) => (None, Err(e)),
     };
     (result_to_jsonrpc_response(id, result), caps)

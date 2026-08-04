@@ -175,7 +175,9 @@ pub fn validate_custom_initialize_fn(impl_block: &ItemImpl, fn_name: &syn::Ident
 
     let params = validate_callback_signature(method, "initialize_fn", 5)?;
     validate_callback_arg_type(params[1], "initialize_fn", "&ServerCtx", is_server_ctx_type)?;
-    validate_callback_arg_type(params[2], "initialize_fn", "String", is_string_type)?;
+    validate_callback_arg_type(params[2], "initialize_fn", "ProtocolVersion", |ty| {
+        type_path_ends_with(ty, "ProtocolVersion")
+    })?;
     validate_callback_arg_type(params[3], "initialize_fn", "ClientCapabilities", |ty| {
         type_path_ends_with(ty, "ClientCapabilities")
     })?;

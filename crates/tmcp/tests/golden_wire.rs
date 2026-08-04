@@ -13,7 +13,9 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use tmcp::{
-        Arguments, Error, Result, ServerCtx, ServerHandler, schema, testutils::run_wire_fixture,
+        Arguments, Error, Result, ServerCtx, ServerHandler,
+        schema::{self, ProtocolVersion},
+        testutils::run_wire_fixture,
     };
 
     /// A server whose responses are fully deterministic, so fixtures can
@@ -25,7 +27,7 @@ mod tests {
         async fn initialize(
             &self,
             _ctx: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: schema::ClientCapabilities,
             _client_info: schema::Implementation,
         ) -> Result<schema::InitializeResult> {
@@ -187,6 +189,36 @@ mod tests {
         let response = conn.recv().await;
         assert_eq!(response["error"]["code"], -32600);
         assert_eq!(response["id"], 3);
+    }
+
+    #[tokio::test]
+    async fn invalid_protocol_version_fails_before_negotiation() {
+        use serde_json::json;
+        use tmcp::testutils::WireConnection;
+
+        let mut conn = WireConnection::start(|| GoldenServer)
+            .await
+            .expect("start wire server");
+        conn.send(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-02-29",
+                "capabilities": {},
+                "clientInfo": { "name": "golden-client", "version": "1.0.0" }
+            }
+        }))
+        .await;
+
+        let response = conn.recv().await;
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("invalid MCP protocol version")
+        );
     }
 
     #[tokio::test]

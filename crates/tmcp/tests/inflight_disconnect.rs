@@ -8,8 +8,8 @@ mod tests {
         Arguments, Result, Server, ServerCtx, ServerHandler,
         schema::{
             CallToolResponse, CallToolResult, ClientCapabilities, Cursor, Implementation,
-            InitializeResult, LATEST_PROTOCOL_VERSION, ListToolsResult, ServerCapabilities,
-            TaskMetadata, Tool, ToolSchema,
+            InitializeResult, ListToolsResult, ProtocolVersion, ServerCapabilities, TaskMetadata,
+            Tool, ToolSchema,
         },
         testutils::make_duplex_pair,
     };
@@ -25,7 +25,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> Result<InitializeResult> {
@@ -70,7 +70,7 @@ mod tests {
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": LATEST_PROTOCOL_VERSION,
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": { "name": "test-client", "version": "0.1.0" }
             }

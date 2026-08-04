@@ -14,7 +14,7 @@ mod tests {
         schema::{
             CallToolResponse, CallToolResult, ClientCapabilities, ElicitAction,
             ElicitRequestFormParams, ElicitRequestParams, ElicitResult, ElicitSchema,
-            Implementation, InitializeResult, TaskMetadata,
+            Implementation, InitializeResult, ProtocolVersion, TaskMetadata,
         },
         testutils::connected_client_and_server_with_conn,
     };
@@ -32,7 +32,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> Result<InitializeResult> {

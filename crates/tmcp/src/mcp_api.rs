@@ -12,10 +12,9 @@ use tokio::sync::mpsc;
 use crate::{
     Client, ClientHandler, Result, ServerCtx, ServerHandler,
     schema::{
-        ClientCapabilities, ClientRequest, Implementation, InitializeResult,
-        LATEST_PROTOCOL_VERSION, ListPromptsResult, ListResourceTemplatesResult,
-        ListResourcesResult, ListToolsResult, Prompt, Resource, ResourceTemplate,
-        ServerNotification, Tool,
+        ClientCapabilities, ClientRequest, Implementation, InitializeResult, ListPromptsResult,
+        ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt, ProtocolVersion,
+        Resource, ResourceTemplate, ServerNotification, SupportedProtocolVersions, Tool,
     },
 };
 
@@ -185,7 +184,7 @@ impl McpApiRefreshSnapshot {
 #[derive(Debug, Clone)]
 pub struct McpApiOptions {
     /// MCP protocol version to request during initialization.
-    pub protocol_version: String,
+    pub protocol_version: ProtocolVersion,
     /// Client capabilities to send during initialization.
     pub client_capabilities: ClientCapabilities,
     /// Client implementation metadata to send during initialization.
@@ -195,7 +194,7 @@ pub struct McpApiOptions {
 impl Default for McpApiOptions {
     fn default() -> Self {
         Self {
-            protocol_version: LATEST_PROTOCOL_VERSION.to_owned(),
+            protocol_version: SupportedProtocolVersions::default().preferred().clone(),
             client_capabilities: ClientCapabilities::default(),
             client_info: Implementation::new("tmcp-inspector", env!("CARGO_PKG_VERSION")),
         }
@@ -223,14 +222,16 @@ pub async fn inspect_server_with(
     // The receiver must stay alive for the whole inspection so handlers that
     // notify during initialize or listing do not fail on a closed channel.
     let (ctx, _notification_rx) = inspection_context();
-    let initialize = handler
+    let protocol_version = options.protocol_version;
+    let mut initialize = handler
         .initialize(
             &ctx,
-            options.protocol_version,
+            protocol_version.clone(),
             options.client_capabilities,
             options.client_info,
         )
         .await?;
+    initialize.protocol_version = protocol_version;
     let tools = if initialize.capabilities.tools.is_some() {
         collect_tools(handler, &ctx).await?
     } else {

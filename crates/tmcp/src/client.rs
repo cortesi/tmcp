@@ -57,6 +57,8 @@ where
     version: String,
     /// Capabilities advertised to the server.
     client_capabilities: ClientCapabilities,
+    /// MCP protocol versions in client preference order.
+    protocol_versions: SupportedProtocolVersions,
     /// Tracks whether on_connect has been invoked for this connection.
     on_connect_called: bool,
     /// Background task driving the inbound message loop for the active connection.
@@ -128,6 +130,7 @@ impl Client<()> {
             name: name.into(),
             version: version.into(),
             client_capabilities: ClientCapabilities::default(),
+            protocol_versions: SupportedProtocolVersions::default(),
             on_connect_called: false,
             message_handler: None,
         }
@@ -157,6 +160,7 @@ impl Client<()> {
             name: self.name,
             version: self.version,
             client_capabilities: self.client_capabilities,
+            protocol_versions: self.protocol_versions,
             on_connect_called: self.on_connect_called,
             message_handler: self.message_handler,
         }
@@ -196,7 +200,7 @@ where
     /// Initialize the connection with the server
     ///
     /// This is a convenience method that uses the client's configured name, version,
-    /// and capabilities with the latest protocol version.
+    /// and capabilities with the preferred configured protocol version.
     ///
     /// Calling `init` triggers the `ClientHandler::on_connect` callback after the
     /// initialization handshake completes.
@@ -206,12 +210,8 @@ where
     {
         let client_info = Implementation::new(self.name.clone(), self.version.clone());
 
-        self.initialize(
-            LATEST_PROTOCOL_VERSION.to_string(),
-            self.client_capabilities.clone(),
-            client_info,
-        )
-        .await
+        self.initialize(self.client_capabilities.clone(), client_info)
+            .await
     }
 
     /// Connect to a TCP server and initialize the connection
@@ -640,16 +640,39 @@ impl<C> Client<C>
 where
     C: ClientHandler + Send + Sync + 'static,
 {
-    /// Initialize the connection with protocol version and capabilities
+    /// Replace the MCP protocol versions offered by this client.
+    pub fn with_protocol_versions(mut self, versions: SupportedProtocolVersions) -> Self {
+        self.protocol_versions = versions;
+        self
+    }
+
+    /// Initialize the connection with the configured versions and capabilities.
     pub async fn initialize(
         &mut self,
-        protocol_version: String,
         capabilities: ClientCapabilities,
         client_info: Implementation,
     ) -> Result<InitializeResult> {
-        let request = ClientRequest::initialize(protocol_version, capabilities, client_info);
+        let request = ClientRequest::initialize(
+            self.protocol_versions.preferred().clone(),
+            capabilities,
+            client_info,
+        );
 
-        let result: InitializeResult = self.request_and_wait(request).await?;
+        let result: InitializeResult = match self.request_and_wait(request).await {
+            Ok(result) => result,
+            Err(error @ Error::Protocol(_)) => {
+                self.disconnect_after_protocol_error().await;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        if !self.protocol_versions.contains(&result.protocol_version) {
+            let version = result.protocol_version.clone();
+            self.disconnect_after_protocol_error().await;
+            return Err(Error::Protocol(format!(
+                "server selected unsupported protocol version `{version}`"
+            )));
+        }
 
         // Send the initialized notification to complete the handshake
         self.send_notification("notifications/initialized", None)
@@ -658,6 +681,16 @@ where
         self.call_on_connect().await?;
 
         Ok(result)
+    }
+
+    /// Disconnect after a failed initialization negotiation.
+    async fn disconnect_after_protocol_error(&mut self) {
+        self.request_handler.shutdown();
+        if let Some(handler) = self.message_handler.take() {
+            handler.stop().await;
+        }
+        self.context = None;
+        self.on_connect_called = false;
     }
 
     /// Send a ping request to the server and wait for the response.
@@ -1097,7 +1130,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: ClientCapabilities,
                 _client_info: Implementation,
             ) -> Result<InitializeResult> {
@@ -1161,7 +1194,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: ClientCapabilities,
                 _client_info: Implementation,
             ) -> Result<InitializeResult> {
@@ -1237,7 +1270,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: ClientCapabilities,
                 _client_info: Implementation,
             ) -> Result<InitializeResult> {
@@ -1287,7 +1320,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: ClientCapabilities,
                 _client_info: Implementation,
             ) -> Result<InitializeResult> {
@@ -1451,7 +1484,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: ClientCapabilities,
                 _client_info: Implementation,
             ) -> Result<InitializeResult> {
@@ -1520,7 +1553,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: ClientCapabilities,
                 _client_info: Implementation,
             ) -> Result<InitializeResult> {
@@ -1594,7 +1627,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: ClientCapabilities,
                 _client_info: Implementation,
             ) -> Result<InitializeResult> {

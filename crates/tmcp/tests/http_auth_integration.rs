@@ -31,7 +31,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> Result<InitializeResult> {
@@ -120,7 +120,7 @@ mod tests {
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": LATEST_PROTOCOL_VERSION,
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {
                     "name": "auth-test-client",
@@ -169,7 +169,7 @@ mod tests {
         let no_auth = client
             .post(format!("{base_url}/mcp"))
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .json(&initialize_payload())
             .send()
             .await
@@ -190,7 +190,7 @@ mod tests {
             .post(format!("{base_url}/mcp"))
             .bearer_auth(&valid_token)
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .json(&initialize_payload())
             .send()
             .await
@@ -205,7 +205,7 @@ mod tests {
             .post(format!("{base_url}/mcp"))
             .bearer_auth(&valid_token)
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .header("Mcp-Session-Id", &session_id)
             .json(&call_tool_payload())
             .send()
@@ -224,7 +224,7 @@ mod tests {
             .post(format!("{base_url}/mcp"))
             .bearer_auth(token(&encoding_key, "kid-1", now() - 300))
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .json(&initialize_payload())
             .send()
             .await
@@ -242,7 +242,7 @@ mod tests {
             .get(format!("{base_url}/mcp"))
             .bearer_auth(&valid_token)
             .header("Accept", "text/event-stream")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .header("Mcp-Session-Id", &session_id)
             .send()
             .await
@@ -259,7 +259,7 @@ mod tests {
         let sse_missing_auth = client
             .get(format!("{base_url}/mcp"))
             .header("Accept", "text/event-stream")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .header("Mcp-Session-Id", &session_id)
             .send()
             .await
@@ -342,7 +342,7 @@ mod tests {
             .post(format!("{base_url}/mcp"))
             .bearer_auth(&valid_token)
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .json(&initialize_payload())
             .send()
             .await
@@ -357,7 +357,7 @@ mod tests {
             .post(format!("{base_url}/mcp"))
             .bearer_auth(&valid_token)
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .header("Mcp-Session-Id", &session_id)
             .json(&call_tool_payload())
             .send()
@@ -408,7 +408,7 @@ mod tests {
             .post(format!("{base_url}/mcp"))
             .bearer_auth(&alice_token)
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .json(&initialize_payload())
             .send()
             .await
@@ -424,7 +424,7 @@ mod tests {
             .post(format!("{base_url}/mcp"))
             .bearer_auth(&bob_token)
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .header("Mcp-Session-Id", &session_id)
             .json(&call_tool_payload())
             .send()
@@ -437,7 +437,7 @@ mod tests {
             .get(format!("{base_url}/mcp"))
             .bearer_auth(&bob_token)
             .header("Accept", "text/event-stream")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .header("Mcp-Session-Id", &session_id)
             .send()
             .await
@@ -448,7 +448,7 @@ mod tests {
         let bob_delete = client
             .delete(format!("{base_url}/mcp"))
             .bearer_auth(&bob_token)
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .header("Mcp-Session-Id", &session_id)
             .send()
             .await
@@ -460,7 +460,7 @@ mod tests {
             .post(format!("{base_url}/mcp"))
             .bearer_auth(&alice_token)
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .header("Mcp-Session-Id", &session_id)
             .json(&call_tool_payload())
             .send()
@@ -472,7 +472,7 @@ mod tests {
         let alice_delete = client
             .delete(format!("{base_url}/mcp"))
             .bearer_auth(&alice_token)
-            .header("MCP-Protocol-Version", LATEST_PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", "2025-11-25")
             .header("Mcp-Session-Id", &session_id)
             .send()
             .await

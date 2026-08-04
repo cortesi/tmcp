@@ -1,19 +1,176 @@
-use std::fmt::{self, Display, Formatter};
+use std::{
+    collections::HashSet,
+    fmt::{self, Display, Formatter},
+    str::FromStr,
+};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Map, Value};
+use thiserror::Error;
 
 use crate::macros::with_meta;
 
-/// The protocol version immediately preceding the latest supported version.
-pub const PREVIOUS_PROTOCOL_VERSION: &str = "2025-06-18";
-
-/// All protocol versions this implementation accepts from peers, newest first.
-pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26"];
-/// The most recent protocol version this implementation supports.
-pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 /// JSON-RPC protocol version string.
 pub const JSONRPC_VERSION: &str = "2.0";
+
+/// A released MCP protocol version in `YYYY-MM-DD` form.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct ProtocolVersion(String);
+
+impl ProtocolVersion {
+    /// Return the protocol version string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for ProtocolVersion {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl FromStr for ProtocolVersion {
+    type Err = ProtocolVersionError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if valid_release_date(value) {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(ProtocolVersionError {
+                value: value.to_owned(),
+            })
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProtocolVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(de::Error::custom)
+    }
+}
+
+/// Failure to parse an MCP protocol release date.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("invalid MCP protocol version `{value}`; expected a valid YYYY-MM-DD release date")]
+pub struct ProtocolVersionError {
+    /// Invalid input value.
+    value: String,
+}
+
+impl ProtocolVersionError {
+    /// Return the invalid input value.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
+/// An ordered, non-empty set of supported MCP protocol versions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupportedProtocolVersions {
+    /// Versions in preference order.
+    versions: Vec<ProtocolVersion>,
+}
+
+impl SupportedProtocolVersions {
+    /// Create a supported-version set in preference order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `versions` is empty or contains a duplicate.
+    pub fn new(
+        versions: impl IntoIterator<Item = ProtocolVersion>,
+    ) -> Result<Self, SupportedProtocolVersionsError> {
+        let versions: Vec<_> = versions.into_iter().collect();
+        if versions.is_empty() {
+            return Err(SupportedProtocolVersionsError::Empty);
+        }
+
+        let mut unique = HashSet::with_capacity(versions.len());
+        for version in &versions {
+            if !unique.insert(version) {
+                return Err(SupportedProtocolVersionsError::Duplicate(version.clone()));
+            }
+        }
+        Ok(Self { versions })
+    }
+
+    /// Return the first client-preferred version.
+    pub fn preferred(&self) -> &ProtocolVersion {
+        &self.versions[0]
+    }
+
+    /// Return the server's latest supported version.
+    pub fn latest(&self) -> &ProtocolVersion {
+        &self.versions[0]
+    }
+
+    /// Return whether this set contains `version`.
+    pub fn contains(&self, version: &ProtocolVersion) -> bool {
+        self.versions.contains(version)
+    }
+}
+
+impl Default for SupportedProtocolVersions {
+    fn default() -> Self {
+        Self {
+            versions: ["2025-11-25", "2025-06-18", "2025-03-26"]
+                .into_iter()
+                .map(|version| version.parse().expect("default MCP version must be valid"))
+                .collect(),
+        }
+    }
+}
+
+/// Failure to construct a supported MCP protocol version set.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum SupportedProtocolVersionsError {
+    /// The configured version set was empty.
+    #[error("supported MCP protocol versions cannot be empty")]
+    Empty,
+    /// The configured version set contained a duplicate.
+    #[error("duplicate supported MCP protocol version `{0}`")]
+    Duplicate(ProtocolVersion),
+}
+
+/// Return whether `value` is a valid Gregorian date in `YYYY-MM-DD` form.
+fn valid_release_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        return false;
+    }
+
+    let year = value[..4].parse::<u16>().ok();
+    let month = value[5..7].parse::<u8>().ok();
+    let day = value[8..].parse::<u8>().ok();
+    let (Some(year), Some(month), Some(day)) = (year, month, day) else {
+        return false;
+    };
+    if year == 0 || !(1..=12).contains(&month) {
+        return false;
+    }
+
+    let days = match month {
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=days).contains(&day)
+}
 
 /// Refers to any valid JSON-RPC object that can be decoded off the wire, or
 /// encoded to be sent.
@@ -247,3 +404,48 @@ pub struct ErrorObject {
 
 /// A response that indicates success but carries no data.
 pub type EmptyResult = JSONRPCResult;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_version_validates_parse_and_deserialize() {
+        let version: ProtocolVersion = "2025-06-18".parse().expect("valid version");
+        assert_eq!(version.as_str(), "2025-06-18");
+        assert_eq!(serde_json::to_value(&version).unwrap(), "2025-06-18");
+        assert_eq!(
+            serde_json::from_str::<ProtocolVersion>(r#""2024-02-29""#)
+                .unwrap()
+                .as_str(),
+            "2024-02-29"
+        );
+
+        for invalid in ["2025-6-18", "2025-02-29", "0000-01-01", "not-a-date"] {
+            let error = invalid.parse::<ProtocolVersion>().unwrap_err();
+            assert_eq!(error.value(), invalid);
+            assert!(
+                serde_json::from_value::<ProtocolVersion>(Value::String(invalid.to_owned()))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn supported_versions_are_ordered_non_empty_and_unique() {
+        let defaults = SupportedProtocolVersions::default();
+        assert_eq!(defaults.preferred().as_str(), "2025-11-25");
+        assert_eq!(defaults.latest().as_str(), "2025-11-25");
+        assert!(defaults.contains(&"2025-03-26".parse().unwrap()));
+
+        assert_eq!(
+            SupportedProtocolVersions::new([]).unwrap_err(),
+            SupportedProtocolVersionsError::Empty
+        );
+        let duplicate: ProtocolVersion = "2025-06-18".parse().unwrap();
+        assert_eq!(
+            SupportedProtocolVersions::new([duplicate.clone(), duplicate.clone()]).unwrap_err(),
+            SupportedProtocolVersionsError::Duplicate(duplicate)
+        );
+    }
+}

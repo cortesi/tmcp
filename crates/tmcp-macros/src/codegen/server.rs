@@ -6,9 +6,7 @@ use quote::{format_ident, quote};
 
 use crate::{
     codegen::{build_tool_expr, generate_tool_call_arm, tool_schema_expr},
-    model::{
-        ForwarderParam, ProtocolVersionStrategy, ServerInfo, ServerMacroArgs, ToolTaskSupport,
-    },
+    model::{ForwarderParam, ServerInfo, ServerMacroArgs, ToolTaskSupport},
     parse::{generic_param_idents, tokens_mention_ident},
 };
 
@@ -128,7 +126,7 @@ pub fn generate_initialize(
             async fn initialize(
                 &self,
                 context: &::tmcp::ServerCtx,
-                protocol_version: String,
+                protocol_version: ::tmcp::schema::ProtocolVersion,
                 capabilities: ::tmcp::schema::ClientCapabilities,
                 client_info: ::tmcp::schema::Implementation,
             ) -> ::tmcp::Result<::tmcp::schema::InitializeResult> {
@@ -178,18 +176,6 @@ fn generate_default_initialize(
         quote! { init = init.with_instructions(#description); }
     };
 
-    let (protocol_param, protocol_version_setter) = match args.protocol_version {
-        Some(ProtocolVersionStrategy::Client) => (
-            quote! { protocol_version: String },
-            quote! {
-                if !protocol_version.is_empty() {
-                    init = init.with_mcp_version(protocol_version);
-                }
-            },
-        ),
-        _ => (quote! { _protocol_version: String }, quote! {}),
-    };
-
     let tools_capability_setter = match tools_capability {
         ToolCapability::Omit => quote! {},
         ToolCapability::Static => quote! { init = init.with_tools(None); },
@@ -225,7 +211,7 @@ fn generate_default_initialize(
         async fn initialize(
             &self,
             _context: &::tmcp::ServerCtx,
-            #protocol_param,
+            protocol_version: ::tmcp::schema::ProtocolVersion,
             _capabilities: ::tmcp::schema::ClientCapabilities,
             _client_info: ::tmcp::schema::Implementation,
         ) -> ::tmcp::Result<::tmcp::schema::InitializeResult> {
@@ -238,7 +224,7 @@ fn generate_default_initialize(
             #task_list_setter
             #task_cancel_setter
             #instructions_setter
-            #protocol_version_setter
+            init = init.with_mcp_version(protocol_version);
             Ok(init)
         }
     }

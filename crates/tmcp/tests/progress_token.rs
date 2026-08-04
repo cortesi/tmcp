@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::json;
 use tmcp::{
-    Result, Server, ServerCtx, ServerHandle, ServerHandler, schema,
+    Result, Server, ServerCtx, ServerHandle, ServerHandler,
+    schema::{self, ProtocolVersion},
     testutils::{TestServerContext, make_duplex_pair},
 };
 use tokio::{
@@ -95,7 +96,7 @@ impl ServerHandler for ProgressTokenRecorder {
     async fn initialize(
         &self,
         _ctx: &ServerCtx,
-        _protocol_version: String,
+        _protocol_version: ProtocolVersion,
         _capabilities: schema::ClientCapabilities,
         _client_info: schema::Implementation,
     ) -> Result<schema::InitializeResult> {

@@ -50,7 +50,10 @@ use super::validation::{
 use crate::auth::server::AuthInfo;
 use crate::{
     error::{Error, Result},
-    schema::{JSONRPCMessage, JSONRPCNotification, JSONRPCResponse, RequestId},
+    schema::{
+        JSONRPCMessage, JSONRPCNotification, JSONRPCResponse, ProtocolVersion, RequestId,
+        SupportedProtocolVersions,
+    },
     server::{HandlerFactory, NotificationFanout, Server, ServerHandle},
     transport::{IncomingMessage, Transport, TransportStream},
 };
@@ -136,6 +139,8 @@ struct HttpServerState {
     sessions: Arc<DashMap<String, HttpSession>>,
     /// Factory producing one handler per session.
     factory: HandlerFactory,
+    /// MCP protocol versions in server preference order.
+    protocol_versions: SupportedProtocolVersions,
     /// Master shutdown token covering the listener and all sessions.
     shutdown: CancellationToken,
     /// Cross-origin policy applied to all MCP requests.
@@ -153,6 +158,8 @@ struct HttpSession {
     routes: SessionRoutes,
     /// Handle to the session's connection loop.
     handle: Arc<ServerHandle>,
+    /// MCP protocol version negotiated for this session.
+    protocol_version: Arc<sync::Mutex<Option<ProtocolVersion>>>,
     /// Authenticated subject the session is bound to.
     ///
     /// Recorded from the [`AuthInfo`] request extension at initialize when the auth
@@ -356,10 +363,15 @@ pub struct EmbeddedHttpRoutes {
 
 impl HttpServer {
     /// Create a new HTTP server around a per-session handler factory.
-    pub fn new(factory: HandlerFactory, cors: CorsPolicy) -> Self {
+    pub fn new(
+        factory: HandlerFactory,
+        protocol_versions: SupportedProtocolVersions,
+        cors: CorsPolicy,
+    ) -> Self {
         let state = HttpServerState {
             sessions: Arc::new(DashMap::new()),
             factory,
+            protocol_versions,
             shutdown: CancellationToken::new(),
             cors: Arc::new(cors),
         };
@@ -541,6 +553,20 @@ fn cancelled_request_id(notification: &JSONRPCNotification) -> Option<RequestId>
     serde_json::from_value(value.clone()).ok()
 }
 
+/// Read the negotiated version from a successful initialize response.
+fn initialize_response_version(message: &JSONRPCMessage) -> Option<ProtocolVersion> {
+    let JSONRPCMessage::Response(JSONRPCResponse::Result(response)) = message else {
+        return None;
+    };
+    response
+        .result
+        .other
+        .get("protocolVersion")?
+        .as_str()?
+        .parse()
+        .ok()
+}
+
 // HTTP handlers
 
 /// Handle inbound HTTP POST JSON-RPC messages.
@@ -555,7 +581,7 @@ async fn handle_post(State(state): State<HttpServerState>, request: Request) -> 
     if let Err(response) = validate_json_content_type(&headers) {
         return *response;
     }
-    if let Err(response) = validate_protocol_version(&headers) {
+    if let Err(response) = validate_protocol_version(&headers, None) {
         return *response;
     }
 
@@ -582,6 +608,14 @@ async fn handle_post(State(state): State<HttpServerState>, request: Request) -> 
     let Some(session) = state.sessions.get(&session_id).map(|s| s.clone()) else {
         return (StatusCode::NOT_FOUND, "Session not found").into_response();
     };
+    let protocol_version = session
+        .protocol_version
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    if let Err(response) = validate_protocol_version(&headers, protocol_version.as_ref()) {
+        return *response;
+    }
     if let Some(response) = check_session_subject(&session, &extensions) {
         return response;
     }
@@ -648,7 +682,7 @@ async fn handle_initialize_post(
         routes: routes.clone(),
         session_id: session_id.clone(),
     };
-    let server = Server::from_factory(state.factory.clone());
+    let server = Server::from_factory(state.factory.clone(), state.protocol_versions.clone());
     let handle = match ServerHandle::new(server, Box::new(transport)).await {
         Ok(handle) => handle,
         Err(error) => {
@@ -657,11 +691,13 @@ async fn handle_initialize_post(
         }
     };
 
+    let protocol_version = Arc::new(sync::Mutex::new(None));
     let session = HttpSession {
         last_activity: Arc::new(sync::Mutex::new(Instant::now())),
         incoming_tx,
         routes,
         handle: Arc::new(handle),
+        protocol_version: protocol_version.clone(),
         auth_subject: auth_subject(&extensions),
     };
     state.sessions.insert(session_id.clone(), session.clone());
@@ -674,15 +710,26 @@ async fn handle_initialize_post(
                 &response,
                 JSONRPCMessage::Response(JSONRPCResponse::Error(_))
             );
+            let negotiated = initialize_response_version(&response);
             let mut http_response = Json::<JSONRPCMessage>(response).into_response();
             if failed {
                 // No session is established when initialization fails.
                 remove_session(state, &session_id);
             } else {
+                *protocol_version
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = negotiated.clone();
                 http_response.headers_mut().insert(
                     "Mcp-Session-Id",
                     HeaderValue::from_str(&session_id).expect("UUID is a valid header value"),
                 );
+                if let Some(version) = negotiated {
+                    http_response.headers_mut().insert(
+                        "MCP-Protocol-Version",
+                        HeaderValue::from_str(version.as_str())
+                            .expect("validated protocol version is a valid header value"),
+                    );
+                }
             }
             http_response
         }
@@ -702,7 +749,7 @@ async fn handle_get(State(state): State<HttpServerState>, request: Request) -> R
     if let Err(response) = validate_origin(&headers, &state.cors) {
         return *response;
     }
-    if let Err(response) = validate_protocol_version(&headers) {
+    if let Err(response) = validate_protocol_version(&headers, None) {
         return *response;
     }
 
@@ -725,6 +772,14 @@ async fn handle_get(State(state): State<HttpServerState>, request: Request) -> R
     let Some(session) = state.sessions.get(&session_id).map(|s| s.clone()) else {
         return (StatusCode::NOT_FOUND, "Session not found").into_response();
     };
+    let protocol_version = session
+        .protocol_version
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    if let Err(response) = validate_protocol_version(&headers, protocol_version.as_ref()) {
+        return *response;
+    }
     if let Some(response) = check_session_subject(&session, &extensions) {
         return response;
     }
@@ -767,6 +822,14 @@ async fn handle_delete(State(state): State<HttpServerState>, request: Request) -
     let Some(session) = state.sessions.get(&session_id).map(|s| s.clone()) else {
         return (StatusCode::NOT_FOUND, "Session not found").into_response();
     };
+    let protocol_version = session
+        .protocol_version
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    if let Err(response) = validate_protocol_version(&headers, protocol_version.as_ref()) {
+        return *response;
+    }
     if let Some(response) = check_session_subject(&session, &extensions) {
         return response;
     }

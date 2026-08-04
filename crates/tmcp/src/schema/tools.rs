@@ -148,6 +148,83 @@ pub enum ToolResultDecodeError {
     },
 }
 
+/// A prepared tool-result extraction and validation contract.
+#[cfg(feature = "schema-validation")]
+#[derive(Clone)]
+pub struct PreparedToolResultContract {
+    /// Extraction mode supplied by the consumer.
+    mode: ToolResultMode,
+    /// Original output schema used by schema-guided consumers.
+    output_schema: Option<Value>,
+    /// Validator or compilation error prepared from the output schema.
+    prepared_schema: Option<Result<ToolSchemaValidator, ToolSchemaCompileError>>,
+}
+
+/// Failure to apply a prepared tool-result contract.
+#[cfg(feature = "schema-validation")]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PreparedToolResultError {
+    /// The output schema could not be compiled.
+    #[error(transparent)]
+    SchemaCompile(#[from] ToolSchemaCompileError),
+    /// The tool result could not be extracted in the selected mode.
+    #[error(transparent)]
+    Extract(#[from] ToolResultExtractError),
+    /// The extracted JSON value did not match the output schema.
+    #[error(transparent)]
+    SchemaValidation(#[from] ToolSchemaValidationError),
+}
+
+#[cfg(feature = "schema-validation")]
+impl PreparedToolResultContract {
+    /// Prepare result extraction and compile the optional output schema.
+    pub fn new(mode: ToolResultMode, output_schema: Option<Value>) -> Self {
+        let prepared_schema = output_schema
+            .as_ref()
+            .map(|schema| ToolSchema(schema.clone()).compile());
+        Self {
+            mode,
+            output_schema,
+            prepared_schema,
+        }
+    }
+
+    /// Borrow the original output schema.
+    pub fn output_schema(&self) -> Option<&Value> {
+        self.output_schema.as_ref()
+    }
+
+    /// Extract a tool result and validate JSON output when required.
+    ///
+    /// `Text` and `Content` never apply the output schema. Protocol `isError`
+    /// state remains the caller's responsibility.
+    pub fn extract<'a>(
+        &self,
+        result: &'a CallToolResult,
+    ) -> Result<ExtractedToolResult<'a>, PreparedToolResultError> {
+        let mode = if self.mode == ToolResultMode::Auto && self.output_schema.is_some() {
+            ToolResultMode::StructuredOrJsonText
+        } else {
+            self.mode
+        };
+
+        if matches!(mode, ToolResultMode::Text | ToolResultMode::Content) {
+            return result.extract(mode).map_err(Into::into);
+        }
+
+        let validator = match self.prepared_schema.as_ref() {
+            Some(Ok(validator)) => Some(validator),
+            Some(Err(error)) => return Err(error.clone().into()),
+            None => None,
+        };
+        let extracted = result.extract(mode)?;
+        if let (Some(validator), ExtractedToolResult::Json(value)) = (validator, &extracted) {
+            validator.validate(value.as_ref())?;
+        }
+        Ok(extracted)
+    }
+}
+
 impl CallToolResult {
     /// Create an empty tool result.
     pub fn new() -> Self {
@@ -1650,6 +1727,69 @@ mod tests {
         assert_eq!(schema.schema_type(), Some("object"));
         assert!(schema.properties().is_none());
         assert!(schema.0.get("$schema").is_none());
+    }
+
+    #[cfg(feature = "schema-validation")]
+    #[test]
+    fn prepared_contract_promotes_auto_and_validates_json() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"answer": {"type": "integer"}},
+            "required": ["answer"],
+            "additionalProperties": false
+        });
+        let contract = PreparedToolResultContract::new(ToolResultMode::Auto, Some(schema.clone()));
+        assert_eq!(contract.output_schema(), Some(&schema));
+
+        let valid = CallToolResult::new().with_text_content(r#"{"answer":42}"#);
+        let ExtractedToolResult::Json(value) = contract.extract(&valid).unwrap() else {
+            panic!("expected JSON result");
+        };
+        assert_eq!(value.as_ref(), &json!({"answer": 42}));
+
+        let invalid = CallToolResult::new().with_text_content(r#"{"answer":"wrong"}"#);
+        assert!(matches!(
+            contract.extract(&invalid),
+            Err(PreparedToolResultError::SchemaValidation(_))
+        ));
+
+        let plain_text = CallToolResult::new().with_text_content("plain text");
+        assert!(matches!(
+            contract.extract(&plain_text),
+            Err(PreparedToolResultError::Extract(
+                ToolResultExtractError::InvalidJsonText { .. }
+            ))
+        ));
+    }
+
+    #[cfg(feature = "schema-validation")]
+    #[test]
+    fn prepared_contract_retains_compile_error_but_excludes_text_and_content() {
+        let invalid_schema = json!({"type": 42});
+        let structured = CallToolResult::new().with_structured_content(json!({"answer": 42}));
+        let contract = PreparedToolResultContract::new(
+            ToolResultMode::Structured,
+            Some(invalid_schema.clone()),
+        );
+        assert!(matches!(
+            contract.extract(&structured),
+            Err(PreparedToolResultError::SchemaCompile(_))
+        ));
+
+        let text = CallToolResult::new().with_text_content("plain text");
+        let text_contract =
+            PreparedToolResultContract::new(ToolResultMode::Text, Some(invalid_schema.clone()));
+        let ExtractedToolResult::Json(value) = text_contract.extract(&text).unwrap() else {
+            panic!("expected text result");
+        };
+        assert_eq!(value.as_ref(), &json!("plain text"));
+
+        let content_contract =
+            PreparedToolResultContract::new(ToolResultMode::Content, Some(invalid_schema));
+        assert!(matches!(
+            content_contract.extract(&text).unwrap(),
+            ExtractedToolResult::Content(_)
+        ));
     }
 
     #[cfg(feature = "schema-validation")]

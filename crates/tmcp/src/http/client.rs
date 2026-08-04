@@ -34,7 +34,7 @@ use crate::{
     http::is_loopback_http_url,
     schema::{
         AUTHORIZATION_FAILED, ErrorObject, INTERNAL_ERROR, JSONRPC_VERSION, JSONRPCErrorResponse,
-        JSONRPCMessage, JSONRPCResponse, LATEST_PROTOCOL_VERSION,
+        JSONRPCMessage, JSONRPCResponse, ProtocolVersion,
     },
     transport::{IncomingMessage, Transport, TransportStream},
 };
@@ -69,6 +69,8 @@ pub struct HttpClientTransport {
     last_event_id: Arc<Mutex<Option<String>>>,
     /// Headers attached to every HTTP request.
     static_headers: HeaderMap,
+    /// Protocol version negotiated for the active session.
+    protocol_version: Arc<Mutex<Option<ProtocolVersion>>>,
     /// Sender half for outbound JSON-RPC messages.
     sender: Option<mpsc::UnboundedSender<JSONRPCMessage>>,
     /// Receiver half for inbound JSON-RPC messages.
@@ -95,6 +97,8 @@ struct OutboundContext {
     last_event_id: Arc<Mutex<Option<String>>>,
     /// Headers attached to every HTTP request.
     static_headers: HeaderMap,
+    /// Protocol version negotiated for the active session.
+    protocol_version: Arc<Mutex<Option<ProtocolVersion>>>,
     /// OAuth client for attaching bearer tokens.
     #[cfg(feature = "auth")]
     oauth_client: Option<Arc<OAuth2Client>>,
@@ -146,18 +150,71 @@ fn expects_response(msg: &JSONRPCMessage) -> bool {
     matches!(msg, JSONRPCMessage::Request(_))
 }
 
+/// Record the version from a successful initialize response.
+async fn update_negotiated_protocol_version(
+    request: &JSONRPCMessage,
+    response: &JSONRPCMessage,
+    ctx: &OutboundContext,
+) {
+    if !matches!(request, JSONRPCMessage::Request(request) if request.request.method == "initialize")
+    {
+        return;
+    }
+    let JSONRPCMessage::Response(JSONRPCResponse::Result(response)) = response else {
+        return;
+    };
+    let Some(version) = response
+        .result
+        .other
+        .get("protocolVersion")
+        .and_then(|value| value.as_str())
+        .and_then(|value| value.parse::<ProtocolVersion>().ok())
+    else {
+        return;
+    };
+    *ctx.protocol_version.lock().await = Some(version);
+}
+
+/// Return the initialized session's protocol-version header.
+async fn protocol_version_header(ctx: &OutboundContext) -> Result<HeaderValue> {
+    let version =
+        ctx.protocol_version.lock().await.clone().ok_or_else(|| {
+            Error::Protocol("HTTP session has no negotiated protocol version".into())
+        })?;
+    HeaderValue::from_str(version.as_str())
+        .map_err(|_| Error::Protocol("invalid protocol version header".into()))
+}
+
+/// Read the requested version from an initialize request.
+fn requested_protocol_version(message: &JSONRPCMessage) -> Option<ProtocolVersion> {
+    let JSONRPCMessage::Request(request) = message else {
+        return None;
+    };
+    if request.request.method != "initialize" {
+        return None;
+    }
+    request
+        .request
+        .params
+        .as_ref()?
+        .other
+        .get("protocolVersion")?
+        .as_str()?
+        .parse()
+        .ok()
+}
+
 /// Parse a JSON-RPC response and forward it over the channel.
 async fn forward_response(
     msg: &JSONRPCMessage,
     response: reqwest::Response,
-    sender: &mpsc::UnboundedSender<JSONRPCMessage>,
+    is_initialize: bool,
+    ctx: &OutboundContext,
 ) {
+    let headers = response.headers().clone();
     match response.json::<JSONRPCMessage>().await {
         Ok(response_msg) => {
-            debug!("HTTP client received response: {:?}", response_msg);
-            if let Err(e) = sender.unbounded_send(response_msg) {
-                error!("Failed to forward response: {}", e);
-            }
+            forward_parsed_response(msg, response_msg, is_initialize, &headers, ctx).await
         }
         Err(e) => {
             error!("Failed to parse response: {}", e);
@@ -165,9 +222,25 @@ async fn forward_response(
                 msg,
                 INTERNAL_ERROR,
                 format!("Invalid response from server: {e}"),
-                sender,
+                &ctx.sender,
             );
         }
+    }
+}
+
+/// Update initialization state and forward one parsed HTTP response.
+async fn forward_parsed_response(
+    request: &JSONRPCMessage,
+    response: JSONRPCMessage,
+    is_initialize: bool,
+    headers: &HeaderMap,
+    ctx: &OutboundContext,
+) {
+    debug!("HTTP client received response: {:?}", response);
+    update_negotiated_protocol_version(request, &response, ctx).await;
+    update_session_id(is_initialize, headers, ctx).await;
+    if let Err(error) = ctx.sender.unbounded_send(response) {
+        error!("Failed to forward response: {}", error);
     }
 }
 
@@ -187,10 +260,12 @@ fn response_is_sse(response: &reqwest::Response) -> bool {
 async fn forward_sse_response(
     msg: &JSONRPCMessage,
     response: reqwest::Response,
-    sender: &mpsc::UnboundedSender<JSONRPCMessage>,
+    is_initialize: bool,
+    ctx: &OutboundContext,
     last_event_id: &Arc<Mutex<Option<String>>>,
 ) {
     let mut saw_response = false;
+    let headers = response.headers().clone();
     let stream = response.bytes_stream().eventsource();
     futures::pin_mut!(stream);
     while let Some(event) = stream.next().await {
@@ -203,7 +278,9 @@ async fn forward_sse_response(
                 }
                 if let Ok(message) = serde_json::from_str::<JSONRPCMessage>(&event.data) {
                     saw_response |= matches!(message, JSONRPCMessage::Response(_));
-                    if sender.unbounded_send(message).is_err() {
+                    update_negotiated_protocol_version(msg, &message, ctx).await;
+                    update_session_id(is_initialize, &headers, ctx).await;
+                    if ctx.sender.unbounded_send(message).is_err() {
                         return;
                     }
                 }
@@ -219,7 +296,7 @@ async fn forward_sse_response(
             msg,
             INTERNAL_ERROR,
             "Server closed the response stream without responding".to_string(),
-            sender,
+            &ctx.sender,
         );
     }
 }
@@ -228,6 +305,7 @@ async fn forward_sse_response(
 async fn handle_http_response(
     msg: &JSONRPCMessage,
     response: reqwest::Response,
+    is_initialize: bool,
     ctx: &OutboundContext,
 ) {
     let status = response.status();
@@ -246,9 +324,9 @@ async fn handle_http_response(
     }
 
     if response_is_sse(&response) {
-        forward_sse_response(msg, response, &ctx.sender, &ctx.last_event_id).await;
+        forward_sse_response(msg, response, is_initialize, ctx, &ctx.last_event_id).await;
     } else {
-        forward_response(msg, response, &ctx.sender).await;
+        forward_response(msg, response, is_initialize, ctx).await;
     }
 }
 
@@ -314,6 +392,7 @@ impl HttpClientTransport {
             session_set: Arc::new(Notify::new()),
             last_event_id: Arc::new(Mutex::new(None)),
             static_headers: HeaderMap::new(),
+            protocol_version: Arc::new(Mutex::new(None)),
             sender: None,
             receiver: None,
             shutdown: CancellationToken::new(),
@@ -358,10 +437,7 @@ async fn connect_sse(ctx: &OutboundContext, shutdown: &CancellationToken) -> Res
         header::ACCEPT,
         HeaderValue::from_static("text/event-stream"),
     );
-    headers.insert(
-        "MCP-Protocol-Version",
-        HeaderValue::from_static(LATEST_PROTOCOL_VERSION),
-    );
+    headers.insert("MCP-Protocol-Version", protocol_version_header(ctx).await?);
     headers.insert(
         "Mcp-Session-Id",
         HeaderValue::from_str(&session_id_value)
@@ -477,7 +553,7 @@ async fn send_outbound(ctx: OutboundContext, msg: JSONRPCMessage) {
     let is_initialize =
         matches!(&msg, JSONRPCMessage::Request(req) if req.request.method == "initialize");
 
-    let request = match outbound_post_request(&ctx).await {
+    let request = match outbound_post_request(&ctx, &msg).await {
         Ok(request) => request,
         Err(error) => {
             forward_prepare_error(&ctx, &msg, &error);
@@ -506,8 +582,7 @@ async fn dispatch_response(
     match response_result {
         Ok(response) => {
             debug!("HTTP response status: {}", response.status());
-            update_session_id(is_initialize, response.headers(), ctx).await;
-            handle_http_response(msg, response, ctx).await;
+            handle_http_response(msg, response, is_initialize, ctx).await;
         }
         Err(e) => {
             error!("Failed to send HTTP request to {}: {:?}", ctx.endpoint, e);
@@ -552,7 +627,7 @@ async fn retry_unauthorized(
         );
         return None;
     }
-    match outbound_post_request(ctx).await {
+    match outbound_post_request(ctx, msg).await {
         Ok(request) => Some(send_http_message(ctx, request.headers, msg).await),
         Err(error) => {
             error!("Failed to prepare retried HTTP request headers: {}", error);
@@ -595,6 +670,7 @@ impl Transport for HttpClientTransport {
             session_set: self.session_set.clone(),
             last_event_id: self.last_event_id.clone(),
             static_headers: self.static_headers.clone(),
+            protocol_version: self.protocol_version.clone(),
             #[cfg(feature = "auth")]
             oauth_client: self.oauth_client.clone(),
             sender,
@@ -647,7 +723,10 @@ struct OutboundPostRequest {
 }
 
 /// Builds HTTP POST request data for one outbound JSON-RPC message.
-async fn outbound_post_request(ctx: &OutboundContext) -> Result<OutboundPostRequest> {
+async fn outbound_post_request(
+    ctx: &OutboundContext,
+    message: &JSONRPCMessage,
+) -> Result<OutboundPostRequest> {
     let mut headers = ctx.static_headers.clone();
     headers.insert(
         header::CONTENT_TYPE,
@@ -657,10 +736,17 @@ async fn outbound_post_request(ctx: &OutboundContext) -> Result<OutboundPostRequ
         header::ACCEPT,
         HeaderValue::from_static("application/json, text/event-stream"),
     );
-    headers.insert(
-        "MCP-Protocol-Version",
-        HeaderValue::from_static(LATEST_PROTOCOL_VERSION),
-    );
+    let version = match requested_protocol_version(message) {
+        Some(version) => Some(version),
+        None => ctx.protocol_version.lock().await.clone(),
+    };
+    if let Some(version) = version {
+        headers.insert(
+            "MCP-Protocol-Version",
+            HeaderValue::from_str(version.as_str())
+                .map_err(|_| Error::Protocol("invalid protocol version header".into()))?,
+        );
+    }
 
     if let Some(ref sid) = *ctx.session_id.lock().await {
         headers.insert(

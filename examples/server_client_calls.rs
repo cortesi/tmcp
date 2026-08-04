@@ -29,7 +29,7 @@ use tmcp::{
     Arguments, Error, Result, Server, ServerCtx, ServerHandler,
     schema::{
         self, CallToolResult, ClientCapabilities, CreateMessageParams, ElicitRequestParams,
-        Implementation, InitializeResult, ListToolsResult, Tool, ToolSchema,
+        Implementation, InitializeResult, ListToolsResult, ProtocolVersion, Tool, ToolSchema,
     },
 };
 use tokio::signal::ctrl_c;
@@ -58,7 +58,7 @@ impl ServerHandler for ClientCallsServer {
     async fn initialize(
         &self,
         _context: &ServerCtx,
-        _protocol_version: String,
+        _protocol_version: ProtocolVersion,
         capabilities: ClientCapabilities,
         client_info: Implementation,
     ) -> Result<InitializeResult> {

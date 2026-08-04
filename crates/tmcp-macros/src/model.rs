@@ -8,7 +8,7 @@ use std::ptr;
 
 use syn::parse::Parse;
 
-use crate::parse::{parse_ident_from_expr, parse_protocol_version_strategy};
+use crate::parse::parse_ident_from_expr;
 
 #[derive(Debug)]
 /// Description of an impl method tagged as a tool.
@@ -290,8 +290,6 @@ pub struct ServerMacroArgs {
     pub version: Option<syn::Expr>,
     /// Optional instructions override.
     pub instructions: Option<syn::Expr>,
-    /// Protocol version negotiation strategy.
-    pub protocol_version: Option<ProtocolVersionStrategy>,
     /// Optional ToolSet field name for progressive discovery.
     pub toolset: Option<syn::Ident>,
 }
@@ -329,9 +327,6 @@ impl Parse for ServerMacroArgs {
             } else if ident == "instructions" {
                 let expr: syn::Expr = input.parse()?;
                 args.instructions = Some(expr);
-            } else if ident == "protocol_version" {
-                let expr: syn::Expr = input.parse()?;
-                args.protocol_version = Some(parse_protocol_version_strategy(&expr)?);
             } else if ident == "toolset" {
                 let expr: syn::Expr = input.parse()?;
                 args.toolset = Some(parse_ident_from_expr(&expr)?);
@@ -382,13 +377,4 @@ impl ServerMacroArgs {
             .iter()
             .any(|binding| binding.spec.cap == ForwarderCap::TasksCancel)
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-/// Strategy for selecting the protocol version to use.
-pub enum ProtocolVersionStrategy {
-    /// Always use the latest supported protocol version.
-    Latest,
-    /// Use the client's requested protocol version.
-    Client,
 }

@@ -10,38 +10,9 @@ use syn::{
 };
 
 use crate::model::{
-    FlatParam, GroupMeta, GroupMethod, ParamsKind, ProtocolVersionStrategy, ServerInfo,
-    TaskParamKind, ToolAttrs, ToolMethod, ToolReturnKind, ToolTaskSupport,
+    FlatParam, GroupMeta, GroupMethod, ParamsKind, ServerInfo, TaskParamKind, ToolAttrs,
+    ToolMethod, ToolReturnKind, ToolTaskSupport,
 };
-
-/// Parse the protocol version strategy from a literal or identifier.
-pub fn parse_protocol_version_strategy(expr: &Expr) -> Result<ProtocolVersionStrategy> {
-    let value = match expr {
-        Expr::Lit(ExprLit {
-            lit: Lit::Str(s), ..
-        }) => s.value(),
-        Expr::Path(path) => path
-            .path
-            .segments
-            .last()
-            .map(|segment| segment.ident.to_string())
-            .unwrap_or_default(),
-        _ => {
-            return Err(syn::Error::new(
-                expr.span(),
-                "protocol_version must be \"latest\" or \"client\"",
-            ));
-        }
-    };
-    match value.to_lowercase().as_str() {
-        "latest" => Ok(ProtocolVersionStrategy::Latest),
-        "client" | "requested" => Ok(ProtocolVersionStrategy::Client),
-        _ => Err(syn::Error::new(
-            expr.span(),
-            "protocol_version must be \"latest\" or \"client\"",
-        )),
-    }
-}
 
 /// Collect doc comment strings from attributes, preserving paragraph breaks.
 ///

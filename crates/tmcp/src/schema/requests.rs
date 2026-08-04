@@ -24,7 +24,7 @@ pub enum ClientRequest {
         /// The latest version of the Model Context Protocol that the client
         /// supports. The client MAY decide to support older versions as well.
         #[serde(rename = "protocolVersion")]
-        protocol_version: String,
+        protocol_version: ProtocolVersion,
         /// Client capabilities advertised to the server.
         capabilities: Box<ClientCapabilities>,
         #[serde(rename = "clientInfo")]
@@ -208,12 +208,12 @@ impl ClientRequest {
 
     /// Create a new Initialize request
     pub fn initialize(
-        protocol_version: impl Into<String>,
+        protocol_version: ProtocolVersion,
         capabilities: ClientCapabilities,
         client_info: Implementation,
     ) -> Self {
         Self::Initialize {
-            protocol_version: protocol_version.into(),
+            protocol_version,
             capabilities: Box::new(capabilities),
             client_info,
             _meta: None,

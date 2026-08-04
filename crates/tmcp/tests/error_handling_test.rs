@@ -7,7 +7,11 @@
 mod tests {
     use std::collections::HashMap;
 
-    use tmcp::{Arguments, Error, Result, ServerCtx, ServerHandler, ToolError, schema, testutils};
+    use tmcp::{
+        Arguments, Error, Result, ServerCtx, ServerHandler, ToolError,
+        schema::{self, ProtocolVersion},
+        testutils,
+    };
     use tokio::sync::mpsc;
 
     fn create_test_context() -> ServerCtx {
@@ -26,7 +30,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: schema::ClientCapabilities,
                 _client_info: schema::Implementation,
             ) -> Result<schema::InitializeResult> {
@@ -63,7 +67,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: schema::ClientCapabilities,
                 _client_info: schema::Implementation,
             ) -> Result<schema::InitializeResult> {
@@ -188,7 +192,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: schema::ClientCapabilities,
                 _client_info: schema::Implementation,
             ) -> Result<schema::InitializeResult> {
@@ -242,7 +246,7 @@ mod tests {
         let init_result = conn
             .initialize(
                 &context,
-                schema::LATEST_PROTOCOL_VERSION.to_string(),
+                "2025-11-25".parse().unwrap(),
                 schema::ClientCapabilities::default(),
                 schema::Implementation::new("test-client", "1.0.0"),
             )
@@ -278,7 +282,7 @@ mod tests {
             async fn initialize(
                 &self,
                 _context: &ServerCtx,
-                _protocol_version: String,
+                _protocol_version: ProtocolVersion,
                 _capabilities: schema::ClientCapabilities,
                 _client_info: schema::Implementation,
             ) -> Result<schema::InitializeResult> {
@@ -313,7 +317,7 @@ mod tests {
         let init_result = conn
             .initialize(
                 &context,
-                schema::LATEST_PROTOCOL_VERSION.to_string(),
+                "2025-11-25".parse().unwrap(),
                 schema::ClientCapabilities::default(),
                 schema::Implementation::new("test-client", "1.0.0"),
             )

@@ -8,8 +8,8 @@ mod tests {
         inspect_server,
         schema::{
             ClientCapabilities, Cursor, Implementation, InitializeResult, ListPromptsResult,
-            ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt, Resource,
-            ResourceTemplate, ServerNotification, Tool, ToolSchema,
+            ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt,
+            ProtocolVersion, Resource, ResourceTemplate, ServerNotification, Tool, ToolSchema,
         },
         testutils::{connected_client_and_server, shutdown_client_and_server},
     };
@@ -27,7 +27,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> Result<InitializeResult> {
@@ -93,7 +93,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> Result<InitializeResult> {
