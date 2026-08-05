@@ -11,7 +11,6 @@ use std::sync::{
 use tmcp::{
     Arguments, Result, Server, ServerCtx, ToolFuture, ToolSet, Visibility, mcp_server,
     schema::{CallToolResult, Tool, ToolSchema},
-    tool,
 };
 
 /// Server demonstrating predicate-based tool visibility.

@@ -15,6 +15,8 @@
 //! - `version`: Override the server version used in initialization
 //! - `instructions`: Override the server instructions used in initialization
 //! - `toolset`: Use a ToolSet field for progressive discovery
+//! - `tools`: Delegate a static list of tools to annotated free functions
+//! - `tool_state_fn`: Resolve state for the delegated free functions
 //! - `resources_fn`: Forward `resources/list` to an async method
 //! - `read_resource_fn`: Forward `resources/read` to an async method
 //! - `resource_templates_fn`: Forward `resources/templates/list` to an async method
@@ -36,12 +38,17 @@
 //! async fn tool_name(&self) -> ToolResult<T>
 //! async fn tool_name(&self, context: &ServerCtx, a: Type1, b: Type2) -> ToolResult<T>
 //! async fn tool_name(&self, a: Type1, b: Type2) -> ToolResult<T>
+//! async fn delegated(state: &State, context: &ServerCtx, params: ToolParams) -> ToolResult<T>
 //! ```
 //!
 //! The `context: &ServerCtx` parameter is optional. Tools may also omit parameters or
 //! accept `()` for parameter-less tools.
 //! Single-argument tools still default to struct-style parameters; use `#[tool(flat)]`
 //! to force flat argument handling for one-argument tools.
+//!
+//! A delegated function uses the same optional context, task, parameter, and return shapes.
+//! Its first parameter is a shared state reference. The server resolver receives
+//! unchanged `Option<&Arguments>` before typed decoding and returns `ToolResult<State>`.
 //!
 //! The parameter struct (ToolParams in this example) must implement `schemars::JsonSchema`
 //! and `serde::Deserialize`.
@@ -226,13 +233,23 @@ pub fn mcp_server(
     }
 }
 
-/// Mark a method as an mcp tool.
+/// Mark a server method or delegated free function as an MCP tool.
 #[proc_macro_attribute]
 pub fn tool(
-    _attr: proc_macro::TokenStream,
+    attr: proc_macro::TokenStream,
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    input
+    let attr = TokenStream::from(attr);
+    let input = TokenStream::from(input);
+    if syn::parse2::<syn::ItemFn>(input.clone())
+        .is_ok_and(|function| matches!(function.sig.inputs.first(), Some(syn::FnArg::Receiver(_))))
+    {
+        return input.into();
+    }
+    match codegen::expand_free_tool(&attr, &input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
 }
 
 /// Mark a group impl block or group factory method.

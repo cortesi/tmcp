@@ -4,7 +4,7 @@
 //!   cargo run --example progressive_server
 
 use tmcp::{
-    Group, Result, Server, ToolResult, ToolSet, group, mcp_server, tool, tool_params, tool_result,
+    Group, Result, Server, ToolResult, ToolSet, group, mcp_server, tool_params, tool_result,
 };
 
 /// Parameters for the group echo tool.

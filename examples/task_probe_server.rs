@@ -21,7 +21,7 @@ use tmcp::{
         self, CallToolResult, CancelTaskResult, CreateTaskResult, GetTaskResult, ListTasksResult,
         Task, TaskMetadata, TaskStatus,
     },
-    tool, tool_params,
+    tool_params,
 };
 
 /// Input accepted by the task probe tool.

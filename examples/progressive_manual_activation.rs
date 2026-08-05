@@ -10,7 +10,7 @@ use std::sync::{
 
 use tmcp::{
     Group, Result, Server, ServerCtx, ToolResult, ToolSet, group, mcp_server,
-    schema::CallToolResult, tool,
+    schema::CallToolResult,
 };
 
 /// Shared state for the workspace group.

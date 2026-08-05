@@ -6,7 +6,7 @@
 
 use std::ptr;
 
-use syn::parse::Parse;
+use syn::{parse::Parse, spanned::Spanned};
 
 use crate::parse::parse_ident_from_expr;
 
@@ -29,6 +29,17 @@ pub struct ToolMethod {
     pub return_kind: ToolReturnKind,
     /// Parsed tool attribute metadata.
     pub attrs: ToolAttrs,
+}
+
+#[derive(Debug)]
+/// Description of a free function tagged as a delegated tool.
+pub struct FreeToolInfo {
+    /// Tool metadata shared with method tools.
+    pub tool: ToolMethod,
+    /// State type accepted by the function's first parameter.
+    pub state_ty: syn::Type,
+    /// Visibility of the free function and its generated descriptor.
+    pub visibility: syn::Visibility,
 }
 
 #[derive(Debug)]
@@ -292,6 +303,10 @@ pub struct ServerMacroArgs {
     pub instructions: Option<syn::Expr>,
     /// Optional ToolSet field name for progressive discovery.
     pub toolset: Option<syn::Ident>,
+    /// Free tool functions delegated to by the server.
+    pub tools: Vec<syn::Path>,
+    /// Callback that resolves state for delegated tools.
+    pub tool_state_fn: Option<syn::Ident>,
 }
 
 impl Parse for ServerMacroArgs {
@@ -330,6 +345,31 @@ impl Parse for ServerMacroArgs {
             } else if ident == "toolset" {
                 let expr: syn::Expr = input.parse()?;
                 args.toolset = Some(parse_ident_from_expr(&expr)?);
+            } else if ident == "tools" {
+                if !args.tools.is_empty() {
+                    return Err(syn::Error::new(ident.span(), "duplicate argument: tools"));
+                }
+                let array: syn::ExprArray = input.parse()?;
+                for element in array.elems {
+                    let syn::Expr::Path(path) = element else {
+                        return Err(syn::Error::new(
+                            element.span(),
+                            "tools entries must be function paths",
+                        ));
+                    };
+                    args.tools.push(path.path);
+                }
+                if args.tools.is_empty() {
+                    return Err(syn::Error::new(ident.span(), "tools must not be empty"));
+                }
+            } else if ident == "tool_state_fn" {
+                if args.tool_state_fn.is_some() {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "duplicate argument: tool_state_fn",
+                    ));
+                }
+                args.tool_state_fn = Some(input.parse()?);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),

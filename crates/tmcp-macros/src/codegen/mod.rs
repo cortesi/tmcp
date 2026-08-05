@@ -9,18 +9,214 @@ pub mod group;
 pub mod server;
 pub mod toolset;
 
+use std::collections::HashSet;
+
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Result, spanned::Spanned};
+use syn::{Result, ext::IdentExt, spanned::Spanned};
 
 use crate::{
     model::{
         ParamsKind, ServerInfo, ServerMacroArgs, TaskParamKind, ToolMethod, ToolReturnKind,
         ToolTaskSupport,
     },
-    parse::{is_call_tool_result_type, parse_impl_block},
-    validate::{validate_custom_initialize_fn, validate_server_forwarders},
+    parse::{is_call_tool_result_type, parse_free_tool_function, parse_impl_block},
+    validate::{validate_custom_initialize_fn, validate_server_forwarders, validate_tool_state_fn},
 };
+
+/// Return the hidden descriptor type path for a delegated tool function path.
+fn delegated_descriptor_path(path: &syn::Path) -> syn::Path {
+    let mut path = path.clone();
+    let last = path.segments.last_mut().expect("tool paths are non-empty");
+    last.ident = format_ident!("__TmcpTool_{}", last.ident.unraw());
+    path
+}
+
+/// Expand a free tool function and its schema and dispatch descriptor.
+pub fn expand_free_tool(attr: &TokenStream, input: &TokenStream) -> Result<TokenStream> {
+    let function = syn::parse2::<syn::ItemFn>(input.clone())?;
+    let info = parse_free_tool_function(attr, &function)?;
+    let tool = &info.tool;
+    let function_name = &tool.ident;
+    let descriptor_name = format_ident!("__TmcpTool_{}", function_name.unraw());
+    let visibility = &info.visibility;
+    let state_ty = &info.state_ty;
+    let name = &tool.name;
+    let name_expr = quote! { Self::NAME };
+    let schema = tool_schema_expr(tool, &tool.name);
+    let tool_expr = build_tool_expr(tool, &name_expr, &schema);
+    let supports_tasks = matches!(
+        tool.attrs.task_support,
+        Some(ToolTaskSupport::Optional | ToolTaskSupport::Required)
+    );
+    let defaults = tool.attrs.defaults;
+    let ctx_arg = tool.has_ctx.then(|| quote! { context, });
+    let task_prelude = match tool.task_param {
+        TaskParamKind::None => {
+            let message = format!("tool '{name}' does not accept task-augmented calls");
+            quote! {
+                if task.is_some() {
+                    return Err(::tmcp::Error::InvalidParams(#message.to_string()));
+                }
+            }
+        }
+        TaskParamKind::Required => quote! {
+            let task = task.ok_or_else(|| {
+                ::tmcp::Error::InvalidParams("tool requires task metadata".to_string())
+            })?;
+        },
+        TaskParamKind::Optional => quote! {},
+    };
+    let task_arg = match tool.task_param {
+        TaskParamKind::None => quote! {},
+        TaskParamKind::Required | TaskParamKind::Optional => quote! { task, },
+    };
+    let flat_struct = match &tool.params_kind {
+        ParamsKind::Flat(params) => {
+            let struct_ident = flat_args_struct_ident(&tool.name, &tool.name);
+            let fields = params.iter().map(|param| {
+                let ident = &param.ident;
+                let ty = &param.ty;
+                let attrs = &param.attrs;
+                quote! {
+                    #(#attrs)*
+                    #ident: #ty,
+                }
+            });
+            quote! {
+                #[allow(non_camel_case_types)]
+                #[derive(
+                    ::tmcp::__private::serde::Deserialize,
+                    ::tmcp::__private::schemars::JsonSchema,
+                )]
+                #[serde(crate = "::tmcp::__private::serde")]
+                #[schemars(crate = "::tmcp::__private::schemars")]
+                struct #struct_ident {
+                    #(#fields)*
+                }
+            }
+        }
+        _ => quote! {},
+    };
+    let (args_prelude, params_arg) = match &tool.params_kind {
+        ParamsKind::None => (quote! { let _ = arguments; }, quote! {}),
+        ParamsKind::Unit => (quote! { let _ = arguments; }, quote! { (), }),
+        ParamsKind::Typed(params_type) => {
+            let params_type = params_type.as_ref();
+            (
+                quote! {
+                    let params: #params_type = match ::tmcp::Arguments::into_tool_params(
+                        arguments,
+                        #defaults,
+                    ) {
+                        Ok(params) => params,
+                        Err(err) => {
+                            let result: ::tmcp::schema::CallToolResult = err.into();
+                            return Ok(::tmcp::schema::CallToolResponse::Result(result));
+                        }
+                    };
+                },
+                quote! { params, },
+            )
+        }
+        ParamsKind::Flat(params) => {
+            let struct_ident = flat_args_struct_ident(&tool.name, &tool.name);
+            let param_idents: Vec<_> = params.iter().map(|param| &param.ident).collect();
+            (
+                quote! {
+                    let params: #struct_ident = match ::tmcp::Arguments::into_tool_params(
+                        arguments,
+                        #defaults,
+                    ) {
+                        Ok(params) => params,
+                        Err(err) => {
+                            let result: ::tmcp::schema::CallToolResult = err.into();
+                            return Ok(::tmcp::schema::CallToolResponse::Result(result));
+                        }
+                    };
+                    let #struct_ident { #(#param_idents),* } = params;
+                },
+                quote! { #(#param_idents),*, },
+            )
+        }
+    };
+    let call_expr = quote! {
+        #function_name(
+            ::std::borrow::Borrow::borrow(&state),
+            #ctx_arg
+            #task_arg
+            #params_arg
+        ).await
+    };
+    let call = match &tool.return_kind {
+        ToolReturnKind::CallResult => quote! {
+            #task_prelude
+            #args_prelude
+            #call_expr.map(::tmcp::schema::CallToolResponse::Result)
+        },
+        ToolReturnKind::TaskResult => quote! {
+            #task_prelude
+            #args_prelude
+            #call_expr.map(::tmcp::schema::CallToolResponse::Task)
+        },
+        ToolReturnKind::CallResponse => quote! {
+            #task_prelude
+            #args_prelude
+            #call_expr
+        },
+        ToolReturnKind::ToolResult { .. } => quote! {
+            #task_prelude
+            #args_prelude
+            let result = #call_expr;
+            Ok(match result {
+                Ok(value) => {
+                    let result: ::tmcp::schema::CallToolResult = value.into();
+                    ::tmcp::schema::CallToolResponse::Result(result)
+                }
+                Err(err) => {
+                    let result: ::tmcp::schema::CallToolResult = err.into();
+                    ::tmcp::schema::CallToolResponse::Result(result)
+                }
+            })
+        },
+    };
+
+    Ok(quote! {
+        #function
+
+        #flat_struct
+
+        #[doc(hidden)]
+        #[allow(non_camel_case_types)]
+        #visibility struct #descriptor_name;
+
+        impl #descriptor_name {
+            #[doc(hidden)]
+            pub const NAME: &str = #name;
+            #[doc(hidden)]
+            pub const SUPPORTS_TASKS: bool = #supports_tasks;
+
+            #[doc(hidden)]
+            pub fn schema() -> ::tmcp::schema::Tool {
+                #tool_expr
+            }
+
+            #[doc(hidden)]
+            pub fn call<'a, S>(
+                state: S,
+                context: &'a ::tmcp::ServerCtx,
+                arguments: Option<::tmcp::Arguments>,
+                task: Option<::tmcp::schema::TaskMetadata>,
+            ) -> ::tmcp::ToolCallFuture<'a>
+            where
+                S: ::std::borrow::Borrow<#state_ty> + Send + 'a,
+                #state_ty: Sync,
+            {
+                ::std::boxed::Box::pin(async move { #call })
+            }
+        }
+    })
+}
 
 /// Generate a unique struct identifier for flat tool arguments.
 fn flat_args_struct_ident(server_name: &str, tool_name: &str) -> syn::Ident {
@@ -322,6 +518,33 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
     let args = syn::parse2::<ServerMacroArgs>(attr)?;
     let (impl_block, info) = parse_impl_block(input)?;
 
+    if args.tools.is_empty() && args.tool_state_fn.is_some() {
+        return Err(syn::Error::new(
+            input.span(),
+            "tool_state_fn requires at least one entry in tools",
+        ));
+    }
+    if !args.tools.is_empty() && args.tool_state_fn.is_none() {
+        return Err(syn::Error::new(
+            input.span(),
+            "delegated tools require tool_state_fn",
+        ));
+    }
+    let mut names = HashSet::new();
+    for tool in &info.tools {
+        names.insert(tool.name.clone());
+    }
+    for path in &args.tools {
+        let segment = path.segments.last().expect("tool paths are non-empty");
+        let name = segment.ident.unraw().to_string();
+        if !names.insert(name.clone()) {
+            return Err(syn::Error::new(
+                segment.ident.span(),
+                format!("duplicate tool name `{name}`"),
+            ));
+        }
+    }
+
     if args.toolset.is_none() && !info.groups.is_empty() {
         return Err(syn::Error::new(
             input.span(),
@@ -329,10 +552,14 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
         ));
     }
 
-    if args.toolset.is_none() && info.tools.is_empty() && !args.has_resource_callbacks() {
+    if args.toolset.is_none()
+        && info.tools.is_empty()
+        && args.tools.is_empty()
+        && !args.has_resource_callbacks()
+    {
         return Err(syn::Error::new(
             input.span(),
-            "No tool methods or resource callbacks found. Use #[tool] or a resource callback argument",
+            "No tool methods, delegated tools, or resource callbacks found. Use #[tool], tools, or a resource callback argument",
         ));
     }
 
@@ -341,19 +568,22 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
         validate_custom_initialize_fn(&impl_block, init_fn)?;
     }
     validate_server_forwarders(&impl_block, &args)?;
+    if let Some(tool_state_fn) = &args.tool_state_fn {
+        validate_tool_state_fn(&impl_block, tool_state_fn)?;
+    }
 
     let self_ty = &info.self_ty;
     let (impl_generics, _, where_clause) = info.generics.split_for_impl();
     let toolset_field = args.toolset.as_ref();
     let call_tool = if let Some(toolset_field) = toolset_field {
-        toolset::generate_toolset_call_tool(&info, toolset_field)
+        toolset::generate_toolset_call_tool(&info, &args, toolset_field)
     } else {
-        server::generate_call_tool(&info)
+        server::generate_call_tool(&info, &args)
     };
     let list_tools = if let Some(toolset_field) = toolset_field {
         toolset::generate_toolset_list_tools(toolset_field)
     } else {
-        server::generate_list_tools(&info)
+        server::generate_list_tools(&info, &args)
     };
     let initialize = server::generate_initialize(&info, &args, toolset_field.is_some());
     let server_forwarders = server::generate_server_forwarders(&args);
@@ -362,7 +592,7 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
     let ensure_registered_impl = toolset_field
         .map(|toolset_field| {
             let ensure_registered =
-                toolset::generate_toolset_ensure_registered(&info, toolset_field);
+                toolset::generate_toolset_ensure_registered(&info, &args, toolset_field);
             quote! {
                 impl #impl_generics #self_ty #where_clause {
                     #ensure_registered
@@ -510,7 +740,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("No tool methods or resource callbacks found")
+                .contains("No tool methods, delegated tools, or resource callbacks found")
         );
     }
 
@@ -554,6 +784,36 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate argument: resources_fn")
+        );
+    }
+
+    #[test]
+    fn test_duplicate_delegated_tool_name_rejected() {
+        let input = quote! {
+            impl TestServer {
+                async fn state(
+                    &self,
+                    arguments: Option<&Arguments>,
+                ) -> ToolResult<String> {
+                    unimplemented!()
+                }
+
+                #[tool]
+                async fn echo(&self) -> ToolResult<()> {
+                    Ok(())
+                }
+            }
+        };
+
+        let result = expand_mcp_server(
+            quote! { tools = [concern::echo], tool_state_fn = state },
+            &input,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate tool name `echo`")
         );
     }
 

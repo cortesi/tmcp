@@ -30,6 +30,111 @@ mod tests {
     #[derive(Debug, Default)]
     struct TestServer;
 
+    struct DelegatedState(String);
+
+    #[tool(defaults, read_only)]
+    /// Return a message through delegated state.
+    async fn delegated_echo(
+        state: &DelegatedState,
+        _ctx: &ServerCtx,
+        _task: Option<TaskMetadata>,
+        params: EchoParams,
+    ) -> ToolResult<PingResponse> {
+        Ok(PingResponse {
+            message: format!("{}{}", state.0, params.message),
+        })
+    }
+
+    #[derive(Debug)]
+    struct DelegatingServer {
+        prefix: String,
+    }
+
+    #[mcp_server(tools = [delegated_echo], tool_state_fn = delegated_state)]
+    impl DelegatingServer {
+        async fn delegated_state(
+            &self,
+            arguments: Option<&tmcp::Arguments>,
+        ) -> ToolResult<DelegatedState> {
+            if arguments
+                .and_then(|args| args.get::<String>("message"))
+                .as_deref()
+                == Some("blocked")
+            {
+                return Err(tmcp::ToolError::invalid_input("message is blocked"));
+            }
+            Ok(DelegatedState(self.prefix.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn delegated_tools_preserve_schema_tasks_and_dispatch() {
+        let server = DelegatingServer {
+            prefix: "state:".to_string(),
+        };
+        let ctx = TestServerContext::new();
+
+        let init = server
+            .initialize(
+                ctx.ctx(),
+                "2025-11-25".parse().unwrap(),
+                ClientCapabilities::default(),
+                Implementation::new("test-client", "1.0.0"),
+            )
+            .await
+            .unwrap();
+        assert!(init.capabilities.tasks.is_some());
+
+        let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
+        assert_eq!(tools.tools.len(), 1);
+        let tool = &tools.tools[0];
+        assert_eq!(tool.name, "delegated_echo");
+        assert_eq!(
+            tool.description.as_deref(),
+            Some("Return a message through delegated state.")
+        );
+        assert_eq!(
+            tool.input_schema.0["required"],
+            serde_json::json!(["message"])
+        );
+        assert!(tool.output_schema.is_some());
+        assert!(matches!(
+            tool.execution
+                .as_ref()
+                .and_then(|execution| execution.task_support.as_ref()),
+            Some(ToolTaskSupport::Optional)
+        ));
+
+        let result = server
+            .call_tool(
+                ctx.ctx(),
+                "delegated_echo".to_string(),
+                Some(tmcp::Arguments::new().insert("message", "hello")),
+                None,
+            )
+            .await
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({ "message": "state:hello" }))
+        );
+
+        let result = server
+            .call_tool(
+                ctx.ctx(),
+                "delegated_echo".to_string(),
+                Some(tmcp::Arguments::new().insert("message", "blocked")),
+                None,
+            )
+            .await
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
+        assert_eq!(result.is_error, Some(true));
+    }
+
     #[mcp_server]
     /// Test server with echo and add tools
     impl TestServer {

@@ -7,7 +7,7 @@ use tmcp::{
         ClientCapabilities, Implementation, InitializeResult, LoggingLevel, ProtocolVersion,
         ServerNotification,
     },
-    tool, tool_params, tool_result,
+    tool_params, tool_result,
 };
 
 /// Example server.

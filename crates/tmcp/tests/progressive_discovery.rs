@@ -12,7 +12,6 @@ mod tests {
         ToolSet, Visibility, group, mcp_server,
         schema::{CallToolResult, ServerNotification, Tool, ToolSchema},
         testutils::TestServerContext,
-        tool,
     };
 
     #[derive(Debug, Group)]

@@ -73,6 +73,46 @@ additional client settings.
 
 ---
 
+## Delegated tool tables
+
+Use delegated tools when tool implementations belong outside the server type. Add `#[tool]`
+to each free function. List the function paths in `tools`, and set `tool_state_fn` to one server
+method that resolves their shared state.
+
+```rust
+#[tool(defaults)]
+/// Read one item from the selected workspace.
+async fn read_item(state: &Workspace, params: ReadParams) -> ToolResult<ReadResult> {
+    state.read(params).await
+}
+
+#[mcp_server(
+    tools = [workspace_tools::read_item],
+    tool_state_fn = resolve_workspace,
+)]
+impl AppServer {
+    async fn resolve_workspace(
+        &self,
+        arguments: Option<&tmcp::Arguments>,
+    ) -> ToolResult<Arc<Workspace>> {
+        let workspace_id = arguments
+            .and_then(|args| args.get::<String>("workspaceId"))
+            .ok_or_else(|| ToolError::invalid_input("workspaceId is required"))?;
+        self.workspace(&workspace_id).await
+    }
+}
+```
+
+The resolver runs only after the server matches a delegated tool name. It receives the unchanged
+raw arguments before typed argument decoding. Its result must borrow the state type in the free
+function. For example, `Arc<Workspace>` can supply `&Workspace`.
+
+The macro derives each delegated tool schema from the free function. It also preserves tool
+metadata, task support, argument handling, and output conversion. Duplicate local or delegated
+tool names cause a compile error.
+
+---
+
 ## Example 
 
 From `./examples/weather_server.rs` 

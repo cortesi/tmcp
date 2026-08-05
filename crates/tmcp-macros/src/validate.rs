@@ -218,3 +218,68 @@ pub fn validate_server_forwarders(impl_block: &ItemImpl, args: &ServerMacroArgs)
     }
     Ok(())
 }
+
+/// Return true for `Option<&Arguments>` with a shared reference.
+fn is_optional_arguments_ref(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    let Some(option) = path.path.segments.last() else {
+        return false;
+    };
+    if option.ident != "Option" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &option.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(syn::Type::Reference(reference))) = arguments.args.first()
+    else {
+        return false;
+    };
+    reference.mutability.is_none() && type_path_ends_with(reference.elem.as_ref(), "Arguments")
+}
+
+/// Validate the state resolver used by delegated free tools.
+pub fn validate_tool_state_fn(impl_block: &ItemImpl, fn_name: &syn::Ident) -> Result<()> {
+    let method = find_impl_method(impl_block, fn_name, "tool_state_fn")?;
+    let params = validate_callback_signature(method, "tool_state_fn", 2)?;
+    validate_callback_arg_type(
+        params[1],
+        "tool_state_fn",
+        "Option<&Arguments>",
+        is_optional_arguments_ref,
+    )?;
+
+    let syn::ReturnType::Type(_, ty) = &method.sig.output else {
+        return Err(syn::Error::new(
+            method.sig.output.span(),
+            "tool_state_fn function must return ToolResult<T>",
+        ));
+    };
+    let syn::Type::Path(path) = ty.as_ref() else {
+        return Err(syn::Error::new(
+            ty.span(),
+            "tool_state_fn function must return ToolResult<T>",
+        ));
+    };
+    let Some(result) = path.path.segments.last() else {
+        return Err(syn::Error::new(
+            path.span(),
+            "tool_state_fn function must return ToolResult<T>",
+        ));
+    };
+    if result.ident != "ToolResult"
+        || !matches!(
+            result.arguments,
+            syn::PathArguments::AngleBracketed(ref arguments)
+                if arguments.args.iter().any(|argument| matches!(argument, syn::GenericArgument::Type(_)))
+        )
+    {
+        return Err(syn::Error::new(
+            result.span(),
+            "tool_state_fn function must return ToolResult<T>",
+        ));
+    }
+    Ok(())
+}

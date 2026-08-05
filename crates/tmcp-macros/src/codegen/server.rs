@@ -3,20 +3,46 @@
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+use syn::ext::IdentExt;
 
 use crate::{
-    codegen::{build_tool_expr, generate_tool_call_arm, tool_schema_expr},
+    codegen::{
+        build_tool_expr, delegated_descriptor_path, generate_tool_call_arm, tool_schema_expr,
+    },
     model::{ForwarderParam, ServerInfo, ServerMacroArgs, ToolTaskSupport},
     parse::{generic_param_idents, tokens_mention_ident},
 };
 
 /// Generate the ServerHandler::call_tool implementation.
-pub fn generate_call_tool(info: &ServerInfo) -> TokenStream {
+pub fn generate_call_tool(info: &ServerInfo, args: &ServerMacroArgs) -> TokenStream {
     let receiver = quote! { self };
     let tool_matches = info
         .tools
         .iter()
         .map(|tool| generate_tool_call_arm(tool, &receiver, &info.struct_name));
+    let resolver = args.tool_state_fn.as_ref();
+    let delegated_matches = args.tools.iter().map(|path| {
+        let name = path
+            .segments
+            .last()
+            .expect("tool paths are non-empty")
+            .ident
+            .unraw()
+            .to_string();
+        let descriptor = delegated_descriptor_path(path);
+        quote! {
+            #name => {
+                let state = match self.#resolver(arguments.as_ref()).await {
+                    Ok(state) => state,
+                    Err(error) => {
+                        let result: ::tmcp::schema::CallToolResult = error.into();
+                        return Ok(::tmcp::schema::CallToolResponse::Result(result));
+                    }
+                };
+                #descriptor::call(state, context, arguments, task).await
+            }
+        }
+    });
 
     quote! {
         async fn call_tool(
@@ -29,6 +55,7 @@ pub fn generate_call_tool(info: &ServerInfo) -> TokenStream {
             let _ = &task;
             match name.as_str() {
                 #(#tool_matches)*
+                #(#delegated_matches)*
                 _ => Err(::tmcp::Error::ToolNotFound(name))
             }
         }
@@ -41,8 +68,8 @@ pub fn generate_call_tool(info: &ServerInfo) -> TokenStream {
 /// `LazyLock` when the impl block has no type or const generics; otherwise the
 /// schema expressions may reference generic parameters and must be evaluated
 /// per call.
-pub fn generate_list_tools(info: &ServerInfo) -> TokenStream {
-    let tools: Vec<_> = info
+pub fn generate_list_tools(info: &ServerInfo, args: &ServerMacroArgs) -> TokenStream {
+    let mut tools: Vec<_> = info
         .tools
         .iter()
         .map(|tool| {
@@ -52,6 +79,10 @@ pub fn generate_list_tools(info: &ServerInfo) -> TokenStream {
             build_tool_expr(tool, &name_expr, &schema)
         })
         .collect();
+    tools.extend(args.tools.iter().map(|path| {
+        let descriptor = delegated_descriptor_path(path);
+        quote! { #descriptor::schema() }
+    }));
 
     let tools_expr = quote! { vec![#(#tools),*] };
     let generic_idents = generic_param_idents(&info.generics);
@@ -85,7 +116,7 @@ pub fn generate_list_tools(info: &ServerInfo) -> TokenStream {
 }
 
 /// Determine if task-augmented tool calls should be advertised.
-fn has_task_tool_calls(info: &ServerInfo) -> bool {
+fn local_tools_support_tasks(info: &ServerInfo) -> bool {
     info.tools.iter().any(|tool| {
         matches!(
             tool.attrs.task_support,
@@ -138,7 +169,7 @@ pub fn generate_initialize(
 
     let tools_capability = if toolset {
         ToolCapability::Dynamic
-    } else if info.tools.is_empty() {
+    } else if info.tools.is_empty() && args.tools.is_empty() {
         ToolCapability::Omit
     } else {
         ToolCapability::Static
@@ -189,10 +220,23 @@ fn generate_default_initialize(
         quote! {}
     };
 
-    let task_tools_call_setter = if has_task_tool_calls(info) {
-        quote! { init = init.with_task_tools_call(); }
+    let delegated_task_support = args.tools.iter().map(|path| {
+        let descriptor = delegated_descriptor_path(path);
+        quote! { #descriptor::SUPPORTS_TASKS }
+    });
+    let local_task_support = local_tools_support_tasks(info);
+    let task_tools_call_setter = if args.tools.is_empty() {
+        if local_task_support {
+            quote! { init = init.with_task_tools_call(); }
+        } else {
+            quote! {}
+        }
     } else {
-        quote! {}
+        quote! {
+            if #local_task_support #( || #delegated_task_support )* {
+                init = init.with_task_tools_call();
+            }
+        }
     };
 
     let task_list_setter = if args.tasks_list() {

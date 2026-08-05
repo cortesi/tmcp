@@ -10,8 +10,8 @@ use syn::{
 };
 
 use crate::model::{
-    FlatParam, GroupMeta, GroupMethod, ParamsKind, ServerInfo, TaskParamKind, ToolAttrs,
-    ToolMethod, ToolReturnKind, ToolTaskSupport,
+    FlatParam, FreeToolInfo, GroupMeta, GroupMethod, ParamsKind, ServerInfo, TaskParamKind,
+    ToolAttrs, ToolMethod, ToolReturnKind, ToolTaskSupport,
 };
 
 /// Collect doc comment strings from attributes, preserving paragraph breaks.
@@ -159,6 +159,7 @@ fn strip_tool_param_attrs(impl_block: &mut ItemImpl) {
         if !method.attrs.iter().any(|attr| attr.path().is_ident("tool")) {
             continue;
         }
+        method.attrs.retain(|attr| !attr.path().is_ident("tool"));
         for input in &mut method.sig.inputs {
             let syn::FnArg::Typed(pat_type) = input else {
                 continue;
@@ -545,7 +546,7 @@ fn parse_tool_return(output: &syn::ReturnType) -> Result<ToolReturnKind> {
 
 /// Normalize task-support metadata implied by a task parameter.
 fn normalize_task_support(
-    method: &syn::ImplItemFn,
+    signature: &syn::Signature,
     task_param: TaskParamKind,
     task_support: Option<ToolTaskSupport>,
 ) -> Result<Option<ToolTaskSupport>> {
@@ -554,7 +555,7 @@ fn normalize_task_support(
             return match task_support {
                 Some(ToolTaskSupport::Optional | ToolTaskSupport::Required) => {
                     Err(syn::Error::new(
-                        method.sig.span(),
+                        signature.span(),
                         "task_support = \"optional\" or \"required\" requires a TaskMetadata or \
                          Option<TaskMetadata> parameter",
                     ))
@@ -575,11 +576,109 @@ fn normalize_task_support(
                 _ => ("Option<TaskMetadata>", "optional"),
             };
             Err(syn::Error::new(
-                method.sig.span(),
+                signature.span(),
                 format!("{param} parameters require task_support = \"{requirement}\""),
             ))
         }
     }
+}
+
+/// Parse the context, task, and ordinary parameters after a receiver or state argument.
+fn parse_tool_tail(
+    signature: &syn::Signature,
+    params: &[&syn::FnArg],
+    mut attrs: ToolAttrs,
+) -> Result<(bool, TaskParamKind, ParamsKind, ToolReturnKind, ToolAttrs)> {
+    let mut has_ctx = false;
+    let mut start_index = 0;
+    if let Some(syn::FnArg::Typed(pat_type)) = params.first()
+        && is_server_ctx_type(pat_type.ty.as_ref())
+    {
+        has_ctx = true;
+        start_index = 1;
+    }
+
+    let mut task_param = TaskParamKind::None;
+    if params.len() > start_index
+        && let syn::FnArg::Typed(pat_type) = params[start_index]
+    {
+        let ty = pat_type.ty.as_ref();
+        if is_task_metadata_type(ty) {
+            task_param = TaskParamKind::Required;
+            start_index += 1;
+        } else if is_option_task_metadata_type(ty) {
+            task_param = TaskParamKind::Optional;
+            start_index += 1;
+        }
+    }
+
+    attrs.task_support = normalize_task_support(signature, task_param, attrs.task_support)?;
+
+    let remaining = &params[start_index..];
+    let params_kind = if remaining.is_empty() {
+        if attrs.flat {
+            return Err(syn::Error::new(
+                signature.inputs.span(),
+                "#[tool(flat)] requires at least one non-context parameter",
+            ));
+        }
+        ParamsKind::None
+    } else if remaining.len() == 1 {
+        let syn::FnArg::Typed(pat_type) = remaining[0] else {
+            return Err(syn::Error::new(
+                remaining[0].span(),
+                "parameter must be a typed parameter",
+            ));
+        };
+        let ty = pat_type.ty.as_ref();
+        if is_server_ctx_type(ty) {
+            return Err(syn::Error::new(
+                pat_type.ty.span(),
+                "only one &ServerCtx parameter is allowed",
+            ));
+        }
+        if is_unit_type(ty) {
+            if attrs.flat {
+                return Err(syn::Error::new(
+                    pat_type.ty.span(),
+                    "#[tool(flat)] cannot be used with unit parameters",
+                ));
+            }
+            ParamsKind::Unit
+        } else if attrs.flat {
+            ParamsKind::Flat(vec![parse_flat_param(pat_type)?])
+        } else {
+            ParamsKind::Typed(Box::new(ty.clone()))
+        }
+    } else {
+        let mut flat_params = Vec::new();
+        for param in remaining {
+            let syn::FnArg::Typed(pat_type) = param else {
+                return Err(syn::Error::new(
+                    param.span(),
+                    "flat tool parameters must be typed",
+                ));
+            };
+            let ty = pat_type.ty.as_ref();
+            if is_server_ctx_type(ty) {
+                return Err(syn::Error::new(
+                    pat_type.ty.span(),
+                    "only one &ServerCtx parameter is allowed",
+                ));
+            }
+            if is_unit_type(ty) {
+                return Err(syn::Error::new(
+                    pat_type.ty.span(),
+                    "unit parameters are not supported in flat tool signatures",
+                ));
+            }
+            flat_params.push(parse_flat_param(pat_type)?);
+        }
+        ParamsKind::Flat(flat_params)
+    };
+
+    let return_kind = parse_tool_return(&signature.output)?;
+    Ok((has_ctx, task_param, params_kind, return_kind, attrs))
 }
 
 /// Validate that the receiver of a dispatched method is `&self`.
@@ -629,107 +728,8 @@ pub fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>>
     // Validate the receiver: generated dispatch calls tools through &self.
     validate_self_receiver(&params, "tool")?;
 
-    let mut has_ctx = false;
-    let mut start_index = 1;
-    if params.len() > 1 {
-        match params[1] {
-            syn::FnArg::Typed(pat_type) => {
-                if is_server_ctx_type(pat_type.ty.as_ref()) {
-                    has_ctx = true;
-                    start_index = 2;
-                }
-            }
-            _ => {
-                return Err(syn::Error::new(
-                    params[1].span(),
-                    "second parameter must be &ServerCtx or a typed parameter",
-                ));
-            }
-        }
-    }
-
-    let mut task_param = TaskParamKind::None;
-    if params.len() > start_index
-        && let syn::FnArg::Typed(pat_type) = params[start_index]
-    {
-        let ty = pat_type.ty.as_ref();
-        if is_task_metadata_type(ty) {
-            task_param = TaskParamKind::Required;
-            start_index += 1;
-        } else if is_option_task_metadata_type(ty) {
-            task_param = TaskParamKind::Optional;
-            start_index += 1;
-        }
-    }
-
-    let mut attrs = attrs;
-    attrs.task_support = normalize_task_support(method, task_param, attrs.task_support)?;
-
-    let remaining = &params[start_index..];
-    let params_kind = if remaining.is_empty() {
-        if attrs.flat {
-            return Err(syn::Error::new(
-                method.sig.inputs.span(),
-                "#[tool(flat)] requires at least one non-context parameter",
-            ));
-        }
-        ParamsKind::None
-    } else if remaining.len() == 1 {
-        let syn::FnArg::Typed(pat_type) = remaining[0] else {
-            return Err(syn::Error::new(
-                remaining[0].span(),
-                "parameter must be a typed parameter",
-            ));
-        };
-
-        let ty = pat_type.ty.as_ref();
-        if is_server_ctx_type(ty) {
-            return Err(syn::Error::new(
-                pat_type.ty.span(),
-                "only one &ServerCtx parameter is allowed",
-            ));
-        }
-        if is_unit_type(ty) {
-            if attrs.flat {
-                return Err(syn::Error::new(
-                    pat_type.ty.span(),
-                    "#[tool(flat)] cannot be used with unit parameters",
-                ));
-            }
-            ParamsKind::Unit
-        } else if attrs.flat {
-            ParamsKind::Flat(vec![parse_flat_param(pat_type)?])
-        } else {
-            ParamsKind::Typed(Box::new(ty.clone()))
-        }
-    } else {
-        let mut flat_params = Vec::new();
-        for param in remaining {
-            let syn::FnArg::Typed(pat_type) = param else {
-                return Err(syn::Error::new(
-                    param.span(),
-                    "flat tool parameters must be typed",
-                ));
-            };
-            let ty = pat_type.ty.as_ref();
-            if is_server_ctx_type(ty) {
-                return Err(syn::Error::new(
-                    pat_type.ty.span(),
-                    "only one &ServerCtx parameter is allowed",
-                ));
-            }
-            if is_unit_type(ty) {
-                return Err(syn::Error::new(
-                    pat_type.ty.span(),
-                    "unit parameters are not supported in flat tool signatures",
-                ));
-            }
-            flat_params.push(parse_flat_param(pat_type)?);
-        }
-        ParamsKind::Flat(flat_params)
-    };
-
-    let return_kind = parse_tool_return(&method.sig.output)?;
+    let (has_ctx, task_param, params_kind, return_kind, attrs) =
+        parse_tool_tail(&method.sig, &params[1..], attrs)?;
 
     Ok(Some(ToolMethod {
         ident,
@@ -741,6 +741,67 @@ pub fn parse_tool_method(method: &syn::ImplItemFn) -> Result<Option<ToolMethod>>
         return_kind,
         attrs,
     }))
+}
+
+/// Parse a free function tagged as a delegated tool.
+pub fn parse_free_tool_function(
+    attr: &proc_macro2::TokenStream,
+    function: &syn::ItemFn,
+) -> Result<FreeToolInfo> {
+    if !function.sig.generics.params.is_empty() || function.sig.generics.where_clause.is_some() {
+        return Err(syn::Error::new(
+            function.sig.generics.span(),
+            "delegated tool functions must not be generic",
+        ));
+    }
+    if function.sig.asyncness.is_none() {
+        return Err(syn::Error::new(
+            function.sig.span(),
+            "delegated tool functions must be async",
+        ));
+    }
+    let synthetic: syn::Attribute = if attr.is_empty() {
+        syn::parse_quote!(#[tool])
+    } else {
+        syn::parse_quote!(#[tool(#attr)])
+    };
+    let attrs = parse_tool_attrs(&[synthetic])?.expect("synthetic tool attribute");
+    let params: Vec<_> = function.sig.inputs.iter().collect();
+    let Some(syn::FnArg::Typed(state)) = params.first() else {
+        return Err(syn::Error::new(
+            function.sig.inputs.span(),
+            "delegated tool functions must take a shared state reference first",
+        ));
+    };
+    let syn::Type::Reference(reference) = state.ty.as_ref() else {
+        return Err(syn::Error::new(
+            state.ty.span(),
+            "delegated tool state must be a shared reference",
+        ));
+    };
+    if reference.mutability.is_some() {
+        return Err(syn::Error::new(
+            reference.span(),
+            "delegated tool state must be a shared reference",
+        ));
+    }
+    let (has_ctx, task_param, params_kind, return_kind, attrs) =
+        parse_tool_tail(&function.sig, &params[1..], attrs)?;
+    let ident = function.sig.ident.clone();
+    Ok(FreeToolInfo {
+        tool: ToolMethod {
+            name: ident.unraw().to_string(),
+            ident,
+            docs: extract_doc_comment(&function.attrs),
+            has_ctx,
+            task_param,
+            params_kind,
+            return_kind,
+            attrs,
+        },
+        state_ty: (*reference.elem).clone(),
+        visibility: function.vis.clone(),
+    })
 }
 
 /// Parse a group factory method from an impl item if it has a #[group] attribute.

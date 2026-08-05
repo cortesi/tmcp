@@ -9,6 +9,9 @@ repository.workspace = true
 keywords.workspace = true
 readme.workspace = true
 
+[lib]
+doctest = false
+
 [lints]
 workspace = true
 

@@ -14,7 +14,7 @@
 //!   cargo run --example basic_server                    # Default to TCP mode on 127.0.0.1:3000
 
 use clap::{Parser, Subcommand};
-use tmcp::{Result, Server, ToolResult, mcp_server, tool, tool_params, tool_result};
+use tmcp::{Result, Server, ToolResult, mcp_server, tool_params, tool_result};
 use tokio::signal::ctrl_c;
 use tracing::info;
 use tracing_subscriber::fmt;
