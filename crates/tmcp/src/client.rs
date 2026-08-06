@@ -86,9 +86,9 @@ impl Drop for AbortOnDrop {
 
 /// Handle to an MCP server spawned as a subprocess.
 ///
-/// Returned by [`Client::connect_process`] after successfully spawning and
-/// initializing an MCP server. Contains the process handle for lifecycle
-/// management and the server's initialization response.
+/// Returned by [`Client::connect_process`] or [`Client::connect_child`] after
+/// successfully initializing an MCP server. Contains the process handle for
+/// lifecycle management and the server's initialization response.
 pub struct SpawnedServer {
     /// The spawned server process.
     ///
@@ -98,6 +98,14 @@ pub struct SpawnedServer {
     ///
     /// Contains the server's name, version, and advertised capabilities.
     pub server_info: InitializeResult,
+}
+
+/// Configures a command for an MCP connection over child standard streams.
+fn configure_process_stdio(command: &mut Command) {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
 }
 
 /// In-flight client request with its assigned JSON-RPC request id.
@@ -343,8 +351,21 @@ where
     ///
     /// # Returns
     /// Returns a [`SpawnedServer`] containing the process handle and server info.
-    pub async fn connect_process(&mut self, command: Command) -> Result<SpawnedServer> {
-        let mut process = self.connect_process_raw(command).await?;
+    pub async fn connect_process(&mut self, mut command: Command) -> Result<SpawnedServer> {
+        configure_process_stdio(&mut command);
+        let process = command
+            .spawn()
+            .map_err(|error| Error::Transport(format!("Failed to spawn process: {error}")))?;
+        self.connect_child(process).await
+    }
+
+    /// Connect to an already-spawned child and initialize the MCP handshake.
+    ///
+    /// The child must have piped standard input and output. This method takes
+    /// ownership of those pipes, connects the client, and runs initialization.
+    /// It kills the child if pipe attachment or initialization fails.
+    pub async fn connect_child(&mut self, process: Child) -> Result<SpawnedServer> {
+        let mut process = self.attach_child(process).await?;
         match self.init().await {
             Ok(server_info) => Ok(SpawnedServer {
                 process,
@@ -371,33 +392,37 @@ where
     /// Returns the spawned Child process handle, allowing you to manage the
     /// process lifecycle (e.g., wait for completion, kill it, etc.)
     pub async fn connect_process_raw(&mut self, mut command: Command) -> Result<Child> {
-        // Configure the command to use piped stdio
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()); // Let stderr pass through for debugging
-
-        // Spawn the process
-        let mut child = command
+        configure_process_stdio(&mut command);
+        let child = command
             .spawn()
-            .map_err(|e| Error::Transport(format!("Failed to spawn process: {e}")))?;
+            .map_err(|error| Error::Transport(format!("Failed to spawn process: {error}")))?;
+        self.attach_child(child).await
+    }
 
-        // Take ownership of stdin and stdout
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| Error::Transport("Failed to capture process stdin".to_string()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Transport("Failed to capture process stdout".to_string()))?;
+    /// Attaches a child's piped standard streams without initialization.
+    async fn attach_child(&mut self, mut child: Child) -> Result<Child> {
+        let result =
+            async {
+                let stdin = child.stdin.take().ok_or_else(|| {
+                    Error::Transport("Failed to capture process stdin".to_string())
+                })?;
+                let stdout = child.stdout.take().ok_or_else(|| {
+                    Error::Transport("Failed to capture process stdout".to_string())
+                })?;
 
-        // Connect using the process streams
-        // Note: We swap the order here - the child's stdout is our reader,
-        // and the child's stdin is our writer
-        self.connect_stream_raw(stdout, stdin).await?;
+                self.connect_stream_raw(stdout, stdin).await
+            }
+            .await;
 
-        Ok(child)
+        match result {
+            Ok(()) => Ok(child),
+            Err(error) => {
+                if let Err(kill_error) = child.kill().await {
+                    warn!("Failed to kill process after connection error: {kill_error}");
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Send a request and return its id plus a typed response future.
@@ -1540,6 +1565,48 @@ mod tests {
         } else {
             panic!("Expected Transport error");
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_child_initializes_pre_spawned_process() {
+        let response = r#"{"jsonrpc":"2.0","id":"req-1","result":{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"child-server","version":"1.0.0"}}}"#;
+        let script =
+            format!("read _request; printf '%s\\n' '{response}'; read _initialized; sleep 30");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let child = command.spawn().expect("spawn child fixture");
+        let mut client = Client::new("test-client", "1.0.0");
+
+        let mut server = client
+            .connect_child(child)
+            .await
+            .expect("connect pre-spawned child");
+
+        assert_eq!(server.server_info.server_info.name, "child-server");
+        server.process.kill().await.expect("kill child fixture");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_child_rejects_missing_pipes() {
+        let child = Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .expect("spawn child without pipes");
+        let mut client = Client::new("test-client", "1.0.0");
+
+        let error = match client.connect_child(child).await {
+            Ok(_) => panic!("missing pipes must fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, Error::Transport(message) if message.contains("stdin")));
     }
 
     #[tokio::test]
