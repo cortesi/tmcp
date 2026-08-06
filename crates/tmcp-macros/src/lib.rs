@@ -18,6 +18,7 @@
 //! - `tools`: Delegate a static list of tools to annotated free functions
 //! - `tool_groups`: Delegate generated groups of annotated free functions
 //! - `tool_state_fn`: Resolve state for the delegated free functions
+//! - `tool_state_param`: Add one raw state-selector argument to delegated tool schemas
 //! - `resources_fn`: Forward `resources/list` to an async method
 //! - `read_resource_fn`: Forward `resources/read` to an async method
 //! - `resource_templates_fn`: Forward `resources/templates/list` to an async method
@@ -50,6 +51,8 @@
 //! A delegated function uses the same optional context, task, parameter, and return shapes.
 //! Its first parameter is a shared state reference. The server resolver receives
 //! unchanged `Option<&Arguments>` before typed decoding and returns `ToolResult<State>`.
+//! `tool_state_param = (name: Type, "Description.")` adds one required argument to each
+//! delegated tool schema.
 //!
 //! The parameter struct (ToolParams in this example) must implement `schemars::JsonSchema`
 //! and `serde::Deserialize`.
@@ -208,6 +211,8 @@ use proc_macro2::TokenStream;
 
 /// Code generation for servers, toolsets, and groups.
 mod codegen;
+/// Code generation for delegating server-handler impls.
+mod delegate;
 /// Derive expansion for tool response types and derive-merging attributes.
 mod derives;
 /// Data model shared between parsing, validation, and code generation.
@@ -231,6 +236,18 @@ pub fn mcp_server(
     match codegen::expand_mcp_server(attr_tokens, &input_tokens) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// Delegate each omitted `ServerHandler` method to one inner handler.
+#[proc_macro_attribute]
+pub fn delegate_server_handler(
+    attr: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    match delegate::expand(TokenStream::from(attr), TokenStream::from(input)) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
     }
 }
 

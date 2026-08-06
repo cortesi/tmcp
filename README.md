@@ -89,6 +89,7 @@ async fn read_item(state: &Workspace, params: ReadParams) -> ToolResult<ReadResu
 #[mcp_server(
     tools = [workspace_tools::read_item],
     tool_state_fn = resolve_workspace,
+    tool_state_param = (workspaceId: String, "Workspace identifier."),
 )]
 impl AppServer {
     async fn resolve_workspace(
@@ -104,12 +105,18 @@ impl AppServer {
 ```
 
 The resolver runs only after the server matches a delegated tool name. It receives the unchanged
-raw arguments before typed argument decoding. Its result must borrow the state type in the free
-function. For example, `Arc<Workspace>` can supply `&Workspace`.
+raw arguments before typed argument decoding. `tool_state_param` adds one required property to
+each delegated tool schema. Its result must borrow the state type in the free function. For
+example, `Arc<Workspace>` can supply `&Workspace`.
 
 The macro derives each delegated tool schema from the free function. It also preserves tool
 metadata, task support, argument handling, and output conversion. Duplicate local or delegated
 tool names cause a compile error.
+
+The macro also generates `ServerType::NAMES` for tools declared as methods on the server.
+Use `#[delegate_server_handler(self.inner)]` on a `ServerHandler` impl that wraps another
+handler. The attribute forwards each omitted protocol method. Methods in the wrapper impl keep
+their custom behavior.
 
 ---
 

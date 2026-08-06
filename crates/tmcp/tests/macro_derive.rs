@@ -8,7 +8,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use tmcp::{
         Error, Result, ServerCtx, ServerHandler, ToolGroup, ToolResponse, ToolResult, ToolSet,
-        mcp_server, schema::*, testutils::TestServerContext, tool, tool_group,
+        delegate_server_handler, mcp_server, schema::*, testutils::TestServerContext, tool,
+        tool_group,
     };
 
     #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -70,12 +71,23 @@ mod tests {
         prefix: String,
     }
 
-    #[mcp_server(tool_groups = [DelegatedTools], tool_state_fn = delegated_state)]
+    #[mcp_server(
+        tool_groups = [DelegatedTools],
+        tool_state_fn = delegated_state,
+        tool_state_param = (tenant_id: String, "Tenant identifier.")
+    )]
     impl GroupDelegatingServer {
         async fn delegated_state(
             &self,
-            _arguments: Option<&tmcp::Arguments>,
+            arguments: Option<&tmcp::Arguments>,
         ) -> ToolResult<DelegatedState> {
+            if arguments
+                .and_then(|args| args.get::<String>("tenant_id"))
+                .as_deref()
+                != Some("acme")
+            {
+                return Err(tmcp::ToolError::invalid_input("invalid tenant id"));
+            }
             Ok(DelegatedState(self.prefix.clone()))
         }
     }
@@ -104,13 +116,21 @@ mod tests {
     #[mcp_server(
         toolset = "tools",
         tool_groups = [DelegatedTools],
-        tool_state_fn = delegated_state
+        tool_state_fn = delegated_state,
+        tool_state_param = (tenant_id: String, "Tenant identifier.")
     )]
     impl ToolsetGroupServer {
         async fn delegated_state(
             &self,
-            _arguments: Option<&tmcp::Arguments>,
+            arguments: Option<&tmcp::Arguments>,
         ) -> ToolResult<DelegatedState> {
+            if arguments
+                .and_then(|args| args.get::<String>("tenant_id"))
+                .as_deref()
+                != Some("acme")
+            {
+                return Err(tmcp::ToolError::invalid_input("invalid tenant id"));
+            }
             Ok(DelegatedState("toolset:".to_string()))
         }
     }
@@ -228,6 +248,12 @@ mod tests {
         assert!(init.capabilities.tasks.is_some());
         let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
         assert_eq!(tools.tools.len(), 2);
+        assert!(tools.tools.iter().all(|tool| {
+            tool.input_schema.required() == Some(vec!["message", "tenant_id"])
+                && tool.input_schema.properties().is_some_and(|properties| {
+                    properties["tenant_id"]["description"] == "Tenant identifier."
+                })
+        }));
         assert!(
             tools
                 .tools
@@ -239,7 +265,11 @@ mod tests {
             .call_tool(
                 ctx.ctx(),
                 "delegated_upper".to_string(),
-                Some(tmcp::Arguments::new().insert("message", "hello")),
+                Some(
+                    tmcp::Arguments::new()
+                        .insert("message", "hello")
+                        .insert("tenant_id", "acme"),
+                ),
                 None,
             )
             .await
@@ -275,11 +305,21 @@ mod tests {
 
         let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
         assert_eq!(tools.tools.len(), 2);
+        assert!(
+            tools
+                .tools
+                .iter()
+                .all(|tool| tool.input_schema.is_required("tenant_id"))
+        );
         let result = server
             .call_tool(
                 ctx.ctx(),
                 "delegated_echo".to_string(),
-                Some(tmcp::Arguments::new().insert("message", "hello")),
+                Some(
+                    tmcp::Arguments::new()
+                        .insert("message", "hello")
+                        .insert("tenant_id", "acme"),
+                ),
                 None,
             )
             .await
@@ -322,6 +362,53 @@ mod tests {
         }
     }
 
+    struct DelegatingHandler {
+        inner: TestServer,
+    }
+
+    #[delegate_server_handler(self.inner)]
+    #[async_trait::async_trait]
+    impl ServerHandler for DelegatingHandler {
+        async fn list_tools(
+            &self,
+            _context: &ServerCtx,
+            _cursor: Option<Cursor>,
+        ) -> Result<ListToolsResult> {
+            Ok(ListToolsResult::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn delegated_handler_forwards_omitted_methods_and_keeps_overrides() {
+        let server = DelegatingHandler { inner: TestServer };
+        let ctx = TestServerContext::new();
+        let init = server
+            .initialize(
+                ctx.ctx(),
+                "2025-11-25".parse().unwrap(),
+                ClientCapabilities::default(),
+                Implementation::new("test-client", "1.0.0"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(init.server_info.name, "test_server");
+        assert!(
+            server
+                .list_tools(ctx.ctx(), None)
+                .await
+                .unwrap()
+                .tools
+                .is_empty()
+        );
+        let response = server
+            .handle_request(ctx.ctx(), ClientRequest::list_tools(None))
+            .await
+            .unwrap();
+        let tools: ListToolsResult = serde_json::from_value(response).unwrap();
+        assert!(tools.tools.is_empty());
+        server.pong(ctx.ctx()).await.unwrap();
+    }
+
     #[tokio::test]
     async fn test_initialize() {
         let server = TestServer;
@@ -336,6 +423,8 @@ mod tests {
             )
             .await
             .unwrap();
+
+        assert_eq!(TestServer::NAMES, ["echo", "add", "multiply", "ping"]);
 
         assert_eq!(result.server_info.name, "test_server");
         assert_eq!(

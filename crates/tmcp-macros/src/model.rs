@@ -288,6 +288,37 @@ pub struct ForwarderBinding {
     pub fn_name: syn::Ident,
 }
 
+/// One raw argument that resolves delegated tool state.
+#[derive(Debug)]
+pub struct ToolStateParam {
+    /// Argument name inserted into each delegated tool schema.
+    pub name: syn::Ident,
+    /// Argument type used to generate the property schema.
+    pub ty: syn::Type,
+    /// Argument description inserted into the property schema.
+    pub description: syn::LitStr,
+}
+
+impl Parse for ToolStateParam {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let content;
+        syn::parenthesized!(content in input);
+        let name = content.parse()?;
+        content.parse::<syn::Token![:]>()?;
+        let ty = content.parse()?;
+        content.parse::<syn::Token![,]>()?;
+        let description = content.parse()?;
+        if !content.is_empty() {
+            return Err(content.error("unexpected tool_state_param content"));
+        }
+        Ok(Self {
+            name,
+            ty,
+            description,
+        })
+    }
+}
+
 #[derive(Debug, Default)]
 /// Parsed macro arguments for #[mcp_server].
 pub struct ServerMacroArgs {
@@ -309,6 +340,8 @@ pub struct ServerMacroArgs {
     pub tool_groups: Vec<syn::Path>,
     /// Callback that resolves state for delegated tools.
     pub tool_state_fn: Option<syn::Ident>,
+    /// Raw argument required to resolve delegated tool state.
+    pub tool_state_param: Option<ToolStateParam>,
 }
 
 impl Parse for ServerMacroArgs {
@@ -395,6 +428,14 @@ impl Parse for ServerMacroArgs {
                     ));
                 }
                 args.tool_state_fn = Some(input.parse()?);
+            } else if ident == "tool_state_param" {
+                if args.tool_state_param.is_some() {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "duplicate argument: tool_state_param",
+                    ));
+                }
+                args.tool_state_param = Some(input.parse()?);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),

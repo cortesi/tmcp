@@ -8,6 +8,7 @@ use syn::ext::IdentExt;
 use crate::{
     codegen::{
         build_tool_expr, delegated_descriptor_path, generate_tool_call_arm, tool_schema_expr,
+        with_tool_state_param,
     },
     model::{ForwarderParam, ServerInfo, ServerMacroArgs, ToolTaskSupport},
     parse::{generic_param_idents, tokens_mention_ident},
@@ -105,14 +106,24 @@ pub fn generate_list_tools(info: &ServerInfo, args: &ServerMacroArgs) -> TokenSt
         .collect();
     tools.extend(args.tools.iter().map(|path| {
         let descriptor = delegated_descriptor_path(path);
-        quote! { #descriptor::schema() }
+        with_tool_state_param(quote! { #descriptor::schema() }, args)
     }));
     let groups = &args.tool_groups;
+    let group_tools = groups.iter().map(|group| {
+        let tool = with_tool_state_param(quote! { tool }, args);
+        quote! {
+            tools.extend(
+                <#group as ::tmcp::ToolGroup>::schemas()
+                    .into_iter()
+                    .map(|tool| #tool),
+            );
+        }
+    });
 
     let tools_expr = quote! {
         {
             let mut tools = vec![#(#tools),*];
-            #(tools.extend(<#groups as ::tmcp::ToolGroup>::schemas());)*
+            #(#group_tools)*
             tools
         }
     };

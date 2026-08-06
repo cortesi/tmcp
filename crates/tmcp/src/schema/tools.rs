@@ -936,6 +936,31 @@ impl ToolSchema {
         self
     }
 
+    /// Add one required property from a `JsonSchema` type.
+    pub fn with_required_property<T: schemars::JsonSchema>(
+        mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        let name = name.into();
+        let mut settings = SchemaSettings::draft2020_12();
+        settings.inline_subschemas = true;
+        settings.meta_schema = None;
+        let mut generator = settings.into_generator();
+        let schema = generator.subschema_for::<T>();
+        let mut value =
+            serde_json::to_value(schema).unwrap_or_else(|_| Value::Object(Default::default()));
+        simplify_schema_value(&mut value);
+        if let Some(object) = value.as_object_mut() {
+            object.insert("description".to_owned(), Value::String(description.into()));
+        }
+        self = self.with_property(name.clone(), value);
+        if !self.is_required(&name) {
+            self = self.with_required(name);
+        }
+        self
+    }
+
     /// Build a schema from a schemars JsonSchema type.
     ///
     /// This preserves the complete schema including descriptions, enums,

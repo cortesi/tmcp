@@ -155,7 +155,8 @@ pub use server::{EmbeddedHttpServer, HttpBuilder};
 pub use server::{Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root
 pub use tmcp_macros::{
-    Group, ToolResponse, group, mcp_server, tool, tool_group, tool_params, tool_result,
+    Group, ToolResponse, delegate_server_handler, group, mcp_server, tool, tool_group, tool_params,
+    tool_result,
 };
 pub use toolset::{
     ActivationHook, Group, GroupConfig, GroupInfo, ToolCallFuture, ToolFuture, ToolSet,

@@ -7,7 +7,7 @@ use syn::ext::IdentExt;
 use crate::{
     codegen::{
         build_tool_expr, delegated_descriptor_path, generate_tool_call_arm,
-        group::generate_group_dispatch_chain, tool_schema_expr,
+        group::generate_group_dispatch_chain, tool_schema_expr, with_tool_state_param,
     },
     model::{ServerInfo, ServerMacroArgs},
 };
@@ -53,9 +53,10 @@ fn generate_toolset_registration(
     });
     let delegated_registrations = args.tools.iter().map(|path| {
         let descriptor = delegated_descriptor_path(path);
+        let tool = with_tool_state_param(quote! { #descriptor::schema() }, args);
         quote! {
             {
-                let tool = #descriptor::schema();
+                let tool = #tool;
                 self.#toolset_field.register_schema(
                     #descriptor::NAME,
                     tool,
@@ -65,8 +66,10 @@ fn generate_toolset_registration(
         }
     });
     let delegated_group_registrations = args.tool_groups.iter().map(|group| {
+        let tool = with_tool_state_param(quote! { tool }, args);
         quote! {
             for tool in <#group as ::tmcp::ToolGroup>::schemas() {
+                let tool = #tool;
                 let name = tool.name.clone();
                 self.#toolset_field.register_schema(
                     &name,

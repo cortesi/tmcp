@@ -25,6 +25,24 @@ use crate::{
     validate::{validate_custom_initialize_fn, validate_server_forwarders, validate_tool_state_fn},
 };
 
+/// Add the declared state parameter to one delegated tool schema.
+fn with_tool_state_param(tool: TokenStream, args: &ServerMacroArgs) -> TokenStream {
+    let Some(param) = &args.tool_state_param else {
+        return tool;
+    };
+    let name = param.name.unraw().to_string();
+    let ty = &param.ty;
+    let description = &param.description;
+    quote! {
+        {
+            let mut tool = #tool;
+            tool.input_schema = tool.input_schema
+                .with_required_property::<#ty>(#name, #description);
+            tool
+        }
+    }
+}
+
 /// Return the hidden descriptor type path for a delegated tool function path.
 fn delegated_descriptor_path(path: &syn::Path) -> syn::Path {
     let mut path = path.clone();
@@ -525,6 +543,12 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
             "tool_state_fn requires at least one entry in tools or tool_groups",
         ));
     }
+    if args.tool_state_param.is_some() && args.tool_state_fn.is_none() {
+        return Err(syn::Error::new(
+            input.span(),
+            "tool_state_param requires tool_state_fn",
+        ));
+    }
     if (!args.tools.is_empty() || !args.tool_groups.is_empty()) && args.tool_state_fn.is_none() {
         return Err(syn::Error::new(
             input.span(),
@@ -590,6 +614,14 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
     let initialize = server::generate_initialize(&info, &args, toolset_field.is_some());
     let server_forwarders = server::generate_server_forwarders(&args);
     let flat_structs = generate_flat_arg_structs(&info);
+    let inherent_names = info.tools.iter().map(|tool| &tool.name);
+
+    let names_impl = quote! {
+        impl #impl_generics #self_ty #where_clause {
+            /// Exact names of tools declared as methods on this server.
+            pub const NAMES: &'static [&'static str] = &[#(#inherent_names),*];
+        }
+    };
 
     let ensure_registered_impl = toolset_field
         .map(|toolset_field| {
@@ -606,6 +638,8 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
     Ok(quote! {
         #(#flat_structs)*
         #impl_block
+
+        #names_impl
 
         #ensure_registered_impl
 
