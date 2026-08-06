@@ -43,6 +43,27 @@ pub fn generate_call_tool(info: &ServerInfo, args: &ServerMacroArgs) -> TokenStr
             }
         }
     });
+    let group_dispatch = args.tool_groups.iter().map(|group| {
+        quote! {
+            if <#group as ::tmcp::ToolGroup>::NAMES.contains(&name.as_str()) {
+                let state = match self.#resolver(arguments.as_ref()).await {
+                    Ok(state) => state,
+                    Err(error) => {
+                        let result: ::tmcp::schema::CallToolResult = error.into();
+                        return Ok(::tmcp::schema::CallToolResponse::Result(result));
+                    }
+                };
+                return <#group as ::tmcp::ToolGroup>::call(
+                    state,
+                    context,
+                    &name,
+                    arguments,
+                    task,
+                )
+                .await;
+            }
+        }
+    });
 
     quote! {
         async fn call_tool(
@@ -56,7 +77,10 @@ pub fn generate_call_tool(info: &ServerInfo, args: &ServerMacroArgs) -> TokenStr
             match name.as_str() {
                 #(#tool_matches)*
                 #(#delegated_matches)*
-                _ => Err(::tmcp::Error::ToolNotFound(name))
+                _ => {
+                    #(#group_dispatch)*
+                    Err(::tmcp::Error::ToolNotFound(name))
+                }
             }
         }
     }
@@ -83,8 +107,15 @@ pub fn generate_list_tools(info: &ServerInfo, args: &ServerMacroArgs) -> TokenSt
         let descriptor = delegated_descriptor_path(path);
         quote! { #descriptor::schema() }
     }));
+    let groups = &args.tool_groups;
 
-    let tools_expr = quote! { vec![#(#tools),*] };
+    let tools_expr = quote! {
+        {
+            let mut tools = vec![#(#tools),*];
+            #(tools.extend(<#groups as ::tmcp::ToolGroup>::schemas());)*
+            tools
+        }
+    };
     let generic_idents = generic_param_idents(&info.generics);
     let body = if !tokens_mention_ident(tools_expr.clone(), &generic_idents) {
         quote! {
@@ -105,6 +136,14 @@ pub fn generate_list_tools(info: &ServerInfo, args: &ServerMacroArgs) -> TokenSt
             _cursor: Option<::tmcp::schema::Cursor>,
         ) -> ::tmcp::Result<::tmcp::schema::ListToolsResult> {
             #body
+            let mut names = ::std::collections::BTreeSet::new();
+            for tool in &tools {
+                if !names.insert(tool.name.as_str()) {
+                    return Err(::tmcp::Error::InvalidConfiguration(
+                        format!("duplicate tool name `{}`", tool.name),
+                    ));
+                }
+            }
             Ok(::tmcp::schema::ListToolsResult {
                 tools,
                 next_cursor: None,
@@ -169,7 +208,7 @@ pub fn generate_initialize(
 
     let tools_capability = if toolset {
         ToolCapability::Dynamic
-    } else if info.tools.is_empty() && args.tools.is_empty() {
+    } else if info.tools.is_empty() && args.tools.is_empty() && args.tool_groups.is_empty() {
         ToolCapability::Omit
     } else {
         ToolCapability::Static
@@ -224,8 +263,11 @@ fn generate_default_initialize(
         let descriptor = delegated_descriptor_path(path);
         quote! { #descriptor::SUPPORTS_TASKS }
     });
+    let group_task_support = args.tool_groups.iter().map(|group| {
+        quote! { <#group as ::tmcp::ToolGroup>::supports_tasks() }
+    });
     let local_task_support = local_tools_support_tasks(info);
-    let task_tools_call_setter = if args.tools.is_empty() {
+    let task_tools_call_setter = if args.tools.is_empty() && args.tool_groups.is_empty() {
         if local_task_support {
             quote! { init = init.with_task_tools_call(); }
         } else {
@@ -233,7 +275,7 @@ fn generate_default_initialize(
         }
     } else {
         quote! {
-            if #local_task_support #( || #delegated_task_support )* {
+            if #local_task_support #( || #delegated_task_support )* #( || #group_task_support )* {
                 init = init.with_task_tools_call();
             }
         }

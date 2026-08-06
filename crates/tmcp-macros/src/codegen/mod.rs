@@ -7,6 +7,7 @@
 
 pub mod group;
 pub mod server;
+pub mod tool_group;
 pub mod toolset;
 
 use std::collections::HashSet;
@@ -518,16 +519,16 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
     let args = syn::parse2::<ServerMacroArgs>(attr)?;
     let (impl_block, info) = parse_impl_block(input)?;
 
-    if args.tools.is_empty() && args.tool_state_fn.is_some() {
+    if args.tools.is_empty() && args.tool_groups.is_empty() && args.tool_state_fn.is_some() {
         return Err(syn::Error::new(
             input.span(),
-            "tool_state_fn requires at least one entry in tools",
+            "tool_state_fn requires at least one entry in tools or tool_groups",
         ));
     }
-    if !args.tools.is_empty() && args.tool_state_fn.is_none() {
+    if (!args.tools.is_empty() || !args.tool_groups.is_empty()) && args.tool_state_fn.is_none() {
         return Err(syn::Error::new(
             input.span(),
-            "delegated tools require tool_state_fn",
+            "delegated tools and tool groups require tool_state_fn",
         ));
     }
     let mut names = HashSet::new();
@@ -555,11 +556,12 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
     if args.toolset.is_none()
         && info.tools.is_empty()
         && args.tools.is_empty()
+        && args.tool_groups.is_empty()
         && !args.has_resource_callbacks()
     {
         return Err(syn::Error::new(
             input.span(),
-            "No tool methods, delegated tools, or resource callbacks found. Use #[tool], tools, or a resource callback argument",
+            "No tool methods, delegated tools, tool groups, or resource callbacks found. Use #[tool], tools, tool_groups, or a resource callback argument",
         ));
     }
 
@@ -736,12 +738,9 @@ mod tests {
 
         let result = expand_mcp_server(TokenStream::new(), &input);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("No tool methods, delegated tools, or resource callbacks found")
-        );
+        assert!(result.unwrap_err().to_string().contains(
+            "No tool methods, delegated tools, tool groups, or resource callbacks found"
+        ));
     }
 
     #[test]

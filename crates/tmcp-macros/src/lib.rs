@@ -16,6 +16,7 @@
 //! - `instructions`: Override the server instructions used in initialization
 //! - `toolset`: Use a ToolSet field for progressive discovery
 //! - `tools`: Delegate a static list of tools to annotated free functions
+//! - `tool_groups`: Delegate generated groups of annotated free functions
 //! - `tool_state_fn`: Resolve state for the delegated free functions
 //! - `resources_fn`: Forward `resources/list` to an async method
 //! - `read_resource_fn`: Forward `resources/read` to an async method
@@ -247,6 +248,25 @@ pub fn tool(
         return input.into();
     }
     match codegen::expand_free_tool(&attr, &input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// Generate a static group of delegated free tools.
+///
+/// The `state` type must match the shared state returned by the enclosing
+/// server's `tool_state_fn`. Every path in `tools` must name a free function
+/// annotated with [`tool`].
+#[proc_macro_attribute]
+pub fn tool_group(
+    attr: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    match codegen::tool_group::expand_tool_group(
+        &TokenStream::from(attr),
+        &TokenStream::from(input),
+    ) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }

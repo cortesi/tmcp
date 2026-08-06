@@ -64,11 +64,24 @@ fn generate_toolset_registration(
             }
         }
     });
+    let delegated_group_registrations = args.tool_groups.iter().map(|group| {
+        quote! {
+            for tool in <#group as ::tmcp::ToolGroup>::schemas() {
+                let name = tool.name.clone();
+                self.#toolset_field.register_schema(
+                    &name,
+                    tool,
+                    ::tmcp::Visibility::Always,
+                )?;
+            }
+        }
+    });
 
     quote! {
         #(#group_registrations)*
         #(#tool_registrations)*
         #(#delegated_registrations)*
+        #(#delegated_group_registrations)*
     }
 }
 
@@ -139,6 +152,27 @@ pub fn generate_toolset_call_tool(
             }
         }
     });
+    let delegated_group_dispatch = args.tool_groups.iter().map(|group| {
+        quote! {
+            if <#group as ::tmcp::ToolGroup>::NAMES.contains(&name) {
+                let state = match handler.#resolver(arguments.as_ref()).await {
+                    Ok(state) => state,
+                    Err(error) => {
+                        let result: ::tmcp::schema::CallToolResult = error.into();
+                        return Ok(::tmcp::schema::CallToolResponse::Result(result));
+                    }
+                };
+                return <#group as ::tmcp::ToolGroup>::call(
+                    state,
+                    context,
+                    name,
+                    arguments,
+                    task,
+                )
+                .await;
+            }
+        }
+    });
 
     quote! {
         async fn call_tool(
@@ -156,6 +190,7 @@ pub fn generate_toolset_call_tool(
                             #(#tool_matches)*
                             #(#delegated_matches)*
                             _ => {
+                                #(#delegated_group_dispatch)*
                                 #group_dispatch
                                 handler
                                     .#toolset_field

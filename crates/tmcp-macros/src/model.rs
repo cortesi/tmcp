@@ -305,6 +305,8 @@ pub struct ServerMacroArgs {
     pub toolset: Option<syn::Ident>,
     /// Free tool functions delegated to by the server.
     pub tools: Vec<syn::Path>,
+    /// Generated delegated-tool groups mounted by the server.
+    pub tool_groups: Vec<syn::Path>,
     /// Callback that resolves state for delegated tools.
     pub tool_state_fn: Option<syn::Ident>,
 }
@@ -361,6 +363,29 @@ impl Parse for ServerMacroArgs {
                 }
                 if args.tools.is_empty() {
                     return Err(syn::Error::new(ident.span(), "tools must not be empty"));
+                }
+            } else if ident == "tool_groups" {
+                if !args.tool_groups.is_empty() {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "duplicate argument: tool_groups",
+                    ));
+                }
+                let array: syn::ExprArray = input.parse()?;
+                for element in array.elems {
+                    let syn::Expr::Path(path) = element else {
+                        return Err(syn::Error::new(
+                            element.span(),
+                            "tool_groups entries must be type paths",
+                        ));
+                    };
+                    args.tool_groups.push(path.path);
+                }
+                if args.tool_groups.is_empty() {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "tool_groups must not be empty",
+                    ));
                 }
             } else if ident == "tool_state_fn" {
                 if args.tool_state_fn.is_some() {

@@ -154,11 +154,37 @@ pub use schema::ToolResponse;
 pub use server::{EmbeddedHttpServer, HttpBuilder};
 pub use server::{Server, ServerHandle, TcpServerHandle};
 // Export user-facing macros directly from the crate root
-pub use tmcp_macros::{Group, ToolResponse, group, mcp_server, tool, tool_params, tool_result};
+pub use tmcp_macros::{
+    Group, ToolResponse, group, mcp_server, tool, tool_group, tool_params, tool_result,
+};
 pub use toolset::{
     ActivationHook, Group, GroupConfig, GroupInfo, ToolCallFuture, ToolFuture, ToolSet,
     ToolSetView, Visibility,
 };
+
+/// Static schema and dispatch contract for a generated delegated-tool group.
+pub trait ToolGroup {
+    /// Shared state resolved by the enclosing server for each tool call.
+    type State: Send + Sync + 'static;
+
+    /// Exact tool names owned by this group.
+    const NAMES: &'static [&'static str];
+
+    /// Builds the MCP schemas for this group's tools.
+    fn schemas() -> Vec<schema::Tool>;
+
+    /// Returns true when any group tool supports task-augmented calls.
+    fn supports_tasks() -> bool;
+
+    /// Dispatches one group-owned tool call.
+    fn call<'a>(
+        state: Self::State,
+        context: &'a ServerCtx,
+        name: &str,
+        arguments: Option<Arguments>,
+        task: Option<schema::TaskMetadata>,
+    ) -> ToolCallFuture<'a>;
+}
 #[doc(hidden)]
 pub use toolset::{GroupDispatch, GroupRegistration};
 

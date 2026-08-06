@@ -7,8 +7,8 @@ mod tests {
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use tmcp::{
-        Error, Result, ServerCtx, ServerHandler, ToolResponse, ToolResult, mcp_server, schema::*,
-        testutils::TestServerContext, tool,
+        Error, Result, ServerCtx, ServerHandler, ToolGroup, ToolResponse, ToolResult, ToolSet,
+        mcp_server, schema::*, testutils::TestServerContext, tool, tool_group,
     };
 
     #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -43,6 +43,76 @@ mod tests {
         Ok(PingResponse {
             message: format!("{}{}", state.0, params.message),
         })
+    }
+
+    #[tool(defaults)]
+    /// Return an upper-case message through delegated state.
+    async fn delegated_upper(
+        state: &DelegatedState,
+        params: EchoParams,
+    ) -> ToolResult<PingResponse> {
+        Ok(PingResponse {
+            message: format!("{}{}", state.0, params.message.to_uppercase()),
+        })
+    }
+
+    #[tool_group(
+        state = DelegatedState,
+        tools = [delegated_echo, delegated_upper]
+    )]
+    struct DelegatedTools;
+
+    #[tool_group(state = DelegatedState, tools = [delegated_echo])]
+    struct DuplicateDelegatedTools;
+
+    #[derive(Debug)]
+    struct GroupDelegatingServer {
+        prefix: String,
+    }
+
+    #[mcp_server(tool_groups = [DelegatedTools], tool_state_fn = delegated_state)]
+    impl GroupDelegatingServer {
+        async fn delegated_state(
+            &self,
+            _arguments: Option<&tmcp::Arguments>,
+        ) -> ToolResult<DelegatedState> {
+            Ok(DelegatedState(self.prefix.clone()))
+        }
+    }
+
+    #[derive(Debug)]
+    struct DuplicateGroupServer;
+
+    #[mcp_server(
+        tool_groups = [DelegatedTools, DuplicateDelegatedTools],
+        tool_state_fn = delegated_state
+    )]
+    impl DuplicateGroupServer {
+        async fn delegated_state(
+            &self,
+            _arguments: Option<&tmcp::Arguments>,
+        ) -> ToolResult<DelegatedState> {
+            Ok(DelegatedState(String::new()))
+        }
+    }
+
+    #[derive(Default)]
+    struct ToolsetGroupServer {
+        tools: ToolSet,
+    }
+
+    #[mcp_server(
+        toolset = "tools",
+        tool_groups = [DelegatedTools],
+        tool_state_fn = delegated_state
+    )]
+    impl ToolsetGroupServer {
+        async fn delegated_state(
+            &self,
+            _arguments: Option<&tmcp::Arguments>,
+        ) -> ToolResult<DelegatedState> {
+            Ok(DelegatedState("toolset:".to_string()))
+        }
     }
 
     #[derive(Debug)]
@@ -133,6 +203,93 @@ mod tests {
             .into_result()
             .expect("immediate tool response");
         assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn delegated_tool_group_owns_names_schemas_and_dispatch() {
+        let server = GroupDelegatingServer {
+            prefix: "group:".to_string(),
+        };
+        let ctx = TestServerContext::new();
+
+        assert_eq!(
+            <DelegatedTools as ToolGroup>::NAMES,
+            ["delegated_echo", "delegated_upper"]
+        );
+        let init = server
+            .initialize(
+                ctx.ctx(),
+                "2025-11-25".parse().unwrap(),
+                ClientCapabilities::default(),
+                Implementation::new("test-client", "1.0.0"),
+            )
+            .await
+            .unwrap();
+        assert!(init.capabilities.tasks.is_some());
+        let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
+        assert_eq!(tools.tools.len(), 2);
+        assert!(
+            tools
+                .tools
+                .iter()
+                .all(|tool| { <DelegatedTools as ToolGroup>::NAMES.contains(&tool.name.as_str()) })
+        );
+
+        let result = server
+            .call_tool(
+                ctx.ctx(),
+                "delegated_upper".to_string(),
+                Some(tmcp::Arguments::new().insert("message", "hello")),
+                None,
+            )
+            .await
+            .unwrap()
+            .into_result()
+            .expect("immediate group tool response");
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({ "message": "group:HELLO" }))
+        );
+    }
+
+    #[tokio::test]
+    async fn delegated_tool_groups_reject_duplicate_names() {
+        let ctx = TestServerContext::new();
+
+        let error = DuplicateGroupServer
+            .list_tools(ctx.ctx(), None)
+            .await
+            .expect_err("duplicate group names must fail");
+
+        assert!(matches!(
+            error,
+            Error::InvalidConfiguration(message)
+                if message == "duplicate tool name `delegated_echo`"
+        ));
+    }
+
+    #[tokio::test]
+    async fn toolset_server_registers_delegated_tool_group() {
+        let ctx = TestServerContext::new();
+        let server = ToolsetGroupServer::default();
+
+        let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
+        assert_eq!(tools.tools.len(), 2);
+        let result = server
+            .call_tool(
+                ctx.ctx(),
+                "delegated_echo".to_string(),
+                Some(tmcp::Arguments::new().insert("message", "hello")),
+                None,
+            )
+            .await
+            .unwrap()
+            .into_result()
+            .expect("immediate toolset group response");
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({ "message": "toolset:hello" }))
+        );
     }
 
     #[mcp_server]
