@@ -181,8 +181,19 @@ impl Client<()> {
     }
 
     /// Set the default request timeout for this connection.
+    ///
+    /// A zero duration disables the deadline. See [`Self::without_request_timeout`].
     pub fn with_request_timeout(self, timeout: Duration) -> Self {
         self.request_handler.set_timeout(timeout.as_millis() as u64);
+        self
+    }
+
+    /// Wait for every response without a deadline.
+    ///
+    /// Use this for a peer whose tools can block on a human decision. Transport shutdown and
+    /// cancellation still complete a pending request.
+    pub fn without_request_timeout(self) -> Self {
+        self.request_handler.set_timeout(0);
         self
     }
 }
@@ -1682,6 +1693,24 @@ mod tests {
             Err(Error::Timeout { .. }) => {}
             _ => panic!("Expected timeout error, got {:?}", result),
         }
+    }
+
+    #[tokio::test]
+    async fn request_without_timeout_waits_past_the_default_deadline() {
+        let (client_transport, _server_transport) = TestTransport::create_pair();
+
+        let mut client = Client::new("test", "1.0").without_request_timeout();
+
+        client
+            .connect(client_transport)
+            .await
+            .expect("Failed to connect");
+
+        // The server transport is never read, so `initialize` has no response. A bounded client
+        // would fail here; this one must still be waiting.
+        let result = timeout(Duration::from_millis(300), client.init()).await;
+
+        assert!(result.is_err(), "expected the request to still be pending");
     }
 
     #[tokio::test]

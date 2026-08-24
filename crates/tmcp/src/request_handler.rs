@@ -39,6 +39,9 @@ use crate::{
 /// Default request timeout in milliseconds (30 seconds).
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
+/// Timeout value that disables the deadline and waits for the peer or the transport.
+const NO_TIMEOUT_MS: u64 = 0;
+
 /// Transport sink type used by the request handler.
 pub type TransportSink = Arc<TokioMutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
 
@@ -269,7 +272,13 @@ impl RequestHandler {
     {
         let timeout_ms =
             timeout_override.unwrap_or_else(|| self.inner.timeout_ms.load(Ordering::Relaxed));
-        let result = timeout(Duration::from_millis(timeout_ms), response_rx).await;
+        // A zero timeout means the caller accepts an unbounded wait, such as a tool that blocks on
+        // a human decision. Transport shutdown still wakes the pending request.
+        let result = if timeout_ms == NO_TIMEOUT_MS {
+            Ok(response_rx.await)
+        } else {
+            timeout(Duration::from_millis(timeout_ms), response_rx).await
+        };
         self.process_response_result(&id, method, result, timeout_ms)
     }
 
