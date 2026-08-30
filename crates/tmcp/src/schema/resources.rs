@@ -232,7 +232,8 @@ impl Resource {
         self
     }
 
-    /// Create a resource from a file path, automatically detecting MIME type and size.
+    /// Create a resource from a file path, automatically detecting MIME type
+    /// and size.
     pub fn from_file<P: AsRef<Path>>(
         path: P,
         name: impl Into<String>,

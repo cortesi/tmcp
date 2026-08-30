@@ -39,8 +39,8 @@ impl ClientCapabilities {
 
     /// Enable roots capability.
     ///
-    /// list_changed indicates whether the client supports notifications for changes to the roots
-    /// list.
+    /// list_changed indicates whether the client supports notifications for
+    /// changes to the roots list.
     pub fn with_roots_capability(mut self, list_changed: bool) -> Self {
         self.roots = Some(RootsCapability {
             list_changed: Some(list_changed),
@@ -188,7 +188,8 @@ impl ServerCapabilities {
         self
     }
 
-    /// Enable resources capability with optional subscribe and list_changed support
+    /// Enable resources capability with optional subscribe and list_changed
+    /// support
     pub fn with_resources(mut self, subscribe: Option<bool>, list_changed: Option<bool>) -> Self {
         self.resources = Some(ResourcesCapability {
             subscribe,
@@ -239,10 +240,12 @@ impl ServerCapabilities {
 /// Capability describing the client's support for LLM sampling.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SamplingCapability {
-    /// Whether the client supports context inclusion via includeContext parameter.
+    /// Whether the client supports context inclusion via includeContext
+    /// parameter.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<HashMap<String, Value>>,
-    /// Whether the client supports tool use via tools and toolChoice parameters.
+    /// Whether the client supports tool use via tools and toolChoice
+    /// parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<HashMap<String, Value>>,
     /// Unknown or extension fields preserved from the wire.

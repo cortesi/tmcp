@@ -379,10 +379,12 @@ pub const INVALID_PARAMS: i32 = -32602;
 /// JSON-RPC internal error code.
 pub const INTERNAL_ERROR: i32 = -32603;
 
-/// MCP-specific JSON-RPC error code indicating a requested resource was not found.
+/// MCP-specific JSON-RPC error code indicating a requested resource was not
+/// found.
 pub const RESOURCE_NOT_FOUND: i32 = -32002;
 
-/// Implementation-specific JSON-RPC error code indicating URL elicitation is required.
+/// Implementation-specific JSON-RPC error code indicating URL elicitation is
+/// required.
 pub const URL_ELICITATION_REQUIRED: i32 = -32042;
 /// Implementation-specific JSON-RPC error code indicating authorization failed.
 pub const AUTHORIZATION_FAILED: i32 = -32041;

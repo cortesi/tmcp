@@ -368,7 +368,8 @@ fn render_named_uri_item(
     render_description(out, object, theme, 2);
 }
 
-/// Render annotations, icons, and unhandled fields shared by several item types.
+/// Render annotations, icons, and unhandled fields shared by several item
+/// types.
 fn render_annotations_and_extras(
     out: &mut String,
     object: &Map<String, Value>,
@@ -448,7 +449,8 @@ fn render_schema_body(
 enum SchemaRenderContext {
     /// Standalone section or nested object body.
     Root,
-    /// Body below a choice heading that already summarizes type and constraints.
+    /// Body below a choice heading that already summarizes type and
+    /// constraints.
     Choice,
 }
 
@@ -506,7 +508,8 @@ fn render_schema_children(
     render_schema_extras(out, object, theme, indent);
 }
 
-/// Render a no-fields marker for an object schema with no object-specific detail.
+/// Render a no-fields marker for an object schema with no object-specific
+/// detail.
 fn render_empty_object_schema(out: &mut String, object: &Map<String, Value>, indent: usize) {
     if matches!(object.get("type").and_then(Value::as_str), Some("object"))
         && !object.contains_key("properties")

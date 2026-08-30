@@ -58,7 +58,8 @@ fn add_missing_derives(item: &mut syn::DeriveInput, derive_paths: &[syn::Path]) 
     added
 }
 
-/// Attach serde/schemars crate-path attributes for derives added via `__private`.
+/// Attach serde/schemars crate-path attributes for derives added via
+/// `__private`.
 ///
 /// The serde and schemars derive macros resolve their support code through the
 /// `serde`/`schemars` crate names unless redirected, so derives injected from
@@ -91,7 +92,8 @@ pub fn expand_tool_params(mut item: syn::DeriveInput) -> TokenStream {
     quote!(#item)
 }
 
-/// Expand `#[tool_result]`: add serde + schemars + ToolResponse derives for result structs.
+/// Expand `#[tool_result]`: add serde + schemars + ToolResponse derives for
+/// result structs.
 pub fn expand_tool_result(mut item: syn::DeriveInput) -> TokenStream {
     let added = add_missing_derives(
         &mut item,

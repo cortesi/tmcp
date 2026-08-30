@@ -59,7 +59,8 @@ struct LogResponse {
     logged: bool,
 }
 
-// The `mcp_server` macro generates the necessary boilerplate to expose methods as MCP tools.
+// The `mcp_server` macro generates the necessary boilerplate to expose methods
+// as MCP tools.
 #[mcp_server(initialize_fn = initialize)]
 impl WeatherServer {
     /// Customize initialize to advertise logging support.

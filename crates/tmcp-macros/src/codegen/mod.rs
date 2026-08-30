@@ -657,7 +657,8 @@ pub fn expand_mcp_server(attr: TokenStream, input: &TokenStream) -> Result<Token
 mod tests {
     use super::*;
 
-    /// Expand `#[mcp_server(#attr)]` over `input` and return the pretty-parsed output.
+    /// Expand `#[mcp_server(#attr)]` over `input` and return the pretty-parsed
+    /// output.
     fn expand(attr: TokenStream, input: &TokenStream) -> String {
         let expanded = expand_mcp_server(attr, input).unwrap();
         // Parsing the expansion as a file proves the output is structurally valid Rust.

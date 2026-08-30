@@ -41,9 +41,11 @@ pub type NotificationFanout = Box<dyn Fn(&ServerNotification) + Send + Sync>;
 /// Factory invoked once per connection to create its handler.
 pub type HandlerFactory = Arc<dyn Fn() -> Box<dyn ServerHandler> + Send + Sync>;
 
-/// Maximum number of queued outbound server notifications before backpressure applies.
+/// Maximum number of queued outbound server notifications before backpressure
+/// applies.
 const SERVER_NOTIFICATION_BUFFER: usize = 64;
-/// Maximum number of queued server responses before request handlers backpressure.
+/// Maximum number of queued server responses before request handlers
+/// backpressure.
 const SERVER_RESPONSE_BUFFER: usize = 64;
 
 /// Builder that configures and serves the HTTP transport.
@@ -70,7 +72,8 @@ pub struct EmbeddedHttpServer {
     ///
     /// Merge this router into the host application at the root.
     pub router: Router,
-    /// Live tmcp server handle that must be shut down with the host application.
+    /// Live tmcp server handle that must be shut down with the host
+    /// application.
     pub handle: ServerHandle,
 }
 
@@ -154,7 +157,8 @@ impl Server {
     }
 
     /// Serve a single connection using the provided transport
-    /// This is a convenience method that starts the server and waits for completion
+    /// This is a convenience method that starts the server and waits for
+    /// completion
     pub(crate) async fn serve(self, transport: Box<dyn Transport>) -> Result<()> {
         let handle = ServerHandle::new(self, transport).await?;
         handle.join().await
@@ -164,9 +168,10 @@ impl Server {
     ///
     /// This is a convenience method for the common stdio use case.
     ///
-    /// `stdout` is reserved for JSON-RPC traffic while this server is running. Do not print human
-    /// logs to `stdout` or install a tracing/logging subscriber that writes there; route
-    /// diagnostics to `stderr`, a file, or another sink instead.
+    /// `stdout` is reserved for JSON-RPC traffic while this server is running.
+    /// Do not print human logs to `stdout` or install a tracing/logging
+    /// subscriber that writes there; route diagnostics to `stderr`, a file,
+    /// or another sink instead.
     pub async fn serve_stdio(self) -> Result<()> {
         let transport = Box::new(StdioTransport);
         self.serve(transport).await
@@ -174,14 +179,16 @@ impl Server {
 
     /// Serve connections from stdin/stdout using an internal Tokio runtime.
     ///
-    /// This is a convenience for binaries that aren't already running within a Tokio runtime.
+    /// This is a convenience for binaries that aren't already running within a
+    /// Tokio runtime.
     pub fn serve_stdio_blocking(self) -> Result<()> {
         let rt = Builder::new_multi_thread().enable_all().build()?;
         rt.block_on(self.serve_stdio())
     }
 
     /// Serve using generic AsyncRead and AsyncWrite streams
-    /// This is a convenience method that creates a StreamTransport from the provided streams
+    /// This is a convenience method that creates a StreamTransport from the
+    /// provided streams
     pub async fn serve_stream<R, W>(self, reader: R, writer: W) -> Result<()>
     where
         R: AsyncRead + Send + Sync + Unpin + 'static,
@@ -194,8 +201,9 @@ impl Server {
 
     /// Serve TCP connections by accepting them in a loop
     ///
-    /// Returns a [`TcpServerHandle`] that can be used to stop accepting new connections.
-    /// Existing connections will continue until they complete or their clients disconnect.
+    /// Returns a [`TcpServerHandle`] that can be used to stop accepting new
+    /// connections. Existing connections will continue until they complete
+    /// or their clients disconnect.
     pub async fn serve_tcp(self, addr: impl ToSocketAddrs) -> Result<TcpServerHandle> {
         let listener = TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
@@ -276,7 +284,8 @@ impl Server {
         }
     }
 
-    /// Configure an HTTP server for embedding into an existing Axum application.
+    /// Configure an HTTP server for embedding into an existing Axum
+    /// application.
     #[cfg(feature = "http")]
     pub fn http_embed(self) -> HttpBuilder {
         HttpBuilder {
@@ -336,7 +345,8 @@ impl HttpBuilder {
         self
     }
 
-    /// Protect the MCP routes with bearer-token auth and expose PRM discovery routes.
+    /// Protect the MCP routes with bearer-token auth and expose PRM discovery
+    /// routes.
     #[cfg(feature = "auth")]
     pub fn with_auth(self, config: &AuthConfig) -> Self {
         let middleware = BearerAuthLayer::new(config.validator.clone(), &config.endpoint_path)
@@ -452,7 +462,8 @@ impl Drop for ServerHandle {
 }
 
 impl ServerHandle {
-    /// Start serving connections using the provided transport, returning a handle for runtime operations
+    /// Start serving connections using the provided transport, returning a
+    /// handle for runtime operations
     pub(crate) async fn new(server: Server, mut transport: Box<dyn Transport>) -> Result<Self> {
         transport.connect().await?;
         let remote_addr = transport.remote_addr();
@@ -478,7 +489,8 @@ impl ServerHandle {
         let connection: Arc<dyn ServerHandler> = Arc::from((server.connection_factory)());
         let protocol_versions = server.protocol_versions;
 
-        // Create a single ServerCtx instance that will be used throughout the connection
+        // Create a single ServerCtx instance that will be used throughout the
+        // connection
         let server_ctx = ServerCtx::new(notification_tx, Some(sink_tx.clone()));
 
         // Create shutdown token for coordinating shutdown
@@ -697,7 +709,8 @@ impl ServerHandle {
     }
 
     /// Create a ServerHandle using generic AsyncRead and AsyncWrite streams
-    /// This is a convenience method that creates a StreamTransport from the provided streams
+    /// This is a convenience method that creates a StreamTransport from the
+    /// provided streams
     pub async fn from_stream<R, W>(server: Server, reader: R, writer: W) -> Result<Self>
     where
         R: AsyncRead + Send + Sync + Unpin + 'static,
@@ -730,7 +743,8 @@ impl ServerHandle {
         Ok(())
     }
 
-    /// Return the externally reachable endpoint address, including any HTTP path.
+    /// Return the externally reachable endpoint address, including any HTTP
+    /// path.
     #[cfg(feature = "http")]
     #[must_use]
     pub fn endpoint_addr(&self) -> Option<String> {
@@ -916,10 +930,11 @@ fn spawn_request_handler(
     });
 }
 
-/// Handle an initialize request specially, returning both the response and capabilities.
+/// Handle an initialize request specially, returning both the response and
+/// capabilities.
 ///
-/// This is needed so the `ServerHandle` can capture the capabilities from the handler's
-/// response rather than from a separate configuration.
+/// This is needed so the `ServerHandle` can capture the capabilities from the
+/// handler's response rather than from a separate configuration.
 async fn handle_initialize_request(
     connection: &dyn ServerHandler,
     request: JSONRPCRequest,
@@ -976,7 +991,8 @@ async fn handle_initialize_request(
     (result_to_jsonrpc_response(id, result), caps)
 }
 
-/// Handle a request using the Connection trait and convert result to JSONRPCMessage
+/// Handle a request using the Connection trait and convert result to
+/// JSONRPCMessage
 async fn handle_request(
     connection: &dyn ServerHandler,
     request: JSONRPCRequest,

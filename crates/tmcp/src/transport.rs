@@ -39,7 +39,8 @@ pub trait Transport: Send + Sync {
     fn framed(self: Box<Self>) -> Result<Box<dyn TransportStream>>;
 
     /// Get the remote address for this transport
-    /// Returns "stdio" for stdio connections, or the actual address for network connections
+    /// Returns "stdio" for stdio connections, or the actual address for network
+    /// connections
     fn remote_addr(&self) -> String {
         "unknown".to_string()
     }
@@ -51,7 +52,8 @@ pub trait TransportStream:
 {
 }
 
-/// A generic duplex wrapper for combining separate AsyncRead and AsyncWrite streams.
+/// A generic duplex wrapper for combining separate AsyncRead and AsyncWrite
+/// streams.
 pub struct GenericDuplex<R, W> {
     /// Reader half.
     reader: R,

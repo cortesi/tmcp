@@ -5,10 +5,12 @@ use serde::{Deserialize, Serialize};
 pub struct Icon {
     /// A standard URI pointing to an icon resource.
     pub src: String,
-    /// Optional MIME type override if the source MIME type is missing or generic.
+    /// Optional MIME type override if the source MIME type is missing or
+    /// generic.
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
-    /// Optional array of strings that specify sizes at which the icon can be used.
+    /// Optional array of strings that specify sizes at which the icon can be
+    /// used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sizes: Option<Vec<String>>,
     /// Optional specifier for the theme this icon is designed for.

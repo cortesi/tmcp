@@ -88,8 +88,8 @@ where
     Ok((client, server_handle))
 }
 
-/// Helper function to create a connected client and server with a custom client handler.
-/// The client transport is connected but not initialized.
+/// Helper function to create a connected client and server with a custom client
+/// handler. The client transport is connected but not initialized.
 pub async fn connected_client_and_server_with_conn<H, F, C>(
     handler_factory: F,
     client_handler: C,
@@ -233,13 +233,15 @@ where
 }
 
 /// Create a ServerCtx for testing purposes.
-/// This creates a ServerCtx with only notification capability (no request/response).
+/// This creates a ServerCtx with only notification capability (no
+/// request/response).
 pub fn test_server_ctx(notification_tx: mpsc::Sender<ServerNotification>) -> ServerCtx {
     ServerCtx::notification_only(notification_tx)
 }
 
 /// Create a ClientCtx for testing purposes.
-/// This creates a ClientCtx with only notification capability (no request/response).
+/// This creates a ClientCtx with only notification capability (no
+/// request/response).
 pub fn test_client_ctx(notification_tx: mpsc::Sender<ClientNotification>) -> ClientCtx {
     ClientCtx::new(notification_tx)
 }
@@ -270,7 +272,8 @@ impl TestServerContext {
         &self.ctx
     }
 
-    /// Try to receive a notification, returning None if no notification is available
+    /// Try to receive a notification, returning None if no notification is
+    /// available
     pub async fn try_recv_notification(&mut self) -> Option<ServerNotification> {
         use tokio::time::{Duration, timeout};
         timeout(Duration::from_millis(10), self.notification_rx.recv())
@@ -312,7 +315,8 @@ impl TestClientContext {
         &self.ctx
     }
 
-    /// Try to receive a notification, returning None if no notification is available
+    /// Try to receive a notification, returning None if no notification is
+    /// available
     pub async fn try_recv_notification(&mut self) -> Option<ClientNotification> {
         use tokio::time::{Duration, timeout};
         timeout(Duration::from_millis(10), self.notification_rx.recv())

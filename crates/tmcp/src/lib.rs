@@ -1,17 +1,19 @@
 //! # tmcp
 //!
-//! A complete Rust implementation of the Model Context Protocol (MCP), providing both
-//! client and server capabilities for building AI-integrated applications.
+//! A complete Rust implementation of the Model Context Protocol (MCP),
+//! providing both client and server capabilities for building AI-integrated
+//! applications.
 //!
 //! ## Overview
 //!
 //! tmcp offers an ergonomic API for implementing MCP servers and clients with
-//! support for tools, resources, and prompts. The library uses async/await patterns
-//! with Tokio and provides procedural macros to eliminate boilerplate.
+//! support for tools, resources, and prompts. The library uses async/await
+//! patterns with Tokio and provides procedural macros to eliminate boilerplate.
 //!
 //! ## Features
 //!
-//! - **Derive Macros**: Simple `#[mcp_server]` attribute for automatic implementation
+//! - **Derive Macros**: Simple `#[mcp_server]` attribute for automatic
+//!   implementation
 //! - **Multiple Transports**: TCP, HTTP (with SSE), and stdio support
 //! - **Type Safety**: Strongly typed protocol messages with serde
 //! - **Async-First**: Built on Tokio for high-performance async I/O
@@ -22,8 +24,9 @@
 //! - **HTTP**: `server.listen_http("127.0.0.1:3000")` with the `http` feature
 //! - **Stdio**: `server.listen_stdio()` for subprocess integration
 //!
-//! The default feature set is empty. Enable `http`, `auth`, `render`, `schema-validation`, or
-//! `testutils` only where those optional capabilities are needed; `auth` enables `http`.
+//! The default feature set is empty. Enable `http`, `auth`, `render`,
+//! `schema-validation`, or `testutils` only where those optional capabilities
+//! are needed; `auth` enables `http`.
 //!
 //! ## Building Servers: Macro vs Trait
 //!
@@ -31,13 +34,13 @@
 //!
 //! ### The `#[mcp_server]` Macro
 //!
-//! Best for servers that primarily expose derived tools and optionally forward resource handling to
-//! dynamic methods. The macro automatically:
+//! Best for servers that primarily expose derived tools and optionally forward
+//! resource handling to dynamic methods. The macro automatically:
 //! - Generates [`ServerHandler`] trait implementation
 //! - Derives tool schemas from function signatures using `schemars`
 //! - Registers tools in `list_tools` and routes calls in `call_tool`
-//! - Forwards resource protocol methods configured with `resources_fn`, `read_resource_fn`, or
-//!   `resource_templates_fn`
+//! - Forwards resource protocol methods configured with `resources_fn`,
+//!   `read_resource_fn`, or `resource_templates_fn`
 //! - Provides sensible defaults for `initialize`
 //!
 //! ```ignore
@@ -65,9 +68,12 @@
 //! ### The [`ServerHandler`] Trait
 //!
 //! Use the trait directly when you need:
-//! - **Custom initialization**: Validate clients, negotiate capabilities, or reject connections
-//! - **Per-connection state**: Access to `ServerCtx` in all methods for client-specific data
-//! - **Prompts or uncommon protocol hooks**: Full access to MCP features beyond tools and resources
+//! - **Custom initialization**: Validate clients, negotiate capabilities, or
+//!   reject connections
+//! - **Per-connection state**: Access to `ServerCtx` in all methods for
+//!   client-specific data
+//! - **Prompts or uncommon protocol hooks**: Full access to MCP features beyond
+//!   tools and resources
 //! - **Fine-grained error handling**: Custom error responses and logging
 //!
 //! ```ignore

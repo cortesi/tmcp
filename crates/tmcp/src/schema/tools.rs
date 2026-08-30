@@ -72,15 +72,19 @@ pub struct CallToolResult {
 /// Strategy for extracting the semantic value from a tool result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolResultMode {
-    /// Prefer structured content and otherwise preserve the natural content shape.
+    /// Prefer structured content and otherwise preserve the natural content
+    /// shape.
     Auto,
     /// Require structured content.
     Structured,
-    /// Prefer structured content and otherwise parse exactly one text block as JSON.
+    /// Prefer structured content and otherwise parse exactly one text block as
+    /// JSON.
     StructuredOrJsonText,
-    /// Prefer structured content and otherwise parse the first text block as JSON.
+    /// Prefer structured content and otherwise parse the first text block as
+    /// JSON.
     StructuredOrFirstJsonText,
-    /// Prefer structured content, one text block, or the complete content sequence.
+    /// Prefer structured content, one text block, or the complete content
+    /// sequence.
     StructuredOrText,
     /// Parse exactly one text block as JSON.
     JsonText,
@@ -244,8 +248,9 @@ impl CallToolResult {
 
     /// Create a tool error result with a structured error payload.
     ///
-    /// `code` is a static identifier such as [`crate::TOOL_ERROR_INVALID_INPUT`],
-    /// matching the [`crate::ToolError`] code convention.
+    /// `code` is a static identifier such as
+    /// [`crate::TOOL_ERROR_INVALID_INPUT`], matching the
+    /// [`crate::ToolError`] code convention.
     pub fn error(code: &'static str, message: impl Into<String>) -> Self {
         Self::new()
             .with_is_error(true)
@@ -343,7 +348,8 @@ impl CallToolResult {
     ///
     /// # Errors
     ///
-    /// Returns an error if there is no structured content or deserialization fails.
+    /// Returns an error if there is no structured content or deserialization
+    /// fails.
     pub fn structured_as<T: DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
         let value = self
             .structured_content
@@ -520,8 +526,8 @@ impl Default for CallToolResult {
 
 /// The response to a `tools/call` request.
 ///
-/// Task-augmented tool calls may create a task instead of returning an immediate
-/// tool result.
+/// Task-augmented tool calls may create a task instead of returning an
+/// immediate tool result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CallToolResponse {
@@ -542,7 +548,8 @@ impl CallToolResponse {
         Self::Task(result)
     }
 
-    /// Borrow the immediate tool result, if this response completed immediately.
+    /// Borrow the immediate tool result, if this response completed
+    /// immediately.
     pub fn as_result(&self) -> Option<&CallToolResult> {
         match self {
             Self::Result(result) => Some(result),
@@ -662,9 +669,9 @@ impl Tool {
 
     /// Create a tool from a schemars JsonSchema type.
     ///
-    /// This derives the input schema from the type's JSON Schema representation.
-    /// If the schema has a description at the root level, it will be used as
-    /// the tool's description.
+    /// This derives the input schema from the type's JSON Schema
+    /// representation. If the schema has a description at the root level,
+    /// it will be used as the tool's description.
     ///
     /// # Example
     ///
@@ -694,7 +701,8 @@ impl Tool {
         tool
     }
 
-    /// Replace the input schema with one derived from a schemars JsonSchema type.
+    /// Replace the input schema with one derived from a schemars JsonSchema
+    /// type.
     ///
     /// This is useful when you want to set the schema after construction,
     /// or when combining with other builder methods.
@@ -823,7 +831,8 @@ pub struct ToolSchemaValidationError {
 
 #[cfg(feature = "schema-validation")]
 impl ToolSchemaValidationError {
-    /// Return the underlying validation diagnostic without tmcp's display prefix.
+    /// Return the underlying validation diagnostic without tmcp's display
+    /// prefix.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -1680,7 +1689,8 @@ mod tests {
 
         // Description is extracted from the type's doc comment
         // (schemars includes doc comments in the description field)
-        // Note: schemars may or may not include this depending on version/config
+        // Note: schemars may or may not include this depending on
+        // version/config
     }
 
     #[test]

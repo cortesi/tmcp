@@ -24,7 +24,8 @@ use super::{
 pub struct BearerAuthLayer {
     /// Token validator shared across cloned services.
     validator: Arc<dyn TokenValidator>,
-    /// Relative resource metadata path (e.g. `/.well-known/oauth-protected-resource/mcp`).
+    /// Relative resource metadata path (e.g.
+    /// `/.well-known/oauth-protected-resource/mcp`).
     resource_metadata_path: String,
     /// Fallback base URL for constructing absolute resource_metadata URIs.
     base_url: String,
@@ -45,15 +46,16 @@ impl BearerAuthLayer {
 
     /// Set the base URL for absolute resource-metadata URIs.
     ///
-    /// RFC 9728 requires the `resource_metadata` parameter in `WWW-Authenticate`
-    /// challenges to be an absolute URI; challenges are built against this origin.
+    /// RFC 9728 requires the `resource_metadata` parameter in
+    /// `WWW-Authenticate` challenges to be an absolute URI; challenges are
+    /// built against this origin.
     pub fn with_base_url(mut self, base_url: &str) -> Self {
         self.base_url = base_url.trim_end_matches('/').to_string();
         self
     }
 
-    /// Honor `X-Forwarded-Host`/`X-Forwarded-Proto` headers when deriving the public
-    /// origin for challenges.
+    /// Honor `X-Forwarded-Host`/`X-Forwarded-Proto` headers when deriving the
+    /// public origin for challenges.
     ///
     /// Only enable this when a trusted reverse proxy sets these headers.
     pub fn with_trusted_forwarded_headers(mut self, trust_forwarded_headers: bool) -> Self {

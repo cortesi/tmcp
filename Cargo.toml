@@ -10,7 +10,7 @@ readme = "README.md"
 
 [workspace]
 resolver = "2"
-members = ["crates/*", "examples", "xtask"]
+members = ["crates/*", "examples"]
 
 [workspace.lints.rust]
 missing_docs = "warn"
@@ -39,3 +39,14 @@ items_after_statements = "warn"
 cognitive_complexity = "warn"
 excessive_nesting = "warn"
 too_many_lines = "warn"
+
+[workspace.metadata.nanocode]
+schema-version = 1
+requires-nanocode = ">=0.1, <0.2"
+features = "all"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

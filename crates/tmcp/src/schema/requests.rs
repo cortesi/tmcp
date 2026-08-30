@@ -75,7 +75,8 @@ pub enum ClientRequest {
     /// List available prompts.
     ListPrompts {
         /// An opaque token representing the current pagination position.
-        /// If provided, the server should return results starting after this cursor.
+        /// If provided, the server should return results starting after this
+        /// cursor.
         #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<Cursor>,
         /// Request metadata reserved by the protocol.
@@ -86,7 +87,8 @@ pub enum ClientRequest {
     /// List available resources.
     ListResources {
         /// An opaque token representing the current pagination position.
-        /// If provided, the server should return results starting after this cursor.
+        /// If provided, the server should return results starting after this
+        /// cursor.
         #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<Cursor>,
         /// Request metadata reserved by the protocol.
@@ -97,7 +99,8 @@ pub enum ClientRequest {
     /// List available resource templates.
     ListResourceTemplates {
         /// An opaque token representing the current pagination position.
-        /// If provided, the server should return results starting after this cursor.
+        /// If provided, the server should return results starting after this
+        /// cursor.
         #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<Cursor>,
         /// Request metadata reserved by the protocol.
@@ -150,7 +153,8 @@ pub enum ClientRequest {
     /// List available tools.
     ListTools {
         /// An opaque token representing the current pagination position.
-        /// If provided, the server should return results starting after this cursor.
+        /// If provided, the server should return results starting after this
+        /// cursor.
         #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<Cursor>,
         /// Request metadata reserved by the protocol.
@@ -181,7 +185,8 @@ pub enum ClientRequest {
     /// List tasks.
     ListTasks {
         /// An opaque token representing the current pagination position.
-        /// If provided, the server should return results starting after this cursor.
+        /// If provided, the server should return results starting after this
+        /// cursor.
         #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<Cursor>,
         /// Request metadata reserved by the protocol.
@@ -388,9 +393,9 @@ pub enum ClientNotification {
     /// This notification can be sent by either side to indicate that it is
     /// cancelling a previously-issued request.
     ///
-    /// The request SHOULD still be in-flight, but due to communication latency, it
-    /// is always possible that this notification MAY arrive after the request has
-    /// already finished.
+    /// The request SHOULD still be in-flight, but due to communication latency,
+    /// it is always possible that this notification MAY arrive after the
+    /// request has already finished.
     ///
     /// This notification indicates that the result will be unused, so any
     /// associated processing SHOULD cease.
@@ -427,8 +432,8 @@ pub enum ClientNotification {
         _meta: Option<Map<String, Value>>,
     },
 
-    /// This notification is sent from the client to the server after initialization
-    /// has finished.
+    /// This notification is sent from the client to the server after
+    /// initialization has finished.
     #[serde(rename = "notifications/initialized")]
     Initialized {
         /// Notification metadata reserved by the protocol.
@@ -436,10 +441,10 @@ pub enum ClientNotification {
         _meta: Option<Map<String, Value>>,
     },
 
-    /// A notification from the client to the server, informing it that the list of
-    /// roots has changed. This notification should be sent whenever the client
-    /// adds, removes, or modifies any root. The server should then request an
-    /// updated list of roots with a `roots/list` request.
+    /// A notification from the client to the server, informing it that the list
+    /// of roots has changed. This notification should be sent whenever the
+    /// client adds, removes, or modifies any root. The server should then
+    /// request an updated list of roots with a `roots/list` request.
     #[serde(rename = "notifications/roots/list_changed")]
     RootsListChanged {
         /// Notification metadata reserved by the protocol.
@@ -510,10 +515,11 @@ pub enum ServerRequest {
         _meta: Option<RequestMeta>,
     },
 
-    /// A request from the server to sample an LLM via the client. The client has
-    /// full discretion over which model to select. The client should also inform
-    /// the user before beginning sampling, to allow them to inspect the request
-    /// (human in the loop) and decide whether to approve it.
+    /// A request from the server to sample an LLM via the client. The client
+    /// has full discretion over which model to select. The client should
+    /// also inform the user before beginning sampling, to allow them to
+    /// inspect the request (human in the loop) and decide whether to
+    /// approve it.
     #[serde(rename = "sampling/createMessage")]
     CreateMessage(Box<CreateMessageParams>),
 
@@ -525,8 +531,8 @@ pub enum ServerRequest {
         _meta: Option<RequestMeta>,
     },
 
-    /// A request from the server to elicit additional information from the client.
-    /// This allows servers to ask for user input during execution.
+    /// A request from the server to elicit additional information from the
+    /// client. This allows servers to ask for user input during execution.
     #[serde(rename = "elicitation/create")]
     Elicit(Box<ElicitRequestParams>),
 
@@ -556,7 +562,8 @@ pub enum ServerRequest {
     /// List tasks.
     ListTasks {
         /// An opaque token representing the current pagination position.
-        /// If provided, the server should return results starting after this cursor.
+        /// If provided, the server should return results starting after this
+        /// cursor.
         #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<Cursor>,
         /// Request metadata reserved by the protocol.
@@ -657,9 +664,9 @@ pub enum ServerNotification {
     /// This notification can be sent by either side to indicate that it is
     /// cancelling a previously-issued request.
     ///
-    /// The request SHOULD still be in-flight, but due to communication latency, it
-    /// is always possible that this notification MAY arrive after the request has
-    /// already finished.
+    /// The request SHOULD still be in-flight, but due to communication latency,
+    /// it is always possible that this notification MAY arrive after the
+    /// request has already finished.
     ///
     /// This notification indicates that the result will be unused, so any
     /// associated processing SHOULD cease.
@@ -712,9 +719,9 @@ pub enum ServerNotification {
         _meta: Option<Map<String, Value>>,
     },
 
-    /// A notification from the server to the client, informing it that a resource
-    /// has changed and may need to be read again. This should only be sent if the
-    /// client previously sent a resources/subscribe request.
+    /// A notification from the server to the client, informing it that a
+    /// resource has changed and may need to be read again. This should only
+    /// be sent if the client previously sent a resources/subscribe request.
     #[serde(rename = "notifications/resources/updated")]
     ResourceUpdated {
         /// The URI of the resource that has been updated.
@@ -724,9 +731,9 @@ pub enum ServerNotification {
         _meta: Option<Map<String, Value>>,
     },
 
-    /// An optional notification from the server to the client, informing it that
-    /// the list of resources it can read from has changed. This may be issued by
-    /// servers without any previous subscription from the client.
+    /// An optional notification from the server to the client, informing it
+    /// that the list of resources it can read from has changed. This may be
+    /// issued by servers without any previous subscription from the client.
     #[serde(rename = "notifications/resources/list_changed")]
     ResourceListChanged {
         /// Notification metadata reserved by the protocol.
@@ -734,9 +741,9 @@ pub enum ServerNotification {
         _meta: Option<Map<String, Value>>,
     },
 
-    /// An optional notification from the server to the client, informing it that
-    /// the list of tools it offers has changed. This may be issued by servers
-    /// without any previous subscription from the client.
+    /// An optional notification from the server to the client, informing it
+    /// that the list of tools it offers has changed. This may be issued by
+    /// servers without any previous subscription from the client.
     #[serde(rename = "notifications/tools/list_changed")]
     ToolListChanged {
         /// Notification metadata reserved by the protocol.
@@ -744,9 +751,9 @@ pub enum ServerNotification {
         _meta: Option<Map<String, Value>>,
     },
 
-    /// An optional notification from the server to the client, informing it that
-    /// the list of prompts it offers has changed. This may be issued by servers
-    /// without any previous subscription from the client.
+    /// An optional notification from the server to the client, informing it
+    /// that the list of prompts it offers has changed. This may be issued
+    /// by servers without any previous subscription from the client.
     #[serde(rename = "notifications/prompts/list_changed")]
     PromptListChanged {
         /// Notification metadata reserved by the protocol.
@@ -1012,7 +1019,8 @@ mod tests {
 #[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginatedResult {
-    /// An opaque token representing the pagination position after the last returned result.
+    /// An opaque token representing the pagination position after the last
+    /// returned result.
     #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
 }
@@ -1072,7 +1080,8 @@ pub struct ElicitRequestFormParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<ElicitMode>,
 
-    /// The message to present to the user describing what information is being requested.
+    /// The message to present to the user describing what information is being
+    /// requested.
     pub message: String,
 
     /// A restricted subset of JSON Schema.
@@ -1094,10 +1103,12 @@ pub struct ElicitRequestURLParams {
     /// The elicitation mode.
     pub mode: ElicitMode,
 
-    /// The message to present to the user explaining why the interaction is needed.
+    /// The message to present to the user explaining why the interaction is
+    /// needed.
     pub message: String,
 
-    /// The ID of the elicitation, which must be unique within the context of the server.
+    /// The ID of the elicitation, which must be unique within the context of
+    /// the server.
     #[serde(rename = "elicitationId")]
     pub elicitation_id: String,
 

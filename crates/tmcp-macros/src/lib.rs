@@ -1,16 +1,18 @@
 //! Macros to make defining MCP servers easier
 //!
-//! Using the `#[mcp_server]` macro on an impl block, this crate picks up all methods
-//! marked with `#[tool]` and derives the necessary `ServerHandler::call_tool`,
-//! `ServerHandler::list_tools` and `ServerHandler::initialize` methods. Resource callbacks
-//! can be wired into the same generated `ServerHandler` implementation for servers whose
-//! resources are discovered dynamically. The name of the server is derived from the name of
-//! the struct converted to snake_case (e.g., MyServer becomes my_server), and the
-//! description is derived from the doc comment on the impl block. The version defaults to
-//! the consuming crate's `CARGO_PKG_VERSION`.
+//! Using the `#[mcp_server]` macro on an impl block, this crate picks up all
+//! methods marked with `#[tool]` and derives the necessary
+//! `ServerHandler::call_tool`, `ServerHandler::list_tools` and
+//! `ServerHandler::initialize` methods. Resource callbacks can be wired into
+//! the same generated `ServerHandler` implementation for servers whose
+//! resources are discovered dynamically. The name of the server is derived from
+//! the name of the struct converted to snake_case (e.g., MyServer becomes
+//! my_server), and the description is derived from the doc comment on the impl
+//! block. The version defaults to the consuming crate's `CARGO_PKG_VERSION`.
 //!
 //! The macro supports customization through attributes:
-//! - `initialize_fn`: Specify a custom initialize function instead of using the default
+//! - `initialize_fn`: Specify a custom initialize function instead of using the
+//!   default
 //! - `name`: Override the server name used in initialization
 //! - `version`: Override the server version used in initialization
 //! - `instructions`: Override the server instructions used in initialization
@@ -18,10 +20,12 @@
 //! - `tools`: Delegate a static list of tools to annotated free functions
 //! - `tool_groups`: Delegate generated groups of annotated free functions
 //! - `tool_state_fn`: Resolve state for the delegated free functions
-//! - `tool_state_param`: Add one raw state-selector argument to delegated tool schemas
+//! - `tool_state_param`: Add one raw state-selector argument to delegated tool
+//!   schemas
 //! - `resources_fn`: Forward `resources/list` to an async method
 //! - `read_resource_fn`: Forward `resources/read` to an async method
-//! - `resource_templates_fn`: Forward `resources/templates/list` to an async method
+//! - `resource_templates_fn`: Forward `resources/templates/list` to an async
+//!   method
 //! - `shutdown_fn`: Forward shutdown handling to an async method
 //! - `get_task_fn`: Forward `tasks/get` to an async method
 //! - `get_task_payload_fn`: Forward `tasks/result` to an async method
@@ -43,19 +47,19 @@
 //! async fn delegated(state: &State, context: &ServerCtx, params: ToolParams) -> ToolResult<T>
 //! ```
 //!
-//! The `context: &ServerCtx` parameter is optional. Tools may also omit parameters or
-//! accept `()` for parameter-less tools.
-//! Single-argument tools still default to struct-style parameters; use `#[tool(flat)]`
-//! to force flat argument handling for one-argument tools.
+//! The `context: &ServerCtx` parameter is optional. Tools may also omit
+//! parameters or accept `()` for parameter-less tools.
+//! Single-argument tools still default to struct-style parameters; use
+//! `#[tool(flat)]` to force flat argument handling for one-argument tools.
 //!
-//! A delegated function uses the same optional context, task, parameter, and return shapes.
-//! Its first parameter is a shared state reference. The server resolver receives
-//! unchanged `Option<&Arguments>` before typed decoding and returns `ToolResult<State>`.
-//! `tool_state_param = (name: Type, "Description.")` adds one required argument to each
-//! delegated tool schema.
+//! A delegated function uses the same optional context, task, parameter, and
+//! return shapes. Its first parameter is a shared state reference. The server
+//! resolver receives unchanged `Option<&Arguments>` before typed decoding and
+//! returns `ToolResult<State>`. `tool_state_param = (name: Type,
+//! "Description.")` adds one required argument to each delegated tool schema.
 //!
-//! The parameter struct (ToolParams in this example) must implement `schemars::JsonSchema`
-//! and `serde::Deserialize`.
+//! The parameter struct (ToolParams in this example) must implement
+//! `schemars::JsonSchema` and `serde::Deserialize`.
 //!
 //! Resource callback methods must use these signatures:
 //!
@@ -81,14 +85,16 @@
 //! async fn shutdown(&self) -> Result<()>
 //! ```
 //!
-//! The `#[tool]` attribute can also accept metadata that feeds into tool annotations and
-//! execution hints. Supported arguments:
-//! - `read_only`, `destructive`, `idempotent`, `open_world` (or `read_only = true/false`, etc.)
+//! The `#[tool]` attribute can also accept metadata that feeds into tool
+//! annotations and execution hints. Supported arguments:
+//! - `read_only`, `destructive`, `idempotent`, `open_world` (or `read_only =
+//!   true/false`, etc.)
 //! - `title = "..."` (tool display title)
 //! - `task_support = "forbidden" | "optional" | "required"`
 //! - `output_schema = TypeName` (explicit output schema)
 //! - `icon = "https://..."` or `icons("a", "b")`
-//! - `defaults` (treat missing arguments as an empty object and rely on serde defaults)
+//! - `defaults` (treat missing arguments as an empty object and rely on serde
+//!   defaults)
 //! - `flat` (force flat handling for single-argument tools)
 //! - `always` (always visible when using ToolSet-backed servers)
 //!
@@ -158,8 +164,8 @@
 //!
 //! # Progressive discovery with ToolSet and groups
 //!
-//! Servers that expose many tools can register them in a `tmcp::ToolSet` field and reveal
-//! them progressively. Pass the field name via `toolset`:
+//! Servers that expose many tools can register them in a `tmcp::ToolSet` field
+//! and reveal them progressively. Pass the field name via `toolset`:
 //!
 //! ```ignore
 //! #[derive(Default)]
@@ -181,10 +187,11 @@
 //! }
 //! ```
 //!
-//! A group is a struct that derives `Group` and carries its tools in a `#[group]` impl
-//! block. The group name defaults to the snake_case struct name and the description to the
-//! struct's doc comment; both can be overridden, along with activation hooks, through the
-//! `#[group(...)]` attribute on the struct:
+//! A group is a struct that derives `Group` and carries its tools in a
+//! `#[group]` impl block. The group name defaults to the snake_case struct name
+//! and the description to the struct's doc comment; both can be overridden,
+//! along with activation hooks, through the `#[group(...)]` attribute on the
+//! struct:
 //!
 //! ```ignore
 //! /// Arithmetic helpers.
@@ -201,9 +208,9 @@
 //! }
 //! ```
 //!
-//! On a `#[group]` factory method, the attribute accepts only `name = "..."` to override
-//! the path segment for that edge. Group tools are addressed as `group.tool` (nested groups
-//! as `parent.child.tool`).
+//! On a `#[group]` factory method, the attribute accepts only `name = "..."` to
+//! override the path segment for that edge. Group tools are addressed as
+//! `group.tool` (nested groups as `parent.child.tool`).
 
 #![warn(missing_docs)]
 
@@ -338,10 +345,11 @@ pub fn derive_group(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     codegen::group::expand_derive_group(&input).into()
 }
 
-/// Adds the MCP `_meta` field to a struct with proper serde attributes and builder methods.
+/// Adds the MCP `_meta` field to a struct with proper serde attributes and
+/// builder methods.
 ///
-/// Internal use only: this macro expands inside the tmcp crate's schema module and is not
-/// part of the public macro API.
+/// Internal use only: this macro expands inside the tmcp crate's schema module
+/// and is not part of the public macro API.
 #[doc(hidden)]
 #[proc_macro_attribute]
 pub fn with_meta(
@@ -352,11 +360,11 @@ pub fn with_meta(
     schema_ext::expand_meta(item, false).into()
 }
 
-/// Adds MCP `_meta` plus flattened extension fields for protocol objects that inherit
-/// MCP `Result` or are otherwise open in the TypeScript schema.
+/// Adds MCP `_meta` plus flattened extension fields for protocol objects that
+/// inherit MCP `Result` or are otherwise open in the TypeScript schema.
 ///
-/// Internal use only: this macro expands inside the tmcp crate's schema module and is not
-/// part of the public macro API.
+/// Internal use only: this macro expands inside the tmcp crate's schema module
+/// and is not part of the public macro API.
 #[doc(hidden)]
 #[proc_macro_attribute]
 pub fn with_open_meta(
@@ -367,11 +375,11 @@ pub fn with_open_meta(
     schema_ext::expand_meta(item, true).into()
 }
 
-/// Adds name and title fields to a struct with proper serde attributes, documentation, and
-/// builder methods.
+/// Adds name and title fields to a struct with proper serde attributes,
+/// documentation, and builder methods.
 ///
-/// Internal use only: this macro expands inside the tmcp crate's schema module and is not
-/// part of the public macro API.
+/// Internal use only: this macro expands inside the tmcp crate's schema module
+/// and is not part of the public macro API.
 #[doc(hidden)]
 #[proc_macro_attribute]
 pub fn with_basename(

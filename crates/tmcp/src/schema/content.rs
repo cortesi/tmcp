@@ -240,7 +240,8 @@ pub struct EmbeddedResource {
     pub annotations: Option<Annotations>,
 }
 
-/// A resource that the server is capable of reading, included in a prompt or tool call result.
+/// A resource that the server is capable of reading, included in a prompt or
+/// tool call result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceLink {
     /// The linked resource's descriptor.
@@ -480,7 +481,8 @@ where
     .serialize(serializer)
 }
 
-/// Deserialize one tagged content block using the provided known-variant mapping.
+/// Deserialize one tagged content block using the provided known-variant
+/// mapping.
 fn deserialize_content_block<'de, D, T, F>(deserializer: D, known: F) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -494,7 +496,8 @@ where
     known(&content_type, object).map_err(de::Error::custom)
 }
 
-/// Convert one content-block object to a known content block or unknown fallback.
+/// Convert one content-block object to a known content block or unknown
+/// fallback.
 fn known_content_block(
     content_type: &str,
     object: Map<String, Value>,
@@ -512,7 +515,8 @@ fn known_content_block(
     }
 }
 
-/// Convert one content-block object to a known sampling content block or unknown fallback.
+/// Convert one content-block object to a known sampling content block or
+/// unknown fallback.
 fn known_sampling_content_block(
     content_type: &str,
     object: Map<String, Value>,

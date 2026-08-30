@@ -20,11 +20,12 @@ use crate::{
     schema::{self},
 };
 
-/// Context provided to `ClientHandler` implementations for interacting with the server
+/// Context provided to `ClientHandler` implementations for interacting with the
+/// server
 ///
-/// This context is only valid for the duration of a single method call and should not
-/// be stored or used outside of that scope. The Clone implementation is for internal
-/// framework use only.
+/// This context is only valid for the duration of a single method call and
+/// should not be stored or used outside of that scope. The Clone implementation
+/// is for internal framework use only.
 #[derive(Clone)]
 pub struct ClientCtx {
     /// Sender for client notifications
@@ -72,7 +73,8 @@ impl ClientCtx {
     }
 }
 
-/// Context provided to `ServerHandler` implementations for interacting with clients
+/// Context provided to `ServerHandler` implementations for interacting with
+/// clients
 ///
 /// The framework derives a request-scoped clone for each handler invocation;
 /// the underlying channels live for the duration of the connection. Handlers
@@ -90,7 +92,8 @@ pub struct ServerCtx {
     extensions: Extensions,
     /// Optional progress token attached to the active request.
     progress_token: Option<schema::ProgressToken>,
-    /// Shared progress counter for all clones derived from the same request context.
+    /// Shared progress counter for all clones derived from the same request
+    /// context.
     progress_counter: Option<Arc<AtomicU64>>,
     /// Request IDs cancelled by the client on this connection.
     cancelled_requests: Arc<Mutex<HashSet<schema::RequestId>>>,
@@ -104,7 +107,8 @@ pub struct ServerCtx {
 }
 
 impl ServerCtx {
-    /// Create a context that can emit notifications but cannot request client actions.
+    /// Create a context that can emit notifications but cannot request client
+    /// actions.
     pub fn notification_only(notification_tx: mpsc::Sender<schema::ServerNotification>) -> Self {
         Self::new(notification_tx, None)
     }
@@ -199,22 +203,25 @@ impl ServerCtx {
 
     /// Send an informational progress notification for the current request.
     ///
-    /// Progress is best-effort: missing tokens and bounded-queue failures are ignored.
+    /// Progress is best-effort: missing tokens and bounded-queue failures are
+    /// ignored.
     pub fn send_progress(&self, message: &str) {
         self.send_progress_update(None, Some(message));
     }
 
     /// Send an informational progress notification with a known total.
     ///
-    /// Progress is best-effort: missing tokens and bounded-queue failures are ignored.
+    /// Progress is best-effort: missing tokens and bounded-queue failures are
+    /// ignored.
     pub fn send_progress_with_total(&self, message: &str, total: f64) {
         self.send_progress_update(Some(total), Some(message));
     }
 
     /// Send a progress notification for the current request.
     ///
-    /// Each call increments the request-local progress counter. Missing progress tokens
-    /// and bounded-queue failures are ignored because MCP progress is advisory.
+    /// Each call increments the request-local progress counter. Missing
+    /// progress tokens and bounded-queue failures are ignored because MCP
+    /// progress is advisory.
     pub fn send_progress_update(&self, total: Option<f64>, message: Option<&str>) {
         let (Some(token), Some(counter)) = (&self.progress_token, &self.progress_counter) else {
             return;
@@ -230,12 +237,13 @@ impl ServerCtx {
 
     /// Send a structured logging notification without a logger name.
     ///
-    /// Unlike progress, logging is not request-scoped. Serialization and notification queue
-    /// failures are returned to the caller.
+    /// Unlike progress, logging is not request-scoped. Serialization and
+    /// notification queue failures are returned to the caller.
     ///
     /// # Errors
     ///
-    /// Returns an error if `data` cannot be serialized or the notification queue is full.
+    /// Returns an error if `data` cannot be serialized or the notification
+    /// queue is full.
     pub fn send_log(&self, level: schema::LoggingLevel, data: impl Serialize) -> Result<()> {
         self.send_log_inner(level, None, data)
     }
@@ -244,7 +252,8 @@ impl ServerCtx {
     ///
     /// # Errors
     ///
-    /// Returns an error if `data` cannot be serialized or the notification queue is full.
+    /// Returns an error if `data` cannot be serialized or the notification
+    /// queue is full.
     pub fn send_log_from(
         &self,
         level: schema::LoggingLevel,

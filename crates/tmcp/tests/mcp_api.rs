@@ -109,7 +109,8 @@ mod tests {
         }
     }
 
-    /// The inspector collects initialization metadata and every static list page.
+    /// The inspector collects initialization metadata and every static list
+    /// page.
     #[tokio::test]
     async fn inspect_server_collects_mcp_api() {
         let api = inspect_server(&ApiServer).await.expect("inspect server");
@@ -134,7 +135,8 @@ mod tests {
         assert!(json.get("resource_templates").is_none());
     }
 
-    /// The connected-client inspector collects the same advertised API over MCP.
+    /// The connected-client inspector collects the same advertised API over
+    /// MCP.
     #[tokio::test]
     async fn inspect_client_collects_mcp_api() {
         let (mut client, server) = connected_client_and_server(|| ApiServer)
@@ -164,7 +166,8 @@ mod tests {
         shutdown_client_and_server(client, server).await;
     }
 
-    /// API refresh state coalesces list-change notifications until the next take.
+    /// API refresh state coalesces list-change notifications until the next
+    /// take.
     #[test]
     fn api_refresh_state_tracks_list_changed_notifications() {
         let state = McpApiRefreshState::default();
@@ -183,7 +186,8 @@ mod tests {
         assert!(state.take().is_empty());
     }
 
-    /// Notifications observed while another snapshot is in progress are not lost.
+    /// Notifications observed while another snapshot is in progress are not
+    /// lost.
     #[test]
     fn api_refresh_state_preserves_mid_snapshot_notifications() {
         let state = McpApiRefreshState::default();
@@ -195,7 +199,8 @@ mod tests {
         assert!(state.take().prompts);
     }
 
-    /// The inspector does not call list methods for capabilities the server omits.
+    /// The inspector does not call list methods for capabilities the server
+    /// omits.
     #[tokio::test]
     async fn inspect_server_skips_unadvertised_lists() {
         let api = inspect_server(&NoCapabilitiesServer)
@@ -225,7 +230,8 @@ mod tests {
         assert!(!rendered.contains("\x1b["));
     }
 
-    /// Surface digests are stable across list ordering but change with schema content.
+    /// Surface digests are stable across list ordering but change with schema
+    /// content.
     #[tokio::test]
     async fn surface_digest_is_stable_for_ordering() {
         let api = inspect_server(&ApiServer).await.expect("inspect server");

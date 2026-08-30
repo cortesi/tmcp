@@ -305,7 +305,8 @@ mod tests {
                 name: String,
                 _arguments: Option<HashMap<String, String>>,
             ) -> Result<schema::GetPromptResult> {
-                // Simulate prompt not found - using MethodNotFound as PromptNotFound doesn't exist
+                // Simulate prompt not found - using MethodNotFound as PromptNotFound doesn't
+                // exist
                 Err(Error::MethodNotFound(format!("prompt/{name}")))
             }
         }

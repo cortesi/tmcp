@@ -147,7 +147,8 @@ pub struct DynamicRegistrationConfig {
     pub token_url: String,
     /// Resource audience the registered client requests tokens for.
     pub resource: String,
-    /// Explicit registration endpoint; discovered from the auth URL origin when `None`.
+    /// Explicit registration endpoint; discovered from the auth URL origin when
+    /// `None`.
     pub registration_endpoint: Option<String>,
     /// Client metadata submitted to the registration endpoint.
     pub metadata: ClientMetadata,
@@ -155,9 +156,9 @@ pub struct DynamicRegistrationConfig {
 
 /// In-flight authorization code flow state.
 ///
-/// Created by [`OAuth2Client::begin_authorization`]; holds the PKCE verifier and CSRF
-/// token for one flow. Direct the user to [`Self::auth_url`], then consume the flow with
-/// [`OAuth2Client::exchange_code`].
+/// Created by [`OAuth2Client::begin_authorization`]; holds the PKCE verifier
+/// and CSRF token for one flow. Direct the user to [`Self::auth_url`], then
+/// consume the flow with [`OAuth2Client::exchange_code`].
 pub struct AuthorizationFlow {
     /// Authorization URL the user must visit.
     auth_url: Url,
@@ -205,8 +206,9 @@ pub struct OAuth2Client {
 impl OAuth2Client {
     /// Perform dynamic client registration and create an `OAuth2Client`.
     ///
-    /// When `config.metadata` carries no resource, the configured resource is filled in
-    /// so the registered client is audience-bound as required by MCP.
+    /// When `config.metadata` carries no resource, the configured resource is
+    /// filled in so the registered client is audience-bound as required by
+    /// MCP.
     pub async fn register_dynamic(config: DynamicRegistrationConfig) -> Result<Self, Error> {
         let DynamicRegistrationConfig {
             auth_url,
@@ -235,7 +237,8 @@ impl OAuth2Client {
         Self::new(config)
     }
 
-    /// Resolve a dynamic registration endpoint from explicit input or discovery.
+    /// Resolve a dynamic registration endpoint from explicit input or
+    /// discovery.
     async fn registration_endpoint(
         registration_client: &DynamicRegistrationClient,
         auth_url: &str,
@@ -266,8 +269,9 @@ impl OAuth2Client {
 
     /// Create a new OAuth2 client from configuration.
     ///
-    /// The authorization, token, and redirect URLs must use HTTPS; plain HTTP is only
-    /// accepted for loopback hosts (`127.0.0.1`, `::1`, `localhost`).
+    /// The authorization, token, and redirect URLs must use HTTPS; plain HTTP
+    /// is only accepted for loopback hosts (`127.0.0.1`, `::1`,
+    /// `localhost`).
     pub fn new(config: OAuth2Config) -> Result<Self, Error> {
         require_https_or_loopback(&config.auth_url, "auth URL")?;
         require_https_or_loopback(&config.token_url, "token URL")?;
@@ -304,9 +308,9 @@ impl OAuth2Client {
 
     /// Begin an authorization code flow with PKCE.
     ///
-    /// Returns the flow state holding the generated PKCE verifier and CSRF token. Direct
-    /// the user to [`AuthorizationFlow::auth_url`] and complete the flow with
-    /// [`Self::exchange_code`].
+    /// Returns the flow state holding the generated PKCE verifier and CSRF
+    /// token. Direct the user to [`AuthorizationFlow::auth_url`] and
+    /// complete the flow with [`Self::exchange_code`].
     pub fn begin_authorization(&self) -> AuthorizationFlow {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
@@ -330,7 +334,8 @@ impl OAuth2Client {
 
     /// Exchange an authorization code for a token, consuming the flow state.
     ///
-    /// The callback `state` is compared against the flow's CSRF token in constant time.
+    /// The callback `state` is compared against the flow's CSRF token in
+    /// constant time.
     pub async fn exchange_code(
         &self,
         flow: AuthorizationFlow,
@@ -351,7 +356,8 @@ impl OAuth2Client {
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(flow.pkce_verifier);
 
-        // Only add resource parameter if it's not empty (some providers don't support it)
+        // Only add resource parameter if it's not empty (some providers don't support
+        // it)
         if !self.config.resource.is_empty() {
             token_request = token_request.add_extra_param("resource", &self.config.resource);
         }
@@ -429,7 +435,8 @@ impl OAuth2Client {
         }
     }
 
-    /// Refresh the access token if the cached token still matches the caller's token.
+    /// Refresh the access token if the cached token still matches the caller's
+    /// token.
     pub async fn refresh_access_token_if_current(
         &self,
         current_access_token: &str,
@@ -472,7 +479,8 @@ impl OAuth2Client {
         let refresh_token_obj = RefreshToken::new(refresh_token.to_string());
         let mut refresh_request = self.client.exchange_refresh_token(&refresh_token_obj);
 
-        // Only add resource parameter if it's not empty (some providers don't support it)
+        // Only add resource parameter if it's not empty (some providers don't support
+        // it)
         if !self.config.resource.is_empty() {
             refresh_request = refresh_request.add_extra_param("resource", &self.config.resource);
         }
@@ -546,15 +554,16 @@ fn oauth_http_client(url: &str) -> Result<Client, Error> {
         .map_err(|error| Error::Transport(format!("Failed to build OAuth HTTP client: {error}")))
 }
 
-/// Maximum length of callback query string accepted by the OAuth callback server.
+/// Maximum length of callback query string accepted by the OAuth callback
+/// server.
 const MAX_CALLBACK_QUERY_LEN: usize = 2 * 1024;
 /// Maximum length of the callback HTTP request we accept.
 const MAX_CALLBACK_REQUEST_LEN: usize = 8 * 1024;
 
 /// Parse and validate OAuth callback query parameters.
 ///
-/// Surfaces `error`/`error_description` parameters from OAuth error redirects as
-/// authorization failures; otherwise both `code` and `state` are required.
+/// Surfaces `error`/`error_description` parameters from OAuth error redirects
+/// as authorization failures; otherwise both `code` and `state` are required.
 fn parse_callback_query(query: Option<&str>) -> Result<(String, String), Error> {
     let query = query.unwrap_or_default();
     if query.is_empty() {
@@ -685,8 +694,8 @@ async fn send_http_response(
 
 /// Minimal HTTP callback server for OAuth redirects.
 ///
-/// The listener is bound eagerly on construction, so the server accepts connections as
-/// soon as it exists.
+/// The listener is bound eagerly on construction, so the server accepts
+/// connections as soon as it exists.
 pub struct OAuth2CallbackServer {
     /// Bound listener accepting callback connections.
     listener: TcpListener,
@@ -729,9 +738,10 @@ impl OAuth2CallbackServer {
 
     /// Wait for the OAuth redirect callback and return (code, state).
     ///
-    /// Requests for paths other than `/callback` (e.g. `/favicon.ico`) receive a 404
-    /// response and the server keeps waiting. OAuth error redirects surface their
-    /// `error`/`error_description` parameters as an authorization failure.
+    /// Requests for paths other than `/callback` (e.g. `/favicon.ico`) receive
+    /// a 404 response and the server keeps waiting. OAuth error redirects
+    /// surface their `error`/`error_description` parameters as an
+    /// authorization failure.
     pub async fn wait_for_callback(&self) -> Result<(String, String), Error> {
         loop {
             let (mut stream, _) = self.listener.accept().await.map_err(|e| {

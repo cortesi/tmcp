@@ -45,7 +45,8 @@ pub struct Task {
     /// ISO 8601 timestamp when the task was last updated.
     #[serde(rename = "lastUpdatedAt")]
     pub last_updated_at: String,
-    /// Actual retention duration from creation in milliseconds, null for unlimited.
+    /// Actual retention duration from creation in milliseconds, null for
+    /// unlimited.
     pub ttl: Option<u64>,
     /// Suggested polling interval in milliseconds.
     #[serde(rename = "pollInterval", skip_serializing_if = "Option::is_none")]

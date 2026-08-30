@@ -1,8 +1,8 @@
 //! MCP protocol schema types.
 //!
-//! This module contains the data structures defined by the Model Context Protocol (MCP)
-//! specification. These types represent the protocol's message formats, capabilities,
-//! and data payloads.
+//! This module contains the data structures defined by the Model Context
+//! Protocol (MCP) specification. These types represent the protocol's message
+//! formats, capabilities, and data payloads.
 //!
 //! For detailed semantics of each type, refer to the
 //! [MCP specification](https://spec.modelcontextprotocol.io/).

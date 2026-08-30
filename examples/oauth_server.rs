@@ -1,11 +1,15 @@
 //! Example MCP server with custom token validation.
 //!
-//! Demonstrates the pattern used by applications that protect an MCP endpoint with:
-//! - A custom `TokenValidator` backed by application-specific logic (e.g. database sessions)
+//! Demonstrates the pattern used by applications that protect an MCP endpoint
+//! with:
+//! - A custom `TokenValidator` backed by application-specific logic (e.g.
+//!   database sessions)
 //! - `AuthConfig` with a public-facing `base_url` for correct RFC 9728 metadata
-//! - Access to validated `AuthInfo` in tool handlers via `ServerCtx::extensions()`
+//! - Access to validated `AuthInfo` in tool handlers via
+//!   `ServerCtx::extensions()`
 //!
-//! The server exposes a single `status` tool that returns the authenticated user's identity.
+//! The server exposes a single `status` tool that returns the authenticated
+//! user's identity.
 //!
 //! Try it:
 //!   cargo run --example oauth_server
@@ -28,7 +32,8 @@ use tracing_subscriber::fmt;
 
 /// Application-specific token validator.
 ///
-/// In production this would look up session UUIDs or OAuth access tokens in a database.
+/// In production this would look up session UUIDs or OAuth access tokens in a
+/// database.
 struct AppTokenValidator;
 
 #[async_trait]
@@ -88,7 +93,8 @@ impl ServerHandler for AppMcpServer {
             return Err(tmcp::Error::ToolNotFound(name));
         }
 
-        // AuthInfo is injected by BearerAuthLayer → HTTP transport → ServerCtx extensions.
+        // AuthInfo is injected by BearerAuthLayer → HTTP transport → ServerCtx
+        // extensions.
         let auth = context
             .extensions()
             .get::<AuthInfo>()
@@ -107,8 +113,9 @@ async fn main() -> Result<()> {
 
     let validator: Arc<dyn TokenValidator> = Arc::new(AppTokenValidator);
 
-    // AuthConfig carries the public base URL so that WWW-Authenticate challenges and
-    // protected resource metadata contain absolute URIs (required by RFC 9728).
+    // AuthConfig carries the public base URL so that WWW-Authenticate challenges
+    // and protected resource metadata contain absolute URIs (required by RFC
+    // 9728).
     let auth_config = AuthConfig::new("https://example.com", validator).with_endpoint_path("/mcp");
 
     let handle = Server::new(|| AppMcpServer)

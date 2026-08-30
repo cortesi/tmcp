@@ -264,9 +264,9 @@ use super::oauth_client::OAuth2Config;
 impl OAuth2Config {
     /// Create an `OAuth2Config` from a dynamic registration response.
     ///
-    /// Fails when the identity provider's response does not include any registered
-    /// `redirect_uris`, since silently substituting a redirect URL would misroute the
-    /// authorization flow.
+    /// Fails when the identity provider's response does not include any
+    /// registered `redirect_uris`, since silently substituting a redirect
+    /// URL would misroute the authorization flow.
     pub fn from_registration(
         registration: ClientRegistrationResponse,
         auth_url: String,

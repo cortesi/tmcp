@@ -42,35 +42,40 @@ pub struct AuthConfig {
     pub endpoint_path: String,
     /// Externally visible base URL used to construct absolute metadata URIs.
     ///
-    /// Required by RFC 9728. When the server runs behind a reverse proxy, this is the
-    /// public-facing origin (e.g. `https://example.com`). Request-time forwarding headers
+    /// Required by RFC 9728. When the server runs behind a reverse proxy, this
+    /// is the public-facing origin (e.g. `https://example.com`). Request-time forwarding headers
     /// (`X-Forwarded-Host`, `X-Forwarded-Proto`) override this value only when
     /// [`Self::trust_forwarded_headers`] is enabled.
     pub base_url: String,
     /// Whether to honor `X-Forwarded-Host`/`X-Forwarded-Proto` request headers.
     ///
-    /// Disabled by default: forwarding headers are attacker-controlled unless a trusted
-    /// reverse proxy sets them. Enable only when the server is deployed behind such a
-    /// proxy.
+    /// Disabled by default: forwarding headers are attacker-controlled unless a
+    /// trusted reverse proxy sets them. Enable only when the server is
+    /// deployed behind such a proxy.
     pub trust_forwarded_headers: bool,
-    /// Authorization server issuer URLs advertised in the protected resource metadata.
+    /// Authorization server issuer URLs advertised in the protected resource
+    /// metadata.
     ///
-    /// Defaults to `[base_url]`. Override with [`Self::with_authorization_servers`] when
-    /// tokens are issued by an external identity provider.
+    /// Defaults to `[base_url]`. Override with
+    /// [`Self::with_authorization_servers`] when tokens are issued by an
+    /// external identity provider.
     pub authorization_servers: Vec<String>,
     /// OAuth scopes advertised in the protected resource metadata.
     pub scopes_supported: Vec<String>,
-    /// Bearer token delivery methods advertised in the protected resource metadata.
+    /// Bearer token delivery methods advertised in the protected resource
+    /// metadata.
     pub bearer_methods_supported: Vec<String>,
 }
 
 impl AuthConfig {
-    /// Create an auth configuration with the given base URL and token validator.
+    /// Create an auth configuration with the given base URL and token
+    /// validator.
     ///
     /// The `base_url` is the externally visible origin (e.g. `https://example.com`). It is
-    /// used to construct absolute `resource_metadata` URIs in `WWW-Authenticate` challenges
-    /// and to serve RFC 9728 protected resource metadata. By default the base URL is also
-    /// advertised as the sole authorization server; call [`Self::with_authorization_servers`]
+    /// used to construct absolute `resource_metadata` URIs in
+    /// `WWW-Authenticate` challenges and to serve RFC 9728 protected
+    /// resource metadata. By default the base URL is also advertised as the
+    /// sole authorization server; call [`Self::with_authorization_servers`]
     /// to override when tokens come from an external identity provider.
     pub fn new(base_url: impl Into<String>, validator: Arc<dyn TokenValidator>) -> Self {
         let base_url = base_url.into();
@@ -85,11 +90,11 @@ impl AuthConfig {
         }
     }
 
-    /// Honor `X-Forwarded-Host`/`X-Forwarded-Proto` headers when deriving the public
-    /// origin for metadata and challenges.
+    /// Honor `X-Forwarded-Host`/`X-Forwarded-Proto` headers when deriving the
+    /// public origin for metadata and challenges.
     ///
-    /// Only enable this when a trusted reverse proxy sets these headers; otherwise
-    /// clients can spoof the advertised resource URL.
+    /// Only enable this when a trusted reverse proxy sets these headers;
+    /// otherwise clients can spoof the advertised resource URL.
     pub fn with_trusted_forwarded_headers(mut self) -> Self {
         self.trust_forwarded_headers = true;
         self
@@ -103,8 +108,8 @@ impl AuthConfig {
 
     /// Override the advertised authorization server URLs.
     ///
-    /// Use this when tokens are issued by an external identity provider rather than the
-    /// resource server itself (e.g. `["https://issuer.example.com"]`).
+    /// Use this when tokens are issued by an external identity provider rather
+    /// than the resource server itself (e.g. `["https://issuer.example.com"]`).
     pub fn with_authorization_servers(
         mut self,
         servers: impl IntoIterator<Item = impl Into<String>>,
@@ -269,10 +274,10 @@ struct ProtectedResourceState {
 
 /// Return an RFC 9728 protected resource metadata router for the endpoint path.
 ///
-/// The metadata document is built from the configured `base_url`. When the config opts
-/// into trusting forwarded headers, request-time `X-Forwarded-Host` and
-/// `X-Forwarded-Proto` headers take precedence so the document reflects the externally
-/// visible URL behind a reverse proxy.
+/// The metadata document is built from the configured `base_url`. When the
+/// config opts into trusting forwarded headers, request-time `X-Forwarded-Host`
+/// and `X-Forwarded-Proto` headers take precedence so the document reflects the
+/// externally visible URL behind a reverse proxy.
 pub fn protected_resource_handler(config: &AuthConfig) -> Router {
     let state = ProtectedResourceState {
         base_url: config.base_url.trim_end_matches('/').to_string(),
@@ -297,7 +302,8 @@ pub fn protected_resource_handler(config: &AuthConfig) -> Router {
     router.with_state(state)
 }
 
-/// Handler that builds protected resource metadata dynamically from the request origin.
+/// Handler that builds protected resource metadata dynamically from the request
+/// origin.
 async fn serve_protected_resource_metadata(
     State(state): State<ProtectedResourceState>,
     headers: HeaderMap,
@@ -313,9 +319,9 @@ async fn serve_protected_resource_metadata(
 
 /// Resolve the externally visible origin from the configured base URL.
 ///
-/// Request-time forwarding headers (`X-Forwarded-Host`, `X-Forwarded-Proto`) are only
-/// consulted when `trust_forwarded_headers` is set, since they are attacker-controlled
-/// unless a trusted reverse proxy injects them.
+/// Request-time forwarding headers (`X-Forwarded-Host`, `X-Forwarded-Proto`)
+/// are only consulted when `trust_forwarded_headers` is set, since they are
+/// attacker-controlled unless a trusted reverse proxy injects them.
 pub(super) fn resolve_base_url(
     headers: &HeaderMap,
     fallback: &str,

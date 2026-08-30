@@ -1,4 +1,5 @@
-//! Expansion of `#[group]` impl blocks, `#[group]` attributes, and `#[derive(Group)]`.
+//! Expansion of `#[group]` impl blocks, `#[group]` attributes, and
+//! `#[derive(Group)]`.
 
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream;

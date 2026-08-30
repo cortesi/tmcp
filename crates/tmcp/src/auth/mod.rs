@@ -1,23 +1,28 @@
 //! # OAuth Authentication Module for MCP
 //!
 //! This module provides OAuth support for both sides of MCP over HTTP:
-//! - client-side OAuth 2.0/OAuth 2.1 flows for connecting to protected MCP servers
-//! - server-side OAuth 2.1 resource-server support for protecting tmcp HTTP servers
+//! - client-side OAuth 2.0/OAuth 2.1 flows for connecting to protected MCP
+//!   servers
+//! - server-side OAuth 2.1 resource-server support for protecting tmcp HTTP
+//!   servers
 //!
-//! Together these components implement the authorization requirements from the MCP specification.
+//! Together these components implement the authorization requirements from the
+//! MCP specification.
 //!
 //! ## Features
 //!
 //! ### OAuth 2.0 Authorization Code Flow with PKCE
-//! - Full implementation of the authorization code flow with PKCE (Proof Key for Code Exchange)
+//! - Full implementation of the authorization code flow with PKCE (Proof Key
+//!   for Code Exchange)
 //! - Automatic PKCE challenge generation and verification
 //! - CSRF protection via state parameter
 //! - Secure token storage and management
 //!
 //! ### MCP-Specific Requirements
-//! - **Resource Parameter**: All authorization requests include the `resource` parameter for
-//!   audience-bound tokens as required by MCP
-//! - **Short-lived Tokens**: Support for token refresh to handle short-lived access tokens
+//! - **Resource Parameter**: All authorization requests include the `resource`
+//!   parameter for audience-bound tokens as required by MCP
+//! - **Short-lived Tokens**: Support for token refresh to handle short-lived
+//!   access tokens
 //! - **Audience Binding**: Tokens are bound to specific MCP server endpoints
 //!
 //! ### Dynamic Client Registration (RFC7591)
@@ -27,7 +32,8 @@
 //! - Fallback mechanisms for manual registration
 //!
 //! ### Discovery
-//! - Protected resource metadata discovery (RFC 9728) with `WWW-Authenticate` handling
+//! - Protected resource metadata discovery (RFC 9728) with `WWW-Authenticate`
+//!   handling
 //! - Authorization server discovery via RFC 8414 and OpenID Connect Discovery
 //! - Client ID metadata documents for HTTPS client identifiers
 //!
@@ -53,7 +59,7 @@
 //!
 //! ### Basic OAuth Flow
 //! ```no_run
-//! use tmcp::auth::{OAuth2Config, OAuth2Client, OAuth2CallbackServer};
+//! use tmcp::auth::{OAuth2CallbackServer, OAuth2Client, OAuth2Config};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -180,8 +186,12 @@
 //! The OAuth module integrates seamlessly with the MCP client:
 //!
 //! ```no_run
-//! use tmcp::{Client, auth::{OAuth2Config, OAuth2Client}};
 //! use std::sync::Arc;
+//!
+//! use tmcp::{
+//!     Client,
+//!     auth::{OAuth2Client, OAuth2Config},
+//! };
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -195,7 +205,7 @@
 //!         scopes: vec!["read".to_string()],
 //!     };
 //!     let oauth_client = Arc::new(OAuth2Client::new(config)?);
-//!     
+//!
 //!     let mut mcp_client = Client::new("my-app", "1.0.0");
 //!     let init_result = mcp_client
 //!         .connect_http_with_oauth("https://mcp.example.com", oauth_client)

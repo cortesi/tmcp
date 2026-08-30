@@ -8,11 +8,11 @@
 //! 3. Fill in the application details:
 //!    - Application name: Choose any name
 //!    - Homepage URL: Can be any valid URL
-//!    - Authorization callback URL: http://localhost:8080/callback
-//!      (or use a different port with the -p flag)
+//!    - Authorization callback URL: http://localhost:8080/callback (or use a
+//!      different port with the -p flag)
 //! 4. After creating the app, you'll get a Client ID and Client Secret
-//! 5. Run this example with:
-//!    cargo run --example ghusers -- -c YOUR_CLIENT_ID -s YOUR_CLIENT_SECRET
+//! 5. Run this example with: cargo run --example ghusers -- -c YOUR_CLIENT_ID
+//!    -s YOUR_CLIENT_SECRET
 
 use std::{error::Error, sync::Arc};
 
@@ -31,7 +31,8 @@ const GITHUB_AUTH_URL: &str = "https://github.com/login/oauth/authorize";
 /// GitHub OAuth token endpoint.
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 
-/// Wrap text to fit within the specified width, with an optional indent for continuation lines
+/// Wrap text to fit within the specified width, with an optional indent for
+/// continuation lines
 fn wrap_text(text: &str, width: usize, indent: &str) -> String {
     let words = text.split_whitespace();
     let mut lines = Vec::new();

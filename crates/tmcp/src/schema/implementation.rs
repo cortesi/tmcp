@@ -10,8 +10,9 @@ pub struct Implementation {
     /// The version of the MCP implementation.
     pub version: String,
 
-    /// Intended for UI and end-user contexts — optimized to be human-readable and easily understood,
-    /// even by those unfamiliar with domain-specific terminology.
+    /// Intended for UI and end-user contexts — optimized to be human-readable
+    /// and easily understood, even by those unfamiliar with domain-specific
+    /// terminology.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 
@@ -23,7 +24,8 @@ pub struct Implementation {
     #[serde(rename = "websiteUrl", skip_serializing_if = "Option::is_none")]
     pub website_url: Option<String>,
 
-    /// Optional set of sized icons that the client can display in a user interface.
+    /// Optional set of sized icons that the client can display in a user
+    /// interface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icons: Option<Vec<Icon>>,
 }

@@ -80,7 +80,8 @@ const DEFAULT_ASYMMETRIC_ALGORITHMS: &[Algorithm] = &[
 impl JwtValidator {
     /// Create a validator that fetches and caches keys from a JWKS endpoint.
     ///
-    /// The JWKS URL must use HTTPS; plain HTTP is only accepted for loopback hosts.
+    /// The JWKS URL must use HTTPS; plain HTTP is only accepted for loopback
+    /// hosts.
     pub fn new(
         issuer: impl Into<String>,
         audiences: impl IntoIterator<Item = impl Into<String>>,
@@ -133,7 +134,8 @@ impl JwtValidator {
         self
     }
 
-    /// Override the minimum interval between unknown-`kid` forced JWKS refreshes.
+    /// Override the minimum interval between unknown-`kid` forced JWKS
+    /// refreshes.
     pub fn with_unknown_kid_refresh_cooldown(
         mut self,
         unknown_kid_refresh_cooldown: Duration,
@@ -305,9 +307,9 @@ impl TokenValidator for JwtValidator {
 
 /// Derive the signing algorithms permitted for a verification key.
 ///
-/// The token header's `alg` is never trusted: when the JWK declares a key algorithm,
-/// only that algorithm is permitted; otherwise a default allowlist of asymmetric
-/// algorithms applies.
+/// The token header's `alg` is never trusted: when the JWK declares a key
+/// algorithm, only that algorithm is permitted; otherwise a default allowlist
+/// of asymmetric algorithms applies.
 fn permitted_algorithms(jwk: &Jwk) -> Result<Vec<Algorithm>, AuthError> {
     match jwk.common.key_algorithm {
         Some(key_algorithm) => {

@@ -2,7 +2,8 @@
 //!
 //! This test suite validates that:
 //! 1. Clients can make requests to servers (normal flow)
-//! 2. Servers can make requests to clients during request handling (reverse flow)
+//! 2. Servers can make requests to clients during request handling (reverse
+//!    flow)
 //! 3. Both directions support full request/response semantics
 #[cfg(test)]
 mod tests {

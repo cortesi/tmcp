@@ -764,7 +764,8 @@ async fn outbound_post_request(
     })
 }
 
-/// Attach a bearer token from the configured OAuth client, returning the token used.
+/// Attach a bearer token from the configured OAuth client, returning the token
+/// used.
 #[cfg(feature = "auth")]
 async fn attach_bearer(ctx: &OutboundContext, headers: &mut HeaderMap) -> Result<Option<String>> {
     let Some(oauth_client) = &ctx.oauth_client else {

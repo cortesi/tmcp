@@ -162,7 +162,8 @@ pub struct ServerInfo {
     pub self_ty: syn::Type,
     /// Generics declared on the annotated impl block.
     pub generics: syn::Generics,
-    /// Identifier of the server type (last path segment, without any raw prefix).
+    /// Identifier of the server type (last path segment, without any raw
+    /// prefix).
     pub struct_name: String,
     /// Doc comment used as the server description.
     pub description: String,
@@ -190,7 +191,8 @@ pub enum ForwarderCap {
     None,
     /// The forwarder implies the resources capability.
     Resources {
-        /// Whether the forwarder also implies resource list-change notifications.
+        /// Whether the forwarder also implies resource list-change
+        /// notifications.
         list_changed: bool,
     },
     /// The forwarder implies the `tasks/list` capability.

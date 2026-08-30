@@ -44,10 +44,11 @@ impl McpApi {
     /// Return a digest for cache invalidation over the advertised surface.
     ///
     /// The digest canonicalizes ordering by tool name, resource URI, resource
-    /// template URI template, and prompt name before hashing the full serialized
-    /// [`McpApi`], including the initialize response and advertised schemas.
-    /// Treat the value as stable for one tmcp release series; downstream caches
-    /// should tolerate invalidation when tmcp changes the protocol model.
+    /// template URI template, and prompt name before hashing the full
+    /// serialized [`McpApi`], including the initialize response and
+    /// advertised schemas. Treat the value as stable for one tmcp release
+    /// series; downstream caches should tolerate invalidation when tmcp
+    /// changes the protocol model.
     pub fn surface_digest(&self) -> String {
         let mut tools: Vec<&Tool> = self.tools.iter().collect();
         tools.sort_by(|left, right| left.name.cmp(&right.name));

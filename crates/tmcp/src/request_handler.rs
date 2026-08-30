@@ -1,7 +1,8 @@
 //! Request/response routing and tracking.
 //!
-//! This module provides the [`RequestHandler`] which correlates outgoing requests
-//! with incoming responses, handles timeouts, and supports cancellation.
+//! This module provides the [`RequestHandler`] which correlates outgoing
+//! requests with incoming responses, handles timeouts, and supports
+//! cancellation.
 
 use std::{
     future::Future,
@@ -39,7 +40,8 @@ use crate::{
 /// Default request timeout in milliseconds (30 seconds).
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
-/// Timeout value that disables the deadline and waits for the peer or the transport.
+/// Timeout value that disables the deadline and waits for the peer or the
+/// transport.
 const NO_TIMEOUT_MS: u64 = 0;
 
 /// Transport sink type used by the request handler.
@@ -85,7 +87,8 @@ impl<Res> Drop for Pending<Res> {
     }
 }
 
-/// Common request/response handling functionality shared between Client and ServerCtx.
+/// Common request/response handling functionality shared between Client and
+/// ServerCtx.
 ///
 /// The `RequestHandler` is responsible for:
 /// - Correlating outgoing requests with incoming responses via request IDs
@@ -144,7 +147,8 @@ impl RequestHandler {
         self.inner.timeout_ms.store(timeout_ms, Ordering::Relaxed);
     }
 
-    /// Shut down the current transport and wake any pending requests immediately.
+    /// Shut down the current transport and wake any pending requests
+    /// immediately.
     pub fn shutdown(&self) {
         self.inner.shutting_down.store(true, Ordering::Release);
         if let Ok(mut lock) = self.inner.transport_tx.lock() {
@@ -153,7 +157,8 @@ impl RequestHandler {
         self.inner.pending_requests.clear();
     }
 
-    /// Send a request and wait for response with timeout and cancellation support.
+    /// Send a request and wait for response with timeout and cancellation
+    /// support.
     pub async fn request<Req, Res>(&self, request: Req) -> Result<Res>
     where
         Req: serde::Serialize + RequestMethod,
@@ -272,8 +277,9 @@ impl RequestHandler {
     {
         let timeout_ms =
             timeout_override.unwrap_or_else(|| self.inner.timeout_ms.load(Ordering::Relaxed));
-        // A zero timeout means the caller accepts an unbounded wait, such as a tool that blocks on
-        // a human decision. Transport shutdown still wakes the pending request.
+        // A zero timeout means the caller accepts an unbounded wait, such as a tool
+        // that blocks on a human decision. Transport shutdown still wakes the
+        // pending request.
         let result = if timeout_ms == NO_TIMEOUT_MS {
             Ok(response_rx.await)
         } else {

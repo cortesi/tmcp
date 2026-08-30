@@ -11,7 +11,8 @@
 //!   cargo run --example basic_server tcp [host] [port]  # TCP mode
 //!   cargo run --example basic_server http [host] [port] # HTTP mode
 //!   cargo run --example basic_server stdio              # Stdio mode
-//!   cargo run --example basic_server                    # Default to TCP mode on 127.0.0.1:3000
+//!   cargo run --example basic_server                    # Default to TCP mode
+//! on 127.0.0.1:3000
 
 use clap::{Parser, Subcommand};
 use tmcp::{Result, Server, ToolResult, mcp_server, tool_params, tool_result};

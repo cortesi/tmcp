@@ -79,7 +79,8 @@ pub struct GroupInfo {
 pub struct GroupConfig {
     /// Group identifier.
     ///
-    /// When a parent is provided, the name must be fully qualified under that parent.
+    /// When a parent is provided, the name must be fully qualified under that
+    /// parent.
     pub name: String,
     /// Human-readable description for UI/discovery.
     pub description: String,
@@ -100,8 +101,8 @@ pub type ActivationHook = Box<dyn Fn(&ServerCtx) -> BoxFuture<'static, Result<()
 pub trait Group: GroupDispatch {
     /// Group configuration for this node.
     ///
-    /// For derive-based groups, this should return the local path segment; registration
-    /// will qualify it with parent groups.
+    /// For derive-based groups, this should return the local path segment;
+    /// registration will qualify it with parent groups.
     fn config(&self) -> GroupConfig;
 
     /// Local path segment name for this node.
@@ -229,7 +230,8 @@ impl ToolSet {
         }
     }
 
-    /// Activate a group and emit `notifications/tools/list_changed` if visibility changed.
+    /// Activate a group and emit `notifications/tools/list_changed` if
+    /// visibility changed.
     pub async fn activate_group(&self, name: &str, ctx: &ServerCtx) -> Result<bool> {
         let _guard = self.activation_lock.lock().await;
         let plan = self.groups.plan_activation(name)?;
@@ -241,7 +243,8 @@ impl ToolSet {
         Ok(changed)
     }
 
-    /// Deactivate a group and emit `notifications/tools/list_changed` if visibility changed.
+    /// Deactivate a group and emit `notifications/tools/list_changed` if
+    /// visibility changed.
     pub async fn deactivate_group(&self, name: &str, ctx: &ServerCtx) -> Result<bool> {
         let _guard = self.activation_lock.lock().await;
         let plan = self.groups.plan_deactivation(name)?;
@@ -305,8 +308,8 @@ impl ToolSet {
 
     /// List currently visible tools.
     ///
-    /// Tools are returned in deterministic name-sorted order (ascending); cursors
-    /// are interpreted as offsets into that ordering.
+    /// Tools are returned in deterministic name-sorted order (ascending);
+    /// cursors are interpreted as offsets into that ordering.
     pub fn list_tools(&self, cursor: Option<Cursor>) -> Result<ListToolsResult> {
         let snapshot = self.groups.snapshot();
         let view = ToolSetView { groups: &snapshot };
@@ -329,7 +332,8 @@ impl ToolSet {
 
     /// Call a tool by name.
     ///
-    /// Returns `ToolNotFound` if the tool doesn't exist or is not currently visible.
+    /// Returns `ToolNotFound` if the tool doesn't exist or is not currently
+    /// visible.
     pub async fn call_tool(
         &self,
         ctx: &ServerCtx,

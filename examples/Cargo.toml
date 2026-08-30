@@ -87,3 +87,6 @@ path = "timeout_server.rs"
 [[example]]
 name = "weather_server"
 path = "weather_server.rs"
+
+[lib]
+doctest = false

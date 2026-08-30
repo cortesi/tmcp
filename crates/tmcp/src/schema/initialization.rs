@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::macros::with_open_meta;
 
-/// After receiving an initialize request from the client, the server sends this response.
+/// After receiving an initialize request from the client, the server sends this
+/// response.
 #[with_open_meta]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitializeResult {
@@ -23,9 +24,11 @@ pub struct InitializeResult {
 }
 
 impl InitializeResult {
-    /// Create a new InitializeResult with the latest protocol version and default server version
+    /// Create a new InitializeResult with the latest protocol version and
+    /// default server version
     ///
-    /// The default server version is set to "0.0.1". Use `with_version()` to set a custom version.
+    /// The default server version is set to "0.0.1". Use `with_version()` to
+    /// set a custom version.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             protocol_version: SupportedProtocolVersions::default().latest().clone(),
@@ -39,8 +42,9 @@ impl InitializeResult {
 
     /// Set the version of the server tool (not the MCP protocol version)
     ///
-    /// This sets the version of your server implementation, not the Model Context Protocol version.
-    /// The MCP protocol version is automatically set to the latest supported version.
+    /// This sets the version of your server implementation, not the Model
+    /// Context Protocol version. The MCP protocol version is automatically
+    /// set to the latest supported version.
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.server_info.version = version.into();
         self
@@ -76,7 +80,8 @@ impl InitializeResult {
         self
     }
 
-    /// Enable resources capability with optional subscribe and list change support.
+    /// Enable resources capability with optional subscribe and list change
+    /// support.
     pub fn with_resources(mut self, subscribe: Option<bool>, list_changed: Option<bool>) -> Self {
         self.capabilities = self.capabilities.with_resources(subscribe, list_changed);
         self

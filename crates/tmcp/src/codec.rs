@@ -34,7 +34,8 @@ pub enum Frame {
 /// and yielded as [`Frame::Malformed`], so callers can answer with a JSON-RPC
 /// parse error and keep the connection alive; framing stays consistent because
 /// resynchronization happens at the next newline. Frames exceeding
-/// [`MAX_FRAME_LENGTH`] are reported as the fatal [`Error::InvalidMessageFormat`].
+/// [`MAX_FRAME_LENGTH`] are reported as the fatal
+/// [`Error::InvalidMessageFormat`].
 #[derive(Default)]
 pub struct JsonRpcCodec {
     /// Index from which to resume scanning for the next newline, so

@@ -5,7 +5,8 @@ use url::Url;
 
 use crate::{error::Error, http::is_loopback_http_url};
 
-/// Validate that a URL uses HTTPS, permitting plain HTTP only for loopback hosts.
+/// Validate that a URL uses HTTPS, permitting plain HTTP only for loopback
+/// hosts.
 pub fn require_https_or_loopback(url: &str, context: &str) -> Result<(), Error> {
     let parsed = Url::parse(url)
         .map_err(|e| Error::InvalidConfiguration(format!("Invalid {context}: {e}")))?;

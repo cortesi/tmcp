@@ -24,7 +24,8 @@ const WELL_KNOWN_OPENID_CONFIGURATION: &str = "openid-configuration";
 pub struct ProtectedResourceMetadata {
     /// Resource identifier for the protected resource.
     pub resource: String,
-    /// Authorization server issuer URLs that can issue tokens for this resource.
+    /// Authorization server issuer URLs that can issue tokens for this
+    /// resource.
     pub authorization_servers: Vec<String>,
     /// Optional list of supported scopes.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,7 +217,8 @@ impl AuthorizationDiscoveryClient {
         )))
     }
 
-    /// Discover authorization server metadata for all servers advertised by a resource.
+    /// Discover authorization server metadata for all servers advertised by a
+    /// resource.
     pub async fn discover_authorization_servers(
         &self,
         resource: &str,
@@ -355,8 +357,8 @@ const MAX_METADATA_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// Fetch JSON from a URL and deserialize it as the requested type.
 ///
-/// Response bodies are capped at [`MAX_METADATA_RESPONSE_BYTES`] so a misbehaving
-/// endpoint cannot exhaust memory.
+/// Response bodies are capped at [`MAX_METADATA_RESPONSE_BYTES`] so a
+/// misbehaving endpoint cannot exhaust memory.
 async fn fetch_json<T: DeserializeOwned>(client: &Client, url: &Url) -> Result<T, Error> {
     let mut response = client
         .get(url.clone())

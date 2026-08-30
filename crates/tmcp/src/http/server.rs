@@ -8,9 +8,9 @@
 //! Message routing per session:
 //! - POSTed requests are correlated to their JSON-RPC response by id and
 //!   answered on the POST itself with `application/json`.
-//! - Server-initiated notifications and requests flow to the standing GET
-//!   SSE stream when one is open; recent events are retained for
-//!   `Last-Event-ID` replay on reconnect.
+//! - Server-initiated notifications and requests flow to the standing GET SSE
+//!   stream when one is open; recent events are retained for `Last-Event-ID`
+//!   replay on reconnect.
 //! - POSTed notifications and responses are forwarded to the connection loop
 //!   and acknowledged with `202 Accepted`.
 //! - DELETE terminates the session.
@@ -162,10 +162,11 @@ struct HttpSession {
     protocol_version: Arc<sync::Mutex<Option<ProtocolVersion>>>,
     /// Authenticated subject the session is bound to.
     ///
-    /// Recorded from the [`AuthInfo`] request extension at initialize when the auth
-    /// middleware is installed. Subsequent requests for the session must authenticate as
-    /// the same subject; mismatches are rejected with `403 Forbidden` so a session id
-    /// cannot be replayed with a different identity's token.
+    /// Recorded from the [`AuthInfo`] request extension at initialize when the
+    /// auth middleware is installed. Subsequent requests for the session
+    /// must authenticate as the same subject; mismatches are rejected with
+    /// `403 Forbidden` so a session id cannot be replayed with a different
+    /// identity's token.
     auth_subject: Option<String>,
 }
 
@@ -526,7 +527,8 @@ fn session_id_header(headers: &HeaderMap) -> Option<String> {
 /// Enforce session–subject binding for a request.
 ///
 /// Returns a `403 Forbidden` response when the session was initialized by an
-/// authenticated subject and the request's [`AuthInfo`] subject differs or is absent.
+/// authenticated subject and the request's [`AuthInfo`] subject differs or is
+/// absent.
 fn check_session_subject(session: &HttpSession, extensions: &http::Extensions) -> Option<Response> {
     let expected = session.auth_subject.as_deref()?;
     let actual = auth_subject(extensions);

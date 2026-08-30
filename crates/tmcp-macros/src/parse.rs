@@ -109,7 +109,8 @@ pub fn is_string_type(ty: &syn::Type) -> bool {
     type_path_ends_with(ty, "String")
 }
 
-/// Return true when a type is `Option<T>` with an argument matching the predicate.
+/// Return true when a type is `Option<T>` with an argument matching the
+/// predicate.
 fn is_option_of(ty: &syn::Type, is_inner: fn(&syn::Type) -> bool) -> bool {
     let syn::Type::Path(type_path) = ty else {
         return false;
@@ -134,7 +135,8 @@ pub fn is_option_cursor_type(ty: &syn::Type) -> bool {
     is_option_of(ty, |inner| type_path_ends_with(inner, "Cursor"))
 }
 
-/// Whether a parameter attribute is harvested onto generated flat-argument structs.
+/// Whether a parameter attribute is harvested onto generated flat-argument
+/// structs.
 fn is_flat_param_attr(attr: &syn::Attribute) -> bool {
     attr.path().is_ident("serde") || attr.path().is_ident("schemars") || attr.path().is_ident("doc")
 }
@@ -148,7 +150,8 @@ fn filter_flat_param_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
         .collect()
 }
 
-/// Remove harvested parameter attributes from `#[tool]` methods in an impl block.
+/// Remove harvested parameter attributes from `#[tool]` methods in an impl
+/// block.
 ///
 /// Serde, schemars, and doc attributes on tool parameters feed the generated
 /// flat-argument structs; they are not legal on function parameters, so they
@@ -420,7 +423,8 @@ fn parse_attr_metas(attr: &syn::Attribute, label: &str) -> Result<Vec<Meta>> {
     }
 }
 
-/// Parse group metadata from `#[group(...)]` or `#[tmcp_group_meta(...)]` attributes.
+/// Parse group metadata from `#[group(...)]` or `#[tmcp_group_meta(...)]`
+/// attributes.
 ///
 /// This is the single grammar for group metadata: it is used both by
 /// `#[derive(Group)]` (all keys) and by `#[group]` factory methods (which
@@ -583,7 +587,8 @@ fn normalize_task_support(
     }
 }
 
-/// Parse the context, task, and ordinary parameters after a receiver or state argument.
+/// Parse the context, task, and ordinary parameters after a receiver or state
+/// argument.
 fn parse_tool_tail(
     signature: &syn::Signature,
     params: &[&syn::FnArg],
@@ -804,7 +809,8 @@ pub fn parse_free_tool_function(
     })
 }
 
-/// Parse a group factory method from an impl item if it has a #[group] attribute.
+/// Parse a group factory method from an impl item if it has a #[group]
+/// attribute.
 pub fn parse_group_method(method: &syn::ImplItemFn) -> Result<Option<GroupMethod>> {
     let group_attrs: Vec<_> = method
         .attrs
@@ -843,7 +849,8 @@ pub fn parse_group_method(method: &syn::ImplItemFn) -> Result<Option<GroupMethod
         ));
     }
 
-    // Validate the receiver: generated dispatch calls group factories through &self.
+    // Validate the receiver: generated dispatch calls group factories through
+    // &self.
     validate_self_receiver(&params, "group")?;
 
     if params.len() > 1 {

@@ -31,7 +31,8 @@ use crate::{
     },
 };
 
-/// Maximum number of queued outbound client notifications before backpressure applies.
+/// Maximum number of queued outbound client notifications before backpressure
+/// applies.
 const CLIENT_NOTIFICATION_BUFFER: usize = 64;
 
 /// Default no-op implementation of ClientHandler for unit type
@@ -47,7 +48,8 @@ where
 {
     /// Tracks requests and routes responses.
     request_handler: RequestHandler,
-    /// Connection callbacks for server-initiated requests (wrapped in Arc for sharing).
+    /// Connection callbacks for server-initiated requests (wrapped in Arc for
+    /// sharing).
     connection: Arc<C>,
     /// Context used for connection callbacks.
     context: Option<ClientCtx>,
@@ -61,7 +63,8 @@ where
     protocol_versions: SupportedProtocolVersions,
     /// Tracks whether on_connect has been invoked for this connection.
     on_connect_called: bool,
-    /// Background task driving the inbound message loop for the active connection.
+    /// Background task driving the inbound message loop for the active
+    /// connection.
     message_handler: Option<AbortOnDrop>,
 }
 
@@ -146,14 +149,15 @@ impl Client<()> {
 
     /// Set a custom handler for server-initiated requests.
     ///
-    /// This method uses a **type state pattern**: it transforms `Client<()>` into
-    /// `Client<C>` where `C` implements [`ClientHandler`]. This compile-time change
-    /// ensures the handler is set before connecting, rather than allowing runtime
-    /// failures from missing handlers.
+    /// This method uses a **type state pattern**: it transforms `Client<()>`
+    /// into `Client<C>` where `C` implements [`ClientHandler`]. This
+    /// compile-time change ensures the handler is set before connecting,
+    /// rather than allowing runtime failures from missing handlers.
     ///
     /// The handler receives callbacks when the server initiates requests:
     /// - [`ClientHandler::pong`] - Server health checks
-    /// - [`ClientHandler::create_message`] - LLM sampling requests (if capability enabled)
+    /// - [`ClientHandler::create_message`] - LLM sampling requests (if
+    ///   capability enabled)
     /// - [`ClientHandler::list_roots`] - Filesystem root discovery
     /// - [`ClientHandler::elicit`] - User input requests
     ///
@@ -182,7 +186,8 @@ impl Client<()> {
 
     /// Set the default request timeout for this connection.
     ///
-    /// A zero duration disables the deadline. See [`Self::without_request_timeout`].
+    /// A zero duration disables the deadline. See
+    /// [`Self::without_request_timeout`].
     pub fn with_request_timeout(self, timeout: Duration) -> Self {
         self.request_handler.set_timeout(timeout.as_millis() as u64);
         self
@@ -190,8 +195,8 @@ impl Client<()> {
 
     /// Wait for every response without a deadline.
     ///
-    /// Use this for a peer whose tools can block on a human decision. Transport shutdown and
-    /// cancellation still complete a pending request.
+    /// Use this for a peer whose tools can block on a human decision. Transport
+    /// shutdown and cancellation still complete a pending request.
     pub fn without_request_timeout(self) -> Self {
         self.request_handler.set_timeout(0);
         self
@@ -218,11 +223,12 @@ where
 
     /// Initialize the connection with the server
     ///
-    /// This is a convenience method that uses the client's configured name, version,
-    /// and capabilities with the preferred configured protocol version.
+    /// This is a convenience method that uses the client's configured name,
+    /// version, and capabilities with the preferred configured protocol
+    /// version.
     ///
-    /// Calling `init` triggers the `ClientHandler::on_connect` callback after the
-    /// initialization handshake completes.
+    /// Calling `init` triggers the `ClientHandler::on_connect` callback after
+    /// the initialization handshake completes.
     pub async fn init(&mut self) -> Result<InitializeResult>
     where
         C: Sync,
@@ -239,7 +245,8 @@ where
     /// connects to the server, and performs the initialization handshake.
     ///
     /// # Arguments
-    /// * `addr` - Server address in the format "host:port" (e.g., "localhost:3000", "127.0.0.1:8080")
+    /// * `addr` - Server address in the format "host:port" (e.g.,
+    ///   "localhost:3000", "127.0.0.1:8080")
     pub async fn connect_tcp(&mut self, addr: impl Into<String>) -> Result<InitializeResult> {
         let transport = Box::new(TcpClientTransport::new(addr));
         self.connect(transport).await?;
@@ -271,7 +278,8 @@ where
         self.init().await
     }
 
-    /// Connect via HTTP/HTTPS with static headers and initialize the connection.
+    /// Connect via HTTP/HTTPS with static headers and initialize the
+    /// connection.
     #[cfg(feature = "http")]
     pub async fn connect_http_with_headers(
         &mut self,
@@ -283,7 +291,8 @@ where
         self.init().await
     }
 
-    /// Connect via HTTP/HTTPS with OAuth authentication and initialize the connection
+    /// Connect via HTTP/HTTPS with OAuth authentication and initialize the
+    /// connection
     ///
     /// This method creates an HTTP transport with OAuth authentication support.
     /// The OAuth client should be pre-configured with valid tokens or ready to
@@ -320,7 +329,8 @@ where
         self.init().await
     }
 
-    /// Connect using generic AsyncRead and AsyncWrite streams and initialize the connection.
+    /// Connect using generic AsyncRead and AsyncWrite streams and initialize
+    /// the connection.
     ///
     /// This method allows you to connect to a server using any pair of
     /// AsyncRead and AsyncWrite streams, such as process stdio, pipes,
@@ -337,10 +347,11 @@ where
         self.init().await
     }
 
-    /// Connect using generic AsyncRead and AsyncWrite streams without initialization.
+    /// Connect using generic AsyncRead and AsyncWrite streams without
+    /// initialization.
     ///
-    /// This method establishes a transport connection but does not perform the MCP
-    /// initialization handshake.
+    /// This method establishes a transport connection but does not perform the
+    /// MCP initialization handshake.
     pub async fn connect_stream_raw<R, W>(&mut self, reader: R, writer: W) -> Result<()>
     where
         R: AsyncRead + Send + Sync + Unpin + 'static,
@@ -361,7 +372,8 @@ where
     /// * `command` - A configured tokio::process::Command ready to be spawned
     ///
     /// # Returns
-    /// Returns a [`SpawnedServer`] containing the process handle and server info.
+    /// Returns a [`SpawnedServer`] containing the process handle and server
+    /// info.
     pub async fn connect_process(&mut self, mut command: Command) -> Result<SpawnedServer> {
         configure_process_stdio(&mut command);
         let process = command
@@ -391,7 +403,8 @@ where
         }
     }
 
-    /// Spawn a process and connect to it via its stdin/stdout without initialization.
+    /// Spawn a process and connect to it via its stdin/stdout without
+    /// initialization.
     ///
     /// This method spawns a new process and establishes an MCP connection
     /// through its standard input and output streams.
@@ -746,9 +759,9 @@ where
 
     /// Call a tool with the given name and arguments.
     ///
-    /// Arguments can be any serializable type. For tools that take no arguments, pass `()`
-    /// which serializes to an empty JSON object `{}`. This is the idiomatic way to call
-    /// parameter-less tools.
+    /// Arguments can be any serializable type. For tools that take no
+    /// arguments, pass `()` which serializes to an empty JSON object `{}`.
+    /// This is the idiomatic way to call parameter-less tools.
     ///
     /// # Example
     ///
@@ -818,8 +831,8 @@ where
 
     /// Call a tool and deserialize the JSON text response into a typed result.
     ///
-    /// This is a convenience method for tools that return JSON in their text content.
-    /// It:
+    /// This is a convenience method for tools that return JSON in their text
+    /// content. It:
     /// 1. Serializes the arguments
     /// 2. Calls the tool
     /// 3. Extracts the first text content block
@@ -1276,7 +1289,8 @@ mod tests {
             .expect("Receiver dropped");
     }
 
-    /// Ensure notifications are not forwarded when the server lacks the corresponding capability.
+    /// Ensure notifications are not forwarded when the server lacks the
+    /// corresponding capability.
     #[tokio::test]
     async fn test_server_notification_filtered_without_capability() {
         struct NotifClientHandler {
@@ -1706,8 +1720,8 @@ mod tests {
             .await
             .expect("Failed to connect");
 
-        // The server transport is never read, so `initialize` has no response. A bounded client
-        // would fail here; this one must still be waiting.
+        // The server transport is never read, so `initialize` has no response. A
+        // bounded client would fail here; this one must still be waiting.
         let result = timeout(Duration::from_millis(300), client.init()).await;
 
         assert!(result.is_err(), "expected the request to still be pending");

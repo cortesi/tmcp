@@ -106,7 +106,8 @@ pub fn generate_toolset_ensure_registered(
     }
 }
 
-/// Generate the ServerHandler::list_tools implementation for ToolSet-backed servers.
+/// Generate the ServerHandler::list_tools implementation for ToolSet-backed
+/// servers.
 pub fn generate_toolset_list_tools(toolset_field: &syn::Ident) -> TokenStream {
     quote! {
         async fn list_tools(
@@ -120,7 +121,8 @@ pub fn generate_toolset_list_tools(toolset_field: &syn::Ident) -> TokenStream {
     }
 }
 
-/// Generate the ServerHandler::call_tool implementation for ToolSet-backed servers.
+/// Generate the ServerHandler::call_tool implementation for ToolSet-backed
+/// servers.
 pub fn generate_toolset_call_tool(
     info: &ServerInfo,
     args: &ServerMacroArgs,

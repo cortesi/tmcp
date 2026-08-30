@@ -1,4 +1,5 @@
-//! Validation of forwarder-callback signatures named in `#[mcp_server]` arguments.
+//! Validation of forwarder-callback signatures named in `#[mcp_server]`
+//! arguments.
 
 use syn::{ImplItem, ItemImpl, Result, spanned::Spanned};
 

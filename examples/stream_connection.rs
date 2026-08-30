@@ -1,4 +1,5 @@
-//! Example demonstrating how to connect using generic AsyncRead/AsyncWrite streams
+//! Example demonstrating how to connect using generic AsyncRead/AsyncWrite
+//! streams
 //!
 //! This example shows how to use the connect_stream_raw() method with various
 //! types of streams, not just process stdio.
