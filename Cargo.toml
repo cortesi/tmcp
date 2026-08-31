@@ -1,11 +1,12 @@
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 authors = ["Aldo Cortesi <aldo@corte.si>"]
 description = "Complete, ergonomic implementation of the Model Context Protocol (MCP)"
 license = "MIT"
 repository = "https://github.com/cortesi/tmcp"
-keywords = ["mcp", "ai", "anthropic","openai"]
+keywords = ["mcp", "ai", "anthropic", "openai"]
+categories = ["network-programming", "asynchronous"]
 readme = "README.md"
 
 [workspace]
@@ -44,6 +45,7 @@ too_many_lines = "warn"
 schema-version = 1
 requires-nanocode = ">=0.1, <0.2"
 features = "all"
+cargo-release = "tmcp"
 
 [profile.dev]
 debug = "line-tables-only"

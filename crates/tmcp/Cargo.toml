@@ -7,6 +7,7 @@ description.workspace = true
 license.workspace = true
 repository.workspace = true
 keywords.workspace = true
+categories.workspace = true
 readme.workspace = true
 
 [lib]
@@ -39,7 +40,7 @@ schema-validation = ["dep:jsonschema"]
 testutils = []
 
 [dependencies]
-tmcp-macros = { path = "../tmcp-macros", version = "0.5.0" }
+tmcp-macros = { path = "../tmcp-macros", version = "0.6.0" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.48", features = ["io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }

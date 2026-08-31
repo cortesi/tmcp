@@ -56,7 +56,7 @@ Enable only the optional capabilities an application uses:
 - `testutils` provides integration-test harnesses and transports.
 
 ```toml
-tmcp = { version = "0.5", features = ["auth"] }
+tmcp = { version = "0.6", features = ["auth"] }
 ```
 
 ---
