@@ -157,6 +157,16 @@ impl RequestHandler {
         self.inner.pending_requests.clear();
     }
 
+    /// Returns whether the handler has an active transport.
+    pub(crate) fn is_connected(&self) -> bool {
+        let has_transport = self
+            .inner
+            .transport_tx
+            .lock()
+            .is_ok_and(|transport| transport.is_some());
+        has_transport && !self.inner.shutting_down.load(Ordering::Acquire)
+    }
+
     /// Send a request and wait for response with timeout and cancellation
     /// support.
     pub async fn request<Req, Res>(&self, request: Req) -> Result<Res>

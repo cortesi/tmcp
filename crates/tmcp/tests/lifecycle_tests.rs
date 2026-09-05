@@ -12,6 +12,7 @@ mod tests {
     use tokio::{
         net::TcpListener,
         sync::Mutex,
+        task::yield_now,
         time::{Duration, sleep},
     };
 
@@ -93,6 +94,32 @@ mod tests {
 
         // Verify on_shutdown was called
         assert_eq!(server_impl.shutdown_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn client_connection_state_tracks_peer_shutdown() {
+        use tokio::time::timeout;
+
+        let client = Client::new("test-client", "1.0.0");
+        assert!(!client.is_connected());
+
+        let (mut client, server) = connected_client_and_server(LifecycleTestServer::default)
+            .await
+            .expect("connect client and server");
+        client.init().await.expect("initialize client");
+        assert!(client.is_connected());
+
+        server.stop().await.expect("stop server");
+        timeout(Duration::from_secs(1), async {
+            while client.is_connected() {
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("client observes peer shutdown");
+
+        client.disconnect().await;
+        assert!(!client.is_connected());
     }
 
     #[tokio::test]

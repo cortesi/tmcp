@@ -235,6 +235,14 @@ where
         self.on_connect_called = false;
     }
 
+    /// Returns whether this client has an active transport.
+    ///
+    /// This method does not send a request. It becomes false when the peer
+    /// closes the transport or after [`Self::disconnect`] starts.
+    pub fn is_connected(&self) -> bool {
+        self.request_handler.is_connected()
+    }
+
     /// Initialize the connection with the server
     ///
     /// This is a convenience method that uses the client's configured name,
