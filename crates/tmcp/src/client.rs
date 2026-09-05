@@ -221,6 +221,20 @@ where
         Ok(())
     }
 
+    /// Disconnect the active transport and wait for its message loop to stop.
+    ///
+    /// Pending requests terminate with [`Error::TransportDisconnected`]. It is
+    /// safe to call this method repeatedly, and the client can connect again
+    /// after it returns.
+    pub async fn disconnect(&mut self) {
+        self.request_handler.shutdown();
+        if let Some(handler) = self.message_handler.take() {
+            handler.stop().await;
+        }
+        self.context = None;
+        self.on_connect_called = false;
+    }
+
     /// Initialize the connection with the server
     ///
     /// This is a convenience method that uses the client's configured name,
@@ -701,45 +715,31 @@ where
         capabilities: ClientCapabilities,
         client_info: Implementation,
     ) -> Result<InitializeResult> {
-        let request = ClientRequest::initialize(
-            self.protocol_versions.preferred().clone(),
-            capabilities,
-            client_info,
-        );
-
-        let result: InitializeResult = match self.request_and_wait(request).await {
-            Ok(result) => result,
-            Err(error @ Error::Protocol(_)) => {
-                self.disconnect_after_protocol_error().await;
-                return Err(error);
+        let result = async {
+            let request = ClientRequest::initialize(
+                self.protocol_versions.preferred().clone(),
+                capabilities,
+                client_info,
+            );
+            let result: InitializeResult = self.request_and_wait(request).await?;
+            if !self.protocol_versions.contains(&result.protocol_version) {
+                return Err(Error::Protocol(format!(
+                    "server selected unsupported protocol version `{}`",
+                    result.protocol_version
+                )));
             }
-            Err(error) => return Err(error),
-        };
-        if !self.protocol_versions.contains(&result.protocol_version) {
-            let version = result.protocol_version.clone();
-            self.disconnect_after_protocol_error().await;
-            return Err(Error::Protocol(format!(
-                "server selected unsupported protocol version `{version}`"
-            )));
+
+            // Send the initialized notification to complete the handshake.
+            self.send_notification("notifications/initialized", None)
+                .await?;
+            self.call_on_connect().await?;
+            Ok(result)
         }
-
-        // Send the initialized notification to complete the handshake
-        self.send_notification("notifications/initialized", None)
-            .await?;
-
-        self.call_on_connect().await?;
-
-        Ok(result)
-    }
-
-    /// Disconnect after a failed initialization negotiation.
-    async fn disconnect_after_protocol_error(&mut self) {
-        self.request_handler.shutdown();
-        if let Some(handler) = self.message_handler.take() {
-            handler.stop().await;
+        .await;
+        if result.is_err() {
+            self.disconnect().await;
         }
-        self.context = None;
-        self.on_connect_called = false;
+        result
     }
 
     /// Send a ping request to the server and wait for the response.

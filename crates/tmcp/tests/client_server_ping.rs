@@ -2,9 +2,12 @@
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
     };
 
     use async_trait::async_trait;
@@ -19,6 +22,7 @@ mod tests {
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         sync::mpsc,
+        time::timeout,
     };
     use tracing_subscriber::fmt;
 
@@ -74,6 +78,8 @@ mod tests {
 
     struct TestServerHandler;
 
+    struct FailingOnConnect;
+
     #[derive(Clone)]
     struct NegotiatingServer {
         received: Arc<Mutex<Vec<ProtocolVersion>>>,
@@ -98,6 +104,13 @@ mod tests {
 
         async fn pong(&self, _ctx: &ServerCtx) -> Result<()> {
             Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl ClientHandler for FailingOnConnect {
+        async fn on_connect(&self, _ctx: &ClientCtx) -> Result<()> {
+            Err(tmcp::Error::InternalError("on_connect failed".to_owned()))
         }
     }
 
@@ -194,6 +207,98 @@ mod tests {
         }
 
         shutdown_client_and_server(client, handle).await;
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_terminates_pending_requests_and_releases_transport() {
+        let (server_reader, mut server_writer, client_reader, client_writer) = make_duplex_pair();
+        let mut client = tmcp::Client::new("test-client", "1.0.0").without_request_timeout();
+        client
+            .connect_stream_raw(client_reader, client_writer)
+            .await
+            .expect("connect client");
+        let (_, pending) = client
+            .request::<EmptyResult>(ClientRequest::ping())
+            .await
+            .expect("send pending request");
+        let mut lines = BufReader::new(server_reader).lines();
+        assert!(lines.next_line().await.expect("read request").is_some());
+
+        client.disconnect().await;
+
+        assert!(matches!(
+            pending.await,
+            Err(tmcp::Error::TransportDisconnected)
+        ));
+        assert!(
+            timeout(Duration::from_secs(1), lines.next_line())
+                .await
+                .expect("transport close timeout")
+                .expect("read transport close")
+                .is_none()
+        );
+        assert!(server_writer.write_all(b"{}\n").await.is_err());
+        client.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_is_idempotent_and_allows_reconnect() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut client =
+            tmcp::Client::new("test-client", "1.0.0").with_handler(TestClientHandler {
+                calls: calls.clone(),
+            });
+
+        for _ in 0..2 {
+            let server = tmcp::Server::new(|| TestServerHandler);
+            let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
+            let handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
+                .await
+                .expect("start server");
+            client
+                .connect_stream_raw(client_reader, client_writer)
+                .await
+                .expect("connect client");
+            client.init().await.expect("initialize client");
+            client.ping().await.expect("ping server");
+            client.disconnect().await;
+            client.disconnect().await;
+            handle.stop().await.expect("stop server");
+        }
+
+        assert_eq!(
+            calls
+                .lock()
+                .expect("client calls")
+                .iter()
+                .filter(|call| call.as_str() == "on_connect")
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_on_connect_disconnects_initialized_transport() {
+        let server = tmcp::Server::new(|| TestServerHandler);
+        let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
+        let handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
+            .await
+            .expect("start server");
+        let mut client = tmcp::Client::new("test-client", "1.0.0").with_handler(FailingOnConnect);
+        client
+            .connect_stream_raw(client_reader, client_writer)
+            .await
+            .expect("connect client");
+
+        assert!(matches!(
+            client.init().await,
+            Err(tmcp::Error::InternalError(message)) if message == "on_connect failed"
+        ));
+        assert!(matches!(
+            client.ping().await,
+            Err(tmcp::Error::TransportDisconnected)
+        ));
+        handle.stop().await.expect("stop server");
     }
 
     #[tokio::test]
