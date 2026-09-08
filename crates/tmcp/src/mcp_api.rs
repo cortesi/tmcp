@@ -1,8 +1,11 @@
 //! Helpers for inspecting a server's MCP API.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use serde::{Deserialize, Serialize};
@@ -12,9 +15,10 @@ use tokio::sync::mpsc;
 use crate::{
     Client, ClientHandler, Result, ServerCtx, ServerHandler,
     schema::{
-        ClientCapabilities, ClientRequest, Implementation, InitializeResult, ListPromptsResult,
-        ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt, ProtocolVersion,
-        Resource, ResourceTemplate, ServerNotification, SupportedProtocolVersions, Tool,
+        ClientCapabilities, ClientRequest, Cursor, Implementation, InitializeResult,
+        ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
+        Prompt, ProtocolVersion, Resource, ResourceTemplate, ServerNotification,
+        SupportedProtocolVersions, Tool,
     },
 };
 
@@ -312,11 +316,27 @@ fn inspection_context() -> (ServerCtx, mpsc::Receiver<ServerNotification>) {
     (ServerCtx::new(notification_tx, None), notification_rx)
 }
 
+/// Retain one pagination cursor and reject a cycle before the next request.
+fn retain_next_cursor(
+    seen: &mut HashSet<Cursor>,
+    cursor: Cursor,
+    operation: &str,
+) -> Result<Cursor> {
+    if seen.insert(cursor.clone()) {
+        Ok(cursor)
+    } else {
+        Err(crate::Error::Protocol(format!(
+            "{operation} returned repeated pagination cursor `{cursor}`"
+        )))
+    }
+}
+
 /// Collect every page returned by `tools/list`.
 async fn collect_tools(
     handler: &(impl ServerHandler + ?Sized),
     ctx: &ServerCtx,
 ) -> Result<Vec<Tool>> {
+    let mut seen = HashSet::new();
     let mut cursor = None;
     let mut tools = Vec::new();
     loop {
@@ -325,7 +345,7 @@ async fn collect_tools(
         let Some(next_cursor) = page.next_cursor else {
             return Ok(tools);
         };
-        cursor = Some(next_cursor);
+        cursor = Some(retain_next_cursor(&mut seen, next_cursor, "tools/list")?);
     }
 }
 
@@ -334,6 +354,7 @@ async fn collect_resources(
     handler: &(impl ServerHandler + ?Sized),
     ctx: &ServerCtx,
 ) -> Result<Vec<Resource>> {
+    let mut seen = HashSet::new();
     let mut cursor = None;
     let mut resources = Vec::new();
     loop {
@@ -342,7 +363,11 @@ async fn collect_resources(
         let Some(next_cursor) = page.next_cursor else {
             return Ok(resources);
         };
-        cursor = Some(next_cursor);
+        cursor = Some(retain_next_cursor(
+            &mut seen,
+            next_cursor,
+            "resources/list",
+        )?);
     }
 }
 
@@ -351,6 +376,7 @@ async fn collect_resource_templates(
     handler: &(impl ServerHandler + ?Sized),
     ctx: &ServerCtx,
 ) -> Result<Vec<ResourceTemplate>> {
+    let mut seen = HashSet::new();
     let mut cursor = None;
     let mut resource_templates = Vec::new();
     loop {
@@ -359,7 +385,11 @@ async fn collect_resource_templates(
         let Some(next_cursor) = page.next_cursor else {
             return Ok(resource_templates);
         };
-        cursor = Some(next_cursor);
+        cursor = Some(retain_next_cursor(
+            &mut seen,
+            next_cursor,
+            "resources/templates/list",
+        )?);
     }
 }
 
@@ -368,6 +398,7 @@ async fn collect_prompts(
     handler: &(impl ServerHandler + ?Sized),
     ctx: &ServerCtx,
 ) -> Result<Vec<Prompt>> {
+    let mut seen = HashSet::new();
     let mut cursor = None;
     let mut prompts = Vec::new();
     loop {
@@ -376,7 +407,7 @@ async fn collect_prompts(
         let Some(next_cursor) = page.next_cursor else {
             return Ok(prompts);
         };
-        cursor = Some(next_cursor);
+        cursor = Some(retain_next_cursor(&mut seen, next_cursor, "prompts/list")?);
     }
 }
 
@@ -385,6 +416,7 @@ pub async fn collect_client_tools<C>(client: &Client<C>) -> Result<Vec<Tool>>
 where
     C: ClientHandler + Send + 'static,
 {
+    let mut seen = HashSet::new();
     let mut cursor = None;
     let mut tools = Vec::new();
     loop {
@@ -396,7 +428,7 @@ where
         let Some(next_cursor) = page.next_cursor else {
             return Ok(tools);
         };
-        cursor = Some(next_cursor);
+        cursor = Some(retain_next_cursor(&mut seen, next_cursor, "tools/list")?);
     }
 }
 
@@ -405,6 +437,7 @@ pub async fn collect_client_resources<C>(client: &Client<C>) -> Result<Vec<Resou
 where
     C: ClientHandler + Send + 'static,
 {
+    let mut seen = HashSet::new();
     let mut cursor = None;
     let mut resources = Vec::new();
     loop {
@@ -416,7 +449,11 @@ where
         let Some(next_cursor) = page.next_cursor else {
             return Ok(resources);
         };
-        cursor = Some(next_cursor);
+        cursor = Some(retain_next_cursor(
+            &mut seen,
+            next_cursor,
+            "resources/list",
+        )?);
     }
 }
 
@@ -427,6 +464,7 @@ pub async fn collect_client_resource_templates<C>(
 where
     C: ClientHandler + Send + 'static,
 {
+    let mut seen = HashSet::new();
     let mut cursor = None;
     let mut resource_templates = Vec::new();
     loop {
@@ -438,7 +476,11 @@ where
         let Some(next_cursor) = page.next_cursor else {
             return Ok(resource_templates);
         };
-        cursor = Some(next_cursor);
+        cursor = Some(retain_next_cursor(
+            &mut seen,
+            next_cursor,
+            "resources/templates/list",
+        )?);
     }
 }
 
@@ -447,6 +489,7 @@ pub async fn collect_client_prompts<C>(client: &Client<C>) -> Result<Vec<Prompt>
 where
     C: ClientHandler + Send + 'static,
 {
+    let mut seen = HashSet::new();
     let mut cursor = None;
     let mut prompts = Vec::new();
     loop {
@@ -458,6 +501,6 @@ where
         let Some(next_cursor) = page.next_cursor else {
             return Ok(prompts);
         };
-        cursor = Some(next_cursor);
+        cursor = Some(retain_next_cursor(&mut seen, next_cursor, "prompts/list")?);
     }
 }

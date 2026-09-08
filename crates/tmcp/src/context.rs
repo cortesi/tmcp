@@ -165,13 +165,15 @@ impl ServerCtx {
 
     /// Wait until the current request is cancelled by the client.
     pub async fn cancelled(&self) {
+        self.cancelled_with_hook(|_| {}).await;
+    }
+
+    /// Wait for cancellation while exposing race boundaries to unit tests.
+    async fn cancelled_with_hook(&self, mut hook: impl FnMut(CancellationWaitPhase)) {
         let Some(request_id) = &self.request_id else {
             pending::<()>().await;
             return;
         };
-        if self.is_cancelled() {
-            return;
-        }
         let notifier = {
             let mut notifiers = self
                 .cancellation_notifiers
@@ -183,7 +185,16 @@ impl ServerCtx {
                     .or_insert_with(|| Arc::new(Notify::new())),
             )
         };
-        notifier.notified().await;
+        hook(CancellationWaitPhase::BeforeRegistration);
+        let notified = notifier.notified();
+        tokio::pin!(notified);
+        hook(CancellationWaitPhase::DuringRegistration);
+        notified.as_mut().enable();
+        if self.is_cancelled() {
+            return;
+        }
+        hook(CancellationWaitPhase::AfterStateCheck);
+        notified.await;
     }
 
     /// Create a new context with a specific progress token.
@@ -444,6 +455,17 @@ impl ServerCtx {
     }
 }
 
+/// Observable phases of cancellation waiter registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CancellationWaitPhase {
+    /// The shared notifier exists, but the wait future does not.
+    BeforeRegistration,
+    /// The wait future exists, but has not been enabled.
+    DuringRegistration,
+    /// The final state check completed after enabling the wait future.
+    AfterStateCheck,
+}
+
 /// Convert a bounded notification queue error into the crate error type.
 fn notification_send_error<T>(err: &TrySendError<T>) -> Error {
     match err {
@@ -454,7 +476,12 @@ fn notification_send_error<T>(err: &TrySendError<T>) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use tokio::sync::mpsc;
+    use std::sync::atomic::AtomicUsize;
+
+    use tokio::{
+        sync::mpsc,
+        time::{Duration, timeout},
+    };
 
     use super::*;
     use crate::schema::{LoggingLevel, ProgressToken, ServerNotification};
@@ -538,5 +565,68 @@ mod tests {
             ctx.ping().await,
             Err(Error::Transport(message)) if message == "Not connected"
         ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_registration_closes_every_lost_wakeup_gap() {
+        for target in [
+            CancellationWaitPhase::BeforeRegistration,
+            CancellationWaitPhase::DuringRegistration,
+            CancellationWaitPhase::AfterStateCheck,
+        ] {
+            let (notification_tx, _notification_rx) = mpsc::channel(1);
+            let request_id = schema::RequestId::String(format!("request-{target:?}"));
+            let ctx = ServerCtx::new(notification_tx, None).with_request_id(request_id.clone());
+            ctx.begin_request(&request_id);
+            let cancelling_ctx = ctx.clone();
+            let cancelling_id = request_id.clone();
+
+            timeout(
+                Duration::from_millis(100),
+                ctx.cancelled_with_hook(move |phase| {
+                    if phase == target {
+                        cancelling_ctx.mark_cancelled(&cancelling_id);
+                    }
+                }),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("cancellation at {target:?} was lost"));
+            assert!(ctx.is_cancelled());
+            ctx.end_request(&request_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_wakes_multiple_registered_waiters() {
+        let (notification_tx, _notification_rx) = mpsc::channel(1);
+        let request_id = schema::RequestId::String("multiple-waiters".to_owned());
+        let ctx = ServerCtx::new(notification_tx, None).with_request_id(request_id.clone());
+        ctx.begin_request(&request_id);
+        let ready = Arc::new(AtomicUsize::new(0));
+
+        let waiter = |waiter_ctx: ServerCtx| {
+            let cancelling_ctx = waiter_ctx.clone();
+            let cancelling_id = request_id.clone();
+            let ready = Arc::clone(&ready);
+            async move {
+                waiter_ctx
+                    .cancelled_with_hook(move |phase| {
+                        if phase == CancellationWaitPhase::AfterStateCheck
+                            && ready.fetch_add(1, Ordering::SeqCst) == 1
+                        {
+                            cancelling_ctx.mark_cancelled(&cancelling_id);
+                        }
+                    })
+                    .await;
+            }
+        };
+
+        timeout(Duration::from_millis(100), async {
+            tokio::join!(waiter(ctx.clone()), waiter(ctx.clone()))
+        })
+        .await
+        .expect("all cancellation waiters wake");
+        assert!(ctx.is_cancelled());
+        ctx.end_request(&request_id);
     }
 }

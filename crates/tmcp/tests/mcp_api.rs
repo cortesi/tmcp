@@ -2,6 +2,11 @@
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use async_trait::async_trait;
     use tmcp::{
         Error, McpApiRefreshState, Result, ServerCtx, ServerHandler, inspect_client,
@@ -21,6 +26,20 @@ mod tests {
 
     /// Server that rejects listing methods it does not advertise.
     struct NoCapabilitiesServer;
+
+    /// Cursor repetition pattern returned by a cyclic tool list.
+    #[derive(Clone, Copy)]
+    enum CursorCycle {
+        SelfLoop,
+        AToBToA,
+    }
+
+    /// Server that exposes one cyclic paginated tool list.
+    #[derive(Clone)]
+    struct CyclicToolsServer {
+        cycle: CursorCycle,
+        calls: Arc<AtomicUsize>,
+    }
 
     #[async_trait]
     impl ServerHandler for ApiServer {
@@ -109,6 +128,40 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ServerHandler for CyclicToolsServer {
+        async fn initialize(
+            &self,
+            _context: &ServerCtx,
+            _protocol_version: ProtocolVersion,
+            _capabilities: ClientCapabilities,
+            _client_info: Implementation,
+        ) -> Result<InitializeResult> {
+            Ok(InitializeResult::new("cyclic-tools").with_tools(Some(false)))
+        }
+
+        async fn list_tools(
+            &self,
+            _context: &ServerCtx,
+            cursor: Option<Cursor>,
+        ) -> Result<ListToolsResult> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let next = match (self.cycle, cursor.as_ref().map(|cursor| cursor.0.as_str())) {
+                (_, None) => "a",
+                (CursorCycle::SelfLoop, Some("a")) | (CursorCycle::AToBToA, Some("b")) => "a",
+                (CursorCycle::AToBToA, Some("a")) => "b",
+                (_, other) => {
+                    return Err(Error::InvalidRequest(format!(
+                        "unexpected cyclic cursor: {other:?}"
+                    )));
+                }
+            };
+            Ok(ListToolsResult::new()
+                .with_tool(Tool::new(format!("tool-{next}"), ToolSchema::default()))
+                .with_cursor(next))
+        }
+    }
+
     /// The inspector collects initialization metadata and every static list
     /// page.
     #[tokio::test]
@@ -164,6 +217,51 @@ mod tests {
         assert_eq!(api.prompts[0].name, "summarize");
 
         shutdown_client_and_server(client, server).await;
+    }
+
+    #[tokio::test]
+    async fn handler_inspection_rejects_self_loop_and_multi_cursor_cycle() {
+        for (cycle, expected_calls) in [(CursorCycle::SelfLoop, 2), (CursorCycle::AToBToA, 3)] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let handler = CyclicToolsServer {
+                cycle,
+                calls: Arc::clone(&calls),
+            };
+
+            let error = inspect_server(&handler)
+                .await
+                .expect_err("pagination cycle");
+
+            assert!(
+                matches!(error, Error::Protocol(message) if message.contains("repeated pagination cursor"))
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
+        }
+    }
+
+    #[tokio::test]
+    async fn connected_inspection_rejects_self_loop_and_multi_cursor_cycle() {
+        for (cycle, expected_calls) in [(CursorCycle::SelfLoop, 2), (CursorCycle::AToBToA, 3)] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let server_calls = Arc::clone(&calls);
+            let (mut client, server) = connected_client_and_server(move || CyclicToolsServer {
+                cycle,
+                calls: Arc::clone(&server_calls),
+            })
+            .await
+            .expect("connect");
+            let initialize = client.init().await.expect("initialize");
+
+            let error = inspect_client(&client, initialize)
+                .await
+                .expect_err("pagination cycle");
+
+            assert!(
+                matches!(error, Error::Protocol(message) if message.contains("repeated pagination cursor"))
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
+            shutdown_client_and_server(client, server).await;
+        }
     }
 
     /// API refresh state coalesces list-change notifications until the next
