@@ -27,7 +27,8 @@ async fn example_duplex_streams() -> Result<()> {
     info!("Example 1: Connecting with duplex streams");
 
     // Create bidirectional duplex streams
-    // In a real scenario, these might be connected to another process or service
+    // In a real scenario, these might be connected to another process or
+    // service
     let (client_reader, _server_writer) = duplex(8192);
     let (_server_reader, client_writer) = duplex(8192);
 

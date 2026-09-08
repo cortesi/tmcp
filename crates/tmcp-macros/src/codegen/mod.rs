@@ -661,7 +661,8 @@ mod tests {
     /// output.
     fn expand(attr: TokenStream, input: &TokenStream) -> String {
         let expanded = expand_mcp_server(attr, input).unwrap();
-        // Parsing the expansion as a file proves the output is structurally valid Rust.
+        // Parsing the expansion as a file proves the output is structurally
+        // valid Rust.
         let file = syn::parse2::<syn::File>(expanded.clone()).expect("expansion parses");
         let _ = file;
         expanded.to_string()

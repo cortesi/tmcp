@@ -82,7 +82,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         scopes,
     };
 
-    // Create OAuth client and bind the callback server before opening the browser
+    // Create OAuth client and bind the callback server before opening the
+    // browser
     let oauth_client = OAuth2Client::new(oauth_config)?;
     let callback_server = OAuth2CallbackServer::new(args.port).await?;
 

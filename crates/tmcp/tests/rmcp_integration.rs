@@ -95,15 +95,17 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tmcp_server_with_rmcp_client() {
-        // Initialize a tracing subscriber so that we get helpful debug output if
-        // this test fails or hangs. We deliberately call `try_init` so that it's
-        // no-op when a subscriber has already been installed by another test.
+        // Initialize a tracing subscriber so that we get helpful debug output
+        // if this test fails or hangs. We deliberately call `try_init`
+        // so that it's no-op when a subscriber has already been
+        // installed by another test.
         fmt::try_init().ok();
         // Create bidirectional streams for communication using the shared test
         // utility.
         let (server_reader, server_writer, client_reader, client_writer) = make_duplex_pair();
 
-        // Create tmcp server - capabilities come from handler's initialize response
+        // Create tmcp server - capabilities come from handler's initialize
+        // response
         let server = Server::new(|| EchoConnection);
 
         // Start tmcp server in background using the new serve_stream method
@@ -147,14 +149,15 @@ mod tests {
         }
 
         // Cleanup: we drop the client first so that the underlying transport is
-        // closed and the server task can finish. To avoid hanging the test in the
-        // unlikely case that it doesn't shut down promptly, we wrap the wait in a
-        // short timeout.
+        // closed and the server task can finish. To avoid hanging the test in
+        // the unlikely case that it doesn't shut down promptly, we wrap
+        // the wait in a short timeout.
         drop(client);
 
-        // Give the server task a moment to observe the closed connection and shut
-        // itself down. We ignore any timeout errors here because the important
-        // part of the test (inter-operability) has already completed.
+        // Give the server task a moment to observe the closed connection and
+        // shut itself down. We ignore any timeout errors here because
+        // the important part of the test (inter-operability) has
+        // already completed.
         timeout(Duration::from_millis(100), server_handle.stop())
             .await
             .ok();
@@ -267,7 +270,8 @@ mod tests {
         assert_eq!(tools.tools.len(), 1);
         assert_eq!(tools.tools[0].name, "reverse");
 
-        // Call reverse tool - HashMap implements Serialize so can be passed directly
+        // Call reverse tool - HashMap implements Serialize so can be passed
+        // directly
         let mut args = HashMap::new();
         args.insert("text".to_string(), json!("hello"));
         let result = client.call_tool("reverse", args).await.unwrap();

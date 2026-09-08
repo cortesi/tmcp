@@ -219,7 +219,8 @@ mod tests {
             "subject=user-123;audiences=tmcp;scopes=resources:read,tools:call"
         );
 
-        // Expired token (beyond the clock-skew leeway) → 401 with invalid_token error.
+        // Expired token (beyond the clock-skew leeway) → 401 with invalid_token
+        // error.
         let expired = client
             .post(format!("{base_url}/mcp"))
             .bearer_auth(token(&encoding_key, "kid-1", now() - 300))

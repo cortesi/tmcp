@@ -1094,7 +1094,8 @@ mod tests {
 
     #[test]
     fn test_pagination_api() {
-        // This test just verifies the API is ergonomic - it doesn't run async code
+        // This test just verifies the API is ergonomic - it doesn't run async
+        // code
         let client = Client::new("test-client", "1.0.0");
 
         // These should all compile cleanly
@@ -1140,7 +1141,8 @@ mod tests {
             key: String,
         }
 
-        // This test just verifies the API is ergonomic - it doesn't run async code
+        // This test just verifies the API is ergonomic - it doesn't run async
+        // code
         let client = Client::new("test-client", "1.0.0");
 
         // These should all compile cleanly
@@ -1583,7 +1585,8 @@ mod tests {
     #[tokio::test]
     async fn test_connect_process() {
         // This test would require an actual MCP server binary to spawn
-        // For now, we'll just test that the API compiles and handles errors correctly
+        // For now, we'll just test that the API compiles and handles errors
+        // correctly
 
         let mut client = Client::new("test-client", "1.0.0");
 
@@ -1728,8 +1731,9 @@ mod tests {
             .await
             .expect("Failed to connect");
 
-        // The server transport is never read, so `initialize` has no response. A
-        // bounded client would fail here; this one must still be waiting.
+        // The server transport is never read, so `initialize` has no response.
+        // A bounded client would fail here; this one must still be
+        // waiting.
         let result = timeout(Duration::from_millis(300), client.init()).await;
 
         assert!(result.is_err(), "expected the request to still be pending");
@@ -1760,7 +1764,8 @@ mod tests {
                 _task: Option<TaskMetadata>,
             ) -> Result<CallToolResponse> {
                 if name == "fail" {
-                    // Return a tool error (isError: true) with structured content
+                    // Return a tool error (isError: true) with structured
+                    // content
                     Ok(CallToolResponse::result(CallToolResult::error(
                         "ERR",
                         "Tool failed details",
@@ -1811,7 +1816,8 @@ mod tests {
         match result {
             Err(Error::ToolExecutionFailed { tool, message }) => {
                 assert_eq!(tool, "fail");
-                // The message should come from the structured content since text is empty
+                // The message should come from the structured content since
+                // text is empty
                 assert!(message.contains("Tool failed details"));
             }
             _ => panic!("Expected ToolExecutionFailed, got {:?}", result),

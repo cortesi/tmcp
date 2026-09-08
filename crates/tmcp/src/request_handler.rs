@@ -287,9 +287,9 @@ impl RequestHandler {
     {
         let timeout_ms =
             timeout_override.unwrap_or_else(|| self.inner.timeout_ms.load(Ordering::Relaxed));
-        // A zero timeout means the caller accepts an unbounded wait, such as a tool
-        // that blocks on a human decision. Transport shutdown still wakes the
-        // pending request.
+        // A zero timeout means the caller accepts an unbounded wait, such as a
+        // tool that blocks on a human decision. Transport shutdown
+        // still wakes the pending request.
         let result = if timeout_ms == NO_TIMEOUT_MS {
             Ok(response_rx.await)
         } else {

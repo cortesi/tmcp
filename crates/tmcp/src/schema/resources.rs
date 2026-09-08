@@ -369,7 +369,8 @@ impl ResourceContents {
                 // Try to read as UTF-8 text
                 match String::from_utf8(contents.clone()) {
                     Ok(text) => {
-                        // Special handling for common text-based application types
+                        // Special handling for common text-based application
+                        // types
                         let is_text_app = mime_type.subtype() == "json"
                             || mime_type.subtype() == "xml"
                             || mime_type.subtype() == "javascript"

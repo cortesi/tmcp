@@ -113,9 +113,9 @@ async fn main() -> Result<()> {
 
     let validator: Arc<dyn TokenValidator> = Arc::new(AppTokenValidator);
 
-    // AuthConfig carries the public base URL so that WWW-Authenticate challenges
-    // and protected resource metadata contain absolute URIs (required by RFC
-    // 9728).
+    // AuthConfig carries the public base URL so that WWW-Authenticate
+    // challenges and protected resource metadata contain absolute URIs
+    // (required by RFC 9728).
     let auth_config = AuthConfig::new("https://example.com", validator).with_endpoint_path("/mcp");
 
     let handle = Server::new(|| AppMcpServer)

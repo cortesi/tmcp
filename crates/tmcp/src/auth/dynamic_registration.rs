@@ -208,7 +208,8 @@ impl DynamicRegistrationClient {
             .json(&metadata)
             .header("Content-Type", "application/json");
 
-        // Add authorization header if provided (for protected registration endpoints)
+        // Add authorization header if provided (for protected registration
+        // endpoints)
         if let Some(token) = access_token {
             request = request.header(AUTHORIZATION, bearer_header(token)?);
         }

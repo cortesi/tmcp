@@ -356,8 +356,8 @@ impl OAuth2Client {
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(flow.pkce_verifier);
 
-        // Only add resource parameter if it's not empty (some providers don't support
-        // it)
+        // Only add resource parameter if it's not empty (some providers don't
+        // support it)
         if !self.config.resource.is_empty() {
             token_request = token_request.add_extra_param("resource", &self.config.resource);
         }
@@ -479,8 +479,8 @@ impl OAuth2Client {
         let refresh_token_obj = RefreshToken::new(refresh_token.to_string());
         let mut refresh_request = self.client.exchange_refresh_token(&refresh_token_obj);
 
-        // Only add resource parameter if it's not empty (some providers don't support
-        // it)
+        // Only add resource parameter if it's not empty (some providers don't
+        // support it)
         if !self.config.resource.is_empty() {
             refresh_request = refresh_request.add_extra_param("resource", &self.config.resource);
         }

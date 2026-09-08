@@ -214,8 +214,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_transport_with_oauth() {
-        // This test verifies that the OAuth client can be integrated with the HTTP
-        // transport
+        // This test verifies that the OAuth client can be integrated with the
+        // HTTP transport
         let config = OAuth2Config {
             client_id: "test_client_id".to_string(),
             client_secret: Some("test_client_secret".to_string()),
@@ -348,12 +348,12 @@ mod tests {
         let revision = *revisions.borrow();
 
         // Try to get a valid token - this should trigger a refresh
-        // In a real scenario, this would make an HTTP request to the token endpoint
-        // For testing, we'll just verify the logic works
+        // In a real scenario, this would make an HTTP request to the token
+        // endpoint For testing, we'll just verify the logic works
         let result = oauth_client.get_valid_token().await;
 
-        // This will fail because we don't have a real OAuth server, but the logic is
-        // tested
+        // This will fail because we don't have a real OAuth server, but the
+        // logic is tested
         assert!(result.is_err());
         assert_eq!(*revisions.borrow(), revision);
         assert!(!revisions.has_changed().unwrap());

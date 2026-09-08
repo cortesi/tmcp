@@ -92,8 +92,8 @@ async fn main() -> Result<()> {
     // Clean shutdown
     info!("Shutting down...");
 
-    // The process will be terminated when dropped, but we can also explicitly kill
-    // it
+    // The process will be terminated when dropped, but we can also explicitly
+    // kill it
     match process.kill().await {
         Ok(_) => info!("Process terminated"),
         Err(e) => error!("Failed to kill process: {}", e),
