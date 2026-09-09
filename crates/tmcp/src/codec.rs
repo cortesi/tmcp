@@ -9,11 +9,14 @@ use crate::{
     schema::JSONRPCMessage,
 };
 
-/// Maximum accepted frame length in bytes.
+/// Maximum frame length in bytes, in either direction.
 ///
 /// A peer that streams data without ever sending a newline would otherwise
-/// grow the receive buffer without bound.
-const MAX_FRAME_LENGTH: usize = 16 * 1024 * 1024;
+/// grow the receive buffer without bound. The bound is a guard against that
+/// runaway peer, not a payload budget: a local session can carry an image
+/// result, and 16 MiB was low enough that one ordinary screenshot response
+/// crossed it.
+pub const MAX_FRAME_LENGTH: usize = 64 * 1024 * 1024;
 
 /// One decoded frame from the wire.
 ///
@@ -33,9 +36,12 @@ pub enum Frame {
 /// Uses newline-delimited JSON format. A line that fails to parse is consumed
 /// and yielded as [`Frame::Malformed`], so callers can answer with a JSON-RPC
 /// parse error and keep the connection alive; framing stays consistent because
-/// resynchronization happens at the next newline. Frames exceeding
-/// [`MAX_FRAME_LENGTH`] are reported as the fatal
-/// [`Error::InvalidMessageFormat`].
+/// resynchronization happens at the next newline. A frame exceeding
+/// [`MAX_FRAME_LENGTH`] is reported as the fatal
+/// [`Error::InvalidMessageFormat`] in either direction. The encoder refuses an
+/// oversized message before it reaches the wire, so the sender learns the size
+/// it tried to write. Without that check the peer's decoder is the only guard,
+/// and the sender observes nothing but a closed connection.
 #[derive(Default)]
 pub struct JsonRpcCodec {
     /// Index from which to resume scanning for the next newline, so
@@ -55,7 +61,8 @@ impl Decoder for JsonRpcCodec {
                 if src.len() > MAX_FRAME_LENGTH {
                     return Err(Error::InvalidMessageFormat {
                         message: format!(
-                            "Frame exceeds maximum length of {MAX_FRAME_LENGTH} bytes"
+                            "Incoming frame reached {} bytes with no newline, over the {MAX_FRAME_LENGTH} byte maximum",
+                            src.len()
                         ),
                     });
                 }
@@ -97,6 +104,16 @@ impl Encoder<JSONRPCMessage> for JsonRpcCodec {
 
     fn encode(&mut self, item: JSONRPCMessage, dst: &mut BytesMut) -> Result<()> {
         let json = serde_json::to_vec(&item)?;
+        // Refuse here rather than let the peer's decoder sever the session.
+        // The sender is the only side that can name what it tried to write.
+        if json.len() >= MAX_FRAME_LENGTH {
+            return Err(Error::InvalidMessageFormat {
+                message: format!(
+                    "Outgoing message is {} bytes, over the {MAX_FRAME_LENGTH} byte frame maximum",
+                    json.len()
+                ),
+            });
+        }
         dst.reserve(json.len() + 1);
         dst.put_slice(&json);
         dst.put_u8(b'\n');
@@ -108,7 +125,7 @@ impl Encoder<JSONRPCMessage> for JsonRpcCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{JSONRPC_VERSION, JSONRPCRequest, Request, RequestId};
+    use crate::schema::{JSONRPC_VERSION, JSONRPCRequest, Request, RequestId, RequestParams};
 
     #[test]
     fn test_encode_decode_request() {
@@ -191,5 +208,50 @@ mod tests {
 
         let error = codec.decode(&mut buf).expect_err("oversized frame");
         assert!(matches!(error, Error::InvalidMessageFormat { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains(&(MAX_FRAME_LENGTH + 1).to_string()),
+            "decode error should name the observed size: {error}"
+        );
+    }
+
+    /// Build a request whose serialized form exceeds one frame.
+    fn oversized_request() -> JSONRPCMessage {
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "payload".to_string(),
+            serde_json::Value::String("a".repeat(MAX_FRAME_LENGTH)),
+        );
+        JSONRPCMessage::Request(JSONRPCRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: RequestId::String("oversized".to_string()),
+            request: Request {
+                method: "tools/call".to_string(),
+                params: Some(RequestParams {
+                    _meta: None,
+                    other: params,
+                }),
+            },
+        })
+    }
+
+    #[test]
+    fn oversized_message_fails_the_sender_instead_of_the_peer() {
+        // Without this check the peer's decoder is the only guard, and the
+        // sender sees nothing but a closed connection.
+        let mut codec = JsonRpcCodec::default();
+        let mut buf = BytesMut::new();
+
+        let error = codec
+            .encode(oversized_request(), &mut buf)
+            .expect_err("oversized message");
+
+        assert!(matches!(error, Error::InvalidMessageFormat { .. }));
+        assert!(
+            error.to_string().contains("frame maximum"),
+            "encode error should name the frame maximum: {error}"
+        );
+        assert!(buf.is_empty(), "a refused message must not reach the wire");
     }
 }
