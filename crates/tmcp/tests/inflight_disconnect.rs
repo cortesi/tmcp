@@ -44,13 +44,19 @@ mod tests {
 
         async fn call_tool(
             &self,
-            _context: &ServerCtx,
+            context: &ServerCtx,
             name: String,
             _arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
         ) -> Result<CallToolResponse> {
-            assert_eq!(name, "slow_echo");
-            sleep(Duration::from_millis(50)).await;
+            match name.as_str() {
+                "slow_echo" => sleep(Duration::from_millis(50)).await,
+                "until_eof" => {
+                    context.connection_closed().await;
+                    assert!(!context.is_cancelled());
+                }
+                _ => panic!("unexpected tool: {name}"),
+            }
             Ok(CallToolResponse::result(
                 CallToolResult::new().with_text_content("ok"),
             ))
@@ -59,6 +65,15 @@ mod tests {
 
     #[tokio::test]
     async fn request_response_survives_client_write_disconnect() {
+        response_after_eof("slow_echo").await;
+    }
+
+    #[tokio::test]
+    async fn handler_can_observe_eof_and_still_respond() {
+        response_after_eof("until_eof").await;
+    }
+
+    async fn response_after_eof(tool: &str) {
         let server = Server::new(|| SlowToolServer);
         let (server_reader, server_writer, client_reader, mut client_writer) = make_duplex_pair();
         let server_handle = tmcp::ServerHandle::from_stream(server, server_reader, server_writer)
@@ -85,7 +100,7 @@ mod tests {
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "slow_echo",
+                "name": tool,
                 "arguments": {}
             }
         });

@@ -13,6 +13,7 @@ use tokio::sync::{
     Notify,
     mpsc::{self, error::TrySendError},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::{Error, Result},
@@ -104,6 +105,8 @@ pub struct ServerCtx {
     /// Cancellation notifications for requests that are not in flight are
     /// ignored, so late cancellations cannot grow state without bound.
     in_flight: Arc<Mutex<HashSet<schema::RequestId>>>,
+    /// Connection input ended or the server stopped this connection.
+    connection_closed: CancellationToken,
 }
 
 impl ServerCtx {
@@ -128,6 +131,7 @@ impl ServerCtx {
             cancelled_requests: Arc::new(Mutex::new(HashSet::new())),
             cancellation_notifiers: Arc::new(Mutex::new(HashMap::new())),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
+            connection_closed: CancellationToken::new(),
         }
     }
 
@@ -166,6 +170,17 @@ impl ServerCtx {
     /// Wait until the current request is cancelled by the client.
     pub async fn cancelled(&self) {
         self.cancelled_with_hook(|_| {}).await;
+    }
+
+    /// Wait until connection input ends or the server stops this connection.
+    ///
+    /// Stream EOF includes a client's write-side half-close. Handlers may use
+    /// this signal to abandon work that needs a connected client. It does not
+    /// mark requests cancelled or suppress responses: handlers that ignore it
+    /// can still finish and respond after EOF. Notification-only contexts
+    /// have no connection and never resolve this future.
+    pub async fn connection_closed(&self) {
+        self.connection_closed.cancelled().await;
     }
 
     /// Wait for cancellation while exposing race boundaries to unit tests.
@@ -368,8 +383,10 @@ impl ServerCtx {
         handler.handle_response(response).await
     }
 
-    /// Shut down any in-flight client requests tied to this connection.
+    /// Notify handlers of connection closure and stop server-to-client
+    /// requests.
     pub(crate) fn shutdown_requests(&self) {
+        self.connection_closed.cancel();
         self.request_handler.shutdown();
     }
 
@@ -480,6 +497,7 @@ mod tests {
 
     use tokio::{
         sync::mpsc,
+        task::yield_now,
         time::{Duration, timeout},
     };
 
@@ -628,5 +646,25 @@ mod tests {
         .expect("all cancellation waiters wake");
         assert!(ctx.is_cancelled());
         ctx.end_request(&request_id);
+    }
+
+    #[tokio::test]
+    async fn connection_shutdown_wakes_current_and_late_waiters_without_cancelling_requests() {
+        let (tx, _rx) = mpsc::channel(1);
+        let id = schema::RequestId::String("pending".into());
+        let ctx = ServerCtx::new(tx, None).with_request_id(id.clone());
+        ctx.begin_request(&id);
+        let stop = ctx.clone();
+        timeout(Duration::from_secs(1), async {
+            tokio::join!(ctx.connection_closed(), ctx.connection_closed(), async {
+                yield_now().await;
+                stop.shutdown_requests();
+            });
+            ctx.connection_closed().await;
+        })
+        .await
+        .expect("all connection waiters wake");
+        assert!(!ctx.is_cancelled());
+        ctx.end_request(&id);
     }
 }

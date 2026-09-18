@@ -659,6 +659,9 @@ impl ServerHandle {
                 }
             }
 
+            // Cover every exit, including initialization and write failures.
+            server_ctx.shutdown_requests();
+
             // Clean up connection
             if let Err(e) = connection.on_shutdown().await {
                 error!("Error during server shutdown: {}", e);
