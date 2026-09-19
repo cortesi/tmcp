@@ -315,6 +315,27 @@ impl ClientRequest {
         }
     }
 
+    /// Create a new CallTool request carrying extension `_meta` fields.
+    ///
+    /// A protocol extension puts its own key in `meta`. The receiver reads it
+    /// through `ServerCtx::request_meta`.
+    pub fn call_tool_with_meta(
+        name: impl Into<String>,
+        arguments: Option<Arguments>,
+        task: Option<TaskMetadata>,
+        meta: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        Self::CallTool {
+            name: name.into(),
+            arguments,
+            task,
+            _meta: Some(RequestMeta {
+                progress_token: None,
+                other: meta,
+            }),
+        }
+    }
+
     /// Create a new ListTools request
     pub fn list_tools(cursor: Option<Cursor>) -> Self {
         Self::ListTools {

@@ -426,10 +426,23 @@ pub trait ServerHandler: Send + Sync {
                 task,
                 _meta,
             } => {
-                let call_context = _meta.and_then(|meta| meta.progress_token).map_or_else(
-                    || context.clone(),
-                    |token| context.with_progress_token(token),
-                );
+                // A protocol extension reads its own `_meta` key from the
+                // call context, so preserve the other fields alongside the
+                // progress token.
+                let call_context = match _meta {
+                    Some(meta) => {
+                        let context = meta.progress_token.map_or_else(
+                            || context.clone(),
+                            |token| context.with_progress_token(token),
+                        );
+                        if meta.other.is_empty() {
+                            context
+                        } else {
+                            context.with_request_meta(meta.other)
+                        }
+                    }
+                    None => context.clone(),
+                };
                 let result = self.call_tool(&call_context, name, arguments, task).await;
                 match result {
                     Ok(result) => serialize_result(Ok(result)),

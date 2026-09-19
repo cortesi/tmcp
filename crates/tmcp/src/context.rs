@@ -9,6 +9,7 @@ use std::{
 
 use http::Extensions;
 use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Map, Value};
 use tokio::sync::{
     Notify,
     mpsc::{self, error::TrySendError},
@@ -93,6 +94,9 @@ pub struct ServerCtx {
     extensions: Extensions,
     /// Optional progress token attached to the active request.
     progress_token: Option<schema::ProgressToken>,
+    /// Metadata fields the client sent with the active request, other than the
+    /// progress token.
+    request_meta: Option<Arc<Map<String, Value>>>,
     /// Shared progress counter for all clones derived from the same request
     /// context.
     progress_counter: Option<Arc<AtomicU64>>,
@@ -127,6 +131,7 @@ impl ServerCtx {
             request_id: None,
             extensions: Extensions::new(),
             progress_token: None,
+            request_meta: None,
             progress_counter: None,
             cancelled_requests: Arc::new(Mutex::new(HashSet::new())),
             cancellation_notifiers: Arc::new(Mutex::new(HashMap::new())),
@@ -219,6 +224,23 @@ impl ServerCtx {
         ctx.progress_token = Some(token);
         ctx.progress_counter = Some(Arc::new(AtomicU64::new(0)));
         ctx
+    }
+
+    /// Create a new context carrying the request's other `_meta` fields.
+    ///
+    /// A protocol extension reads its own key from this map. The progress
+    /// token stays on [`Self::progress_token`].
+    #[must_use]
+    pub fn with_request_meta(&self, meta: Map<String, Value>) -> Self {
+        let mut ctx = self.clone();
+        ctx.request_meta = Some(Arc::new(meta));
+        ctx
+    }
+
+    /// Return one `_meta` field the client sent with the active request.
+    #[must_use]
+    pub fn request_meta(&self, key: &str) -> Option<&Value> {
+        self.request_meta.as_ref()?.get(key)
     }
 
     /// Return the progress token for this request, if present.
@@ -666,5 +688,31 @@ mod tests {
         .expect("all connection waiters wake");
         assert!(!ctx.is_cancelled());
         ctx.end_request(&id);
+    }
+
+    #[test]
+    fn request_meta_keeps_extension_fields_beside_the_progress_token() {
+        let (tx, _rx) = mpsc::channel(1);
+        let ctx = ServerCtx::new(tx, None);
+        assert_eq!(ctx.request_meta("verber/call"), None);
+
+        let mut meta = Map::new();
+        meta.insert(
+            "verber/call".to_owned(),
+            serde_json::json!({ "version": 1 }),
+        );
+        let ctx = ctx
+            .with_progress_token(schema::ProgressToken::String("token".to_owned()))
+            .with_request_meta(meta);
+
+        assert_eq!(
+            ctx.request_meta("verber/call"),
+            Some(&serde_json::json!({ "version": 1 }))
+        );
+        assert_eq!(ctx.request_meta("other"), None);
+        assert!(matches!(
+            ctx.progress_token(),
+            Some(schema::ProgressToken::String(token)) if token == "token"
+        ));
     }
 }
