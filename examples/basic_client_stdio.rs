@@ -7,6 +7,9 @@
 //! Usage:
 //!   cargo run --example basic_client_stdio
 
+#[path = "src/cargo_env.rs"]
+mod cargo_env;
+
 use serde::{Deserialize, Serialize};
 use tmcp::{Client, Result};
 use tokio::process::Command;
@@ -29,7 +32,7 @@ async fn main() -> Result<()> {
     let mut client = Client::new("basic-client-stdio", "0.1.0");
 
     // Configure the command to spawn the basic_server in stdio mode
-    let mut cmd = Command::new("cargo");
+    let mut cmd = Command::from(cargo_env::command("cargo"));
     cmd.args(["run", "-q", "--example", "basic_server", "--", "stdio"]);
 
     // Spawn the process and connect to it

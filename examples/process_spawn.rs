@@ -6,6 +6,9 @@
 //! - Connect to it using the process's stdin/stdout
 //! - Manage the process lifecycle
 
+#[path = "src/cargo_env.rs"]
+mod cargo_env;
+
 use tmcp::{Arguments, Client, Result};
 use tokio::process::Command;
 use tracing::{Level, error, info};
@@ -21,7 +24,7 @@ async fn main() -> Result<()> {
     // Configure the command to spawn
     // In this example, we'll spawn another example server from this crate
     // In real usage, this would be your MCP server executable
-    let mut cmd = Command::new("cargo");
+    let mut cmd = Command::from(cargo_env::command("cargo"));
     cmd.args(["run", "--example", "basic_server"]);
 
     info!("Spawning MCP server process...");
