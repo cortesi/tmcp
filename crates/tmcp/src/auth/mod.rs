@@ -54,6 +54,11 @@
 //! - Automatic token refresh when tokens expire
 //! - Thread-safe token storage using `Arc<RwLock<_>>`
 //! - Seamless integration with HTTP transport for automatic token injection
+//! - Optional shared `TokenStore` so several `OAuth2Client` instances, in this
+//!   process or others, can coordinate refreshes of one stored credential
+//!   instead of racing to rotate it independently
+//! - Configurable timeout bounding each token-endpoint refresh request, set
+//!   with `OAuth2Client::with_refresh_timeout`
 //!
 //! ## Usage Examples
 //!
@@ -254,5 +259,5 @@ pub use dynamic_registration::{
 };
 pub use oauth_client::{
     AuthorizationFlow, DynamicRegistrationConfig, OAuth2CallbackServer, OAuth2Client, OAuth2Config,
-    OAuth2Token,
+    OAuth2Token, TokenStore, TokenStoreGuard,
 };

@@ -7,12 +7,14 @@ mod tests {
         time::Instant,
     };
 
+    use async_trait::async_trait;
     use tmcp::auth::{
         ClientMetadata, DynamicRegistrationConfig, OAuth2CallbackServer, OAuth2Client,
-        OAuth2Config, OAuth2Token,
+        OAuth2Config, OAuth2Token, TokenStore, TokenStoreGuard,
     };
     use tokio::{
         net::TcpStream,
+        sync::Mutex as TokioMutex,
         time::{Duration, timeout},
     };
 
@@ -543,5 +545,410 @@ mod tests {
         assert_eq!(*revisions.borrow_and_update(), initial_revision + 2);
 
         tx.send(()).ok();
+    }
+
+    /// In-memory `TokenStore` test double. Lets tests observe every `save`
+    /// call and simulate a deleted credential with an empty store.
+    #[derive(Clone)]
+    struct MemoryTokenStore {
+        state: Arc<StdMutex<Option<OAuth2Token>>>,
+        excl: Arc<TokioMutex<()>>,
+        saves: Arc<StdMutex<Vec<(OAuth2Token, OAuth2Token)>>>,
+    }
+
+    impl MemoryTokenStore {
+        fn new(token: Option<OAuth2Token>) -> Self {
+            Self {
+                state: Arc::new(StdMutex::new(token)),
+                excl: Arc::new(TokioMutex::new(())),
+                saves: Arc::new(StdMutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl TokenStore for MemoryTokenStore {
+        async fn lock(&self) -> Result<TokenStoreGuard, tmcp::Error> {
+            let guard = self.excl.clone().lock_owned().await;
+            Ok(Box::new(guard))
+        }
+
+        async fn load(&self) -> Result<Option<OAuth2Token>, tmcp::Error> {
+            Ok(self.state.lock().unwrap().clone())
+        }
+
+        async fn save(
+            &self,
+            previous: &OAuth2Token,
+            token: &OAuth2Token,
+        ) -> Result<(), tmcp::Error> {
+            self.saves
+                .lock()
+                .unwrap()
+                .push((previous.clone(), token.clone()));
+            *self.state.lock().unwrap() = Some(token.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_valid_token_returns_fresh_stored_token_without_request() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::{Json, Router, extract::State, routing::post};
+        use tokio::{net::TcpListener, sync::oneshot};
+
+        #[derive(Clone)]
+        struct Ctx {
+            counter: Arc<AtomicUsize>,
+        }
+
+        async fn token_handler(State(ctx): State<Ctx>) -> Json<serde_json::Value> {
+            ctx.counter.fetch_add(1, Ordering::SeqCst);
+            Json(serde_json::json!({
+                "access_token": "should_not_be_requested",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }))
+        }
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let router = Router::new().route(
+            "/token",
+            post(token_handler).with_state(Ctx {
+                counter: counter.clone(),
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    rx.await.ok();
+                })
+                .await
+                .unwrap();
+        });
+
+        let config = OAuth2Config {
+            client_id: "client".to_string(),
+            client_secret: Some("secret".to_string()),
+            auth_url: format!("http://{addr}/auth"),
+            token_url: format!("http://{addr}/token"),
+            redirect_url: "http://localhost:1/callback".to_string(),
+            resource: "http://resource".to_string(),
+            scopes: vec![],
+        };
+
+        let store_token = OAuth2Token {
+            access_token: "fresh_from_store".to_string(),
+            refresh_token: Some("store_refresh".to_string()),
+            expires_in: Some(Duration::from_secs(3600)),
+            expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+        };
+        let store = MemoryTokenStore::new(Some(store_token));
+
+        let oauth_client = OAuth2Client::new(config)
+            .unwrap()
+            .with_token_store(Arc::new(store));
+        oauth_client
+            .set_token(OAuth2Token {
+                access_token: "expired_local".to_string(),
+                refresh_token: Some("local_refresh".to_string()),
+                expires_in: Some(Duration::from_secs(3600)),
+                expires_at: Some(Instant::now() - Duration::from_secs(1)),
+            })
+            .await;
+
+        let token = oauth_client.get_valid_token().await.unwrap();
+        assert_eq!(token, "fresh_from_store");
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            oauth_client.current_token().await.unwrap().access_token,
+            "fresh_from_store"
+        );
+
+        tx.send(()).ok();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_refresh_saves_new_token_with_previous() {
+        use axum::{Json, Router, routing::post};
+        use tokio::{net::TcpListener, sync::oneshot};
+
+        async fn token_handler() -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "access_token": "new_access",
+                "token_type": "Bearer",
+                "refresh_token": "new_refresh",
+                "expires_in": 3600
+            }))
+        }
+
+        let router = Router::new().route("/token", post(token_handler));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    rx.await.ok();
+                })
+                .await
+                .unwrap();
+        });
+
+        let config = OAuth2Config {
+            client_id: "client".to_string(),
+            client_secret: Some("secret".to_string()),
+            auth_url: format!("http://{addr}/auth"),
+            token_url: format!("http://{addr}/token"),
+            redirect_url: "http://localhost:1/callback".to_string(),
+            resource: "http://resource".to_string(),
+            scopes: vec![],
+        };
+
+        let initial = OAuth2Token {
+            access_token: "initial_access".to_string(),
+            refresh_token: Some("initial_refresh".to_string()),
+            expires_in: Some(Duration::from_secs(3600)),
+            expires_at: Some(Instant::now() - Duration::from_secs(1)),
+        };
+        let store = MemoryTokenStore::new(Some(initial.clone()));
+
+        let oauth_client = OAuth2Client::new(config)
+            .unwrap()
+            .with_token_store(Arc::new(store.clone()));
+        oauth_client.set_token(initial).await;
+
+        let refreshed = oauth_client.refresh_access_token().await.unwrap();
+        assert_eq!(refreshed.access_token, "new_access");
+
+        let saves = store.saves.lock().unwrap().clone();
+        assert_eq!(saves.len(), 1);
+        assert_eq!(saves[0].0.access_token, "initial_access");
+        assert_eq!(saves[0].1.access_token, "new_access");
+
+        let stored = store.load().await.unwrap().unwrap();
+        assert_eq!(stored.access_token, "new_access");
+
+        tx.send(()).ok();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_missing_stored_credential_fails_refresh_without_request_and_clears_cache() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::{Json, Router, extract::State, routing::post};
+        use tokio::{net::TcpListener, sync::oneshot};
+
+        #[derive(Clone)]
+        struct Ctx {
+            counter: Arc<AtomicUsize>,
+        }
+
+        async fn token_handler(State(ctx): State<Ctx>) -> Json<serde_json::Value> {
+            ctx.counter.fetch_add(1, Ordering::SeqCst);
+            Json(serde_json::json!({
+                "access_token": "unused",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }))
+        }
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let router = Router::new().route(
+            "/token",
+            post(token_handler).with_state(Ctx {
+                counter: counter.clone(),
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    rx.await.ok();
+                })
+                .await
+                .unwrap();
+        });
+
+        let config = OAuth2Config {
+            client_id: "client".to_string(),
+            client_secret: Some("secret".to_string()),
+            auth_url: format!("http://{addr}/auth"),
+            token_url: format!("http://{addr}/token"),
+            redirect_url: "http://localhost:1/callback".to_string(),
+            resource: "http://resource".to_string(),
+            scopes: vec![],
+        };
+
+        let store = MemoryTokenStore::new(None);
+        let oauth_client = OAuth2Client::new(config)
+            .unwrap()
+            .with_token_store(Arc::new(store));
+        oauth_client
+            .set_token(OAuth2Token {
+                access_token: "cached".to_string(),
+                refresh_token: Some("cached_refresh".to_string()),
+                expires_in: Some(Duration::from_secs(3600)),
+                expires_at: Some(Instant::now() - Duration::from_secs(1)),
+            })
+            .await;
+
+        let err = oauth_client.get_valid_token().await.unwrap_err();
+        assert!(err.to_string().contains("no longer exists"), "got: {err}");
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        assert!(oauth_client.current_token().await.is_none());
+
+        tx.send(()).ok();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_refresh_access_token_if_current_returns_stored_token_without_request() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::{Json, Router, extract::State, routing::post};
+        use tokio::{net::TcpListener, sync::oneshot};
+
+        #[derive(Clone)]
+        struct Ctx {
+            counter: Arc<AtomicUsize>,
+        }
+
+        async fn token_handler(State(ctx): State<Ctx>) -> Json<serde_json::Value> {
+            ctx.counter.fetch_add(1, Ordering::SeqCst);
+            Json(serde_json::json!({
+                "access_token": "unused",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }))
+        }
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let router = Router::new().route(
+            "/token",
+            post(token_handler).with_state(Ctx {
+                counter: counter.clone(),
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    rx.await.ok();
+                })
+                .await
+                .unwrap();
+        });
+
+        let config = OAuth2Config {
+            client_id: "client".to_string(),
+            client_secret: Some("secret".to_string()),
+            auth_url: format!("http://{addr}/auth"),
+            token_url: format!("http://{addr}/token"),
+            redirect_url: "http://localhost:1/callback".to_string(),
+            resource: "http://resource".to_string(),
+            scopes: vec![],
+        };
+
+        let store_token = OAuth2Token {
+            access_token: "rotated_by_other_holder".to_string(),
+            refresh_token: Some("other_refresh".to_string()),
+            expires_in: Some(Duration::from_secs(3600)),
+            expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+        };
+        let store = MemoryTokenStore::new(Some(store_token));
+
+        let oauth_client = OAuth2Client::new(config)
+            .unwrap()
+            .with_token_store(Arc::new(store));
+        oauth_client
+            .set_token(OAuth2Token {
+                access_token: "sent_token".to_string(),
+                refresh_token: Some("sent_refresh".to_string()),
+                expires_in: Some(Duration::from_secs(3600)),
+                expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+            })
+            .await;
+
+        let token = oauth_client
+            .refresh_access_token_if_current("sent_token")
+            .await
+            .unwrap();
+
+        assert_eq!(token, "rotated_by_other_holder");
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        tx.send(()).ok();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_refresh_times_out_near_configured_duration() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hang_server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                // Accept and hold connections open without ever responding,
+                // so the client hangs waiting for a response.
+                held.push(stream);
+            }
+        });
+
+        let config = OAuth2Config {
+            client_id: "client".to_string(),
+            client_secret: Some("secret".to_string()),
+            auth_url: format!("http://{addr}/auth"),
+            token_url: format!("http://{addr}/token"),
+            redirect_url: "http://localhost:1/callback".to_string(),
+            resource: "http://resource".to_string(),
+            scopes: vec![],
+        };
+
+        let oauth_client = OAuth2Client::new(config)
+            .unwrap()
+            .with_refresh_timeout(Duration::from_millis(200));
+        oauth_client
+            .set_token(OAuth2Token {
+                access_token: "expired".to_string(),
+                refresh_token: Some("rt".to_string()),
+                expires_in: Some(Duration::from_secs(3600)),
+                expires_at: Some(Instant::now() - Duration::from_secs(1)),
+            })
+            .await;
+
+        let started = Instant::now();
+        let result = timeout(Duration::from_secs(5), oauth_client.get_valid_token()).await;
+        let elapsed = started.elapsed();
+
+        let err = result
+            .expect("refresh did not honor its own timeout")
+            .expect_err("expected the refresh to fail");
+        assert!(
+            err.to_string().to_lowercase().contains("timed out"),
+            "got: {err}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "refresh returned too quickly: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "refresh took too long: {elapsed:?}"
+        );
+
+        hang_server.abort();
     }
 }

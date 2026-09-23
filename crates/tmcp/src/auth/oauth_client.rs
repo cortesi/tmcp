@@ -1,8 +1,10 @@
 use std::{
     fmt, str,
+    sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
 
+use async_trait::async_trait;
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, StandardRevocableToken,
@@ -18,7 +20,9 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{Mutex, RwLock, watch},
+    time::timeout,
 };
+use tracing::warn;
 use url::{Url, form_urlencoded};
 
 use super::{
@@ -29,6 +33,9 @@ use crate::{error::Error, http::is_loopback_http_url};
 
 /// Time before expiration at which tokens are proactively refreshed.
 const TOKEN_REFRESH_LEEWAY: Duration = Duration::from_secs(30);
+
+/// Default timeout bounding a token-endpoint refresh request.
+const DEFAULT_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 /// OAuth2 client configuration values.
@@ -189,6 +196,35 @@ type ConfiguredClient = oauth2::Client<
     EndpointSet,
 >;
 
+/// Guard that holds one store's refresh exclusion until it drops.
+pub type TokenStoreGuard = Box<dyn Send + Sync>;
+
+/// Durable token storage that several OAuth clients or processes share.
+///
+/// Before each refresh, the client takes the store's lock and loads the stored
+/// token. It saves the replacement token after the refresh.
+#[async_trait]
+pub trait TokenStore: Send + Sync {
+    /// Excludes other refreshes of the same credential until the guard drops.
+    async fn lock(&self) -> Result<TokenStoreGuard, Error>;
+    /// Returns the stored token, or `None` when the credential no longer
+    /// exists.
+    async fn load(&self) -> Result<Option<OAuth2Token>, Error>;
+    /// Saves `token`, which replaced `previous`.
+    async fn save(&self, previous: &OAuth2Token, token: &OAuth2Token) -> Result<(), Error>;
+}
+
+/// The shared store's token, reconciled against the cache.
+///
+/// Holds the store's refresh-exclusion guard until dropped, so it must stay
+/// alive through any refresh request and the `save` that follows it.
+struct StoreBaseline {
+    /// Refresh-exclusion guard held for the baseline's lifetime.
+    _guard: TokenStoreGuard,
+    /// The store's token at the time of the reconciliation.
+    token: OAuth2Token,
+}
+
 /// OAuth2 client with token caching and refresh support.
 pub struct OAuth2Client {
     /// OAuth2 client used for token flows.
@@ -201,6 +237,10 @@ pub struct OAuth2Client {
     lifecycle_lock: Mutex<()>,
     /// Monotonic notification of installed token revisions.
     token_revision_tx: watch::Sender<u64>,
+    /// Optional shared durable store coordinating refreshes across holders.
+    token_store: Option<Arc<dyn TokenStore>>,
+    /// Timeout bounding a token-endpoint refresh request.
+    refresh_timeout: Duration,
 }
 
 impl OAuth2Client {
@@ -303,7 +343,31 @@ impl OAuth2Client {
             token: RwLock::new(None),
             lifecycle_lock: Mutex::new(()),
             token_revision_tx,
+            token_store: None,
+            refresh_timeout: DEFAULT_REFRESH_TIMEOUT,
         })
+    }
+
+    /// Attach a shared, durable token store.
+    ///
+    /// Several `OAuth2Client` instances, in this process or others, can share
+    /// one stored credential through the store. Before each refresh the
+    /// client locks the store and loads its token, so a refresh-token
+    /// rotation performed by another holder is picked up instead of causing
+    /// a redundant, conflicting refresh. Clients are put in an `Arc` after
+    /// construction, so this is applied as a builder step first.
+    pub fn with_token_store(mut self, store: Arc<dyn TokenStore>) -> Self {
+        self.token_store = Some(store);
+        self
+    }
+
+    /// Set the timeout bounding a token-endpoint refresh request.
+    ///
+    /// The timeout covers the whole request, including connecting and
+    /// waiting for the response. Defaults to 30 seconds.
+    pub fn with_refresh_timeout(mut self, timeout: Duration) -> Self {
+        self.refresh_timeout = timeout;
+        self
     }
 
     /// Begin an authorization code flow with PKCE.
@@ -423,6 +487,15 @@ impl OAuth2Client {
             }
         };
 
+        if let Some(store) = &self.token_store {
+            let baseline = self.reconcile_with_store(store).await?;
+            if token_is_fresh(&baseline.token, Instant::now()) {
+                return Ok(baseline.token.access_token.clone());
+            }
+            let token = self.refresh_and_store(store, baseline).await?;
+            return Ok(token.access_token);
+        }
+
         if let Some(refresh_token) = refresh_token_opt {
             let token = self.request_refreshed_token(&refresh_token).await?;
             let access_token = token.access_token.clone();
@@ -450,6 +523,15 @@ impl OAuth2Client {
             return Ok(token.access_token);
         }
 
+        if let Some(store) = &self.token_store {
+            let baseline = self.reconcile_with_store(store).await?;
+            if baseline.token.access_token != current_access_token {
+                return Ok(baseline.token.access_token.clone());
+            }
+            let token = self.refresh_and_store(store, baseline).await?;
+            return Ok(token.access_token);
+        }
+
         let refresh_token = token
             .refresh_token
             .ok_or_else(|| Error::AuthorizationFailed("No refresh token available".to_string()))?;
@@ -462,6 +544,12 @@ impl OAuth2Client {
     /// Refresh the currently cached token unconditionally.
     pub async fn refresh_access_token(&self) -> Result<OAuth2Token, Error> {
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
+
+        if let Some(store) = &self.token_store {
+            let baseline = self.reconcile_with_store(store).await?;
+            return self.refresh_and_store(store, baseline).await;
+        }
+
         let refresh_token = self
             .token
             .read()
@@ -474,7 +562,71 @@ impl OAuth2Client {
         Ok(token)
     }
 
+    /// Reconcile the cache against the shared store before a refresh.
+    ///
+    /// Locks the store, loads its token, and—when the store's access token
+    /// differs from the cached one, meaning another holder already replaced
+    /// it—installs the stored token in the cache. Returns the resulting
+    /// baseline token together with the still-held store guard, which the
+    /// caller must keep alive through any refresh request and the `save`
+    /// that follows. Clears the cache and fails, without any HTTP request,
+    /// when the store no longer holds the credential. Callers must already
+    /// hold `lifecycle_lock`.
+    async fn reconcile_with_store(
+        &self,
+        store: &Arc<dyn TokenStore>,
+    ) -> Result<StoreBaseline, Error> {
+        let guard = store.lock().await?;
+        let Some(stored) = store.load().await? else {
+            *self.token.write().await = None;
+            return Err(Error::AuthorizationFailed(
+                "Stored OAuth credential no longer exists".to_string(),
+            ));
+        };
+
+        let differs = match &*self.token.read().await {
+            Some(cached) => cached.access_token != stored.access_token,
+            None => true,
+        };
+        if differs {
+            self.install_token_locked(stored.clone()).await;
+        }
+
+        Ok(StoreBaseline {
+            _guard: guard,
+            token: stored,
+        })
+    }
+
+    /// Refresh from a store baseline, install the result, and save it back.
+    ///
+    /// The refresh uses `baseline`'s refresh token. A save failure is logged
+    /// and otherwise ignored: the new token is already installed and valid,
+    /// and it is up to the store owner to decide what a failed save means.
+    /// Dropping `baseline` at the end releases the store guard, so the store
+    /// stays locked for the whole request and the save.
+    async fn refresh_and_store(
+        &self,
+        store: &Arc<dyn TokenStore>,
+        baseline: StoreBaseline,
+    ) -> Result<OAuth2Token, Error> {
+        let refresh_token =
+            baseline.token.refresh_token.clone().ok_or_else(|| {
+                Error::AuthorizationFailed("No refresh token available".to_string())
+            })?;
+        let new_token = self.request_refreshed_token(&refresh_token).await?;
+        self.install_token_locked(new_token.clone()).await;
+        if let Err(error) = store.save(&baseline.token, &new_token).await {
+            warn!("Failed to save refreshed OAuth token to the shared store: {error}");
+        }
+        Ok(new_token)
+    }
+
     /// Request a replacement token without mutating the cache.
+    ///
+    /// The request is bounded by `refresh_timeout`; a timeout produces an
+    /// [`Error::AuthorizationFailed`] whose message says the refresh timed
+    /// out.
     async fn request_refreshed_token(&self, refresh_token: &str) -> Result<OAuth2Token, Error> {
         let refresh_token_obj = RefreshToken::new(refresh_token.to_string());
         let mut refresh_request = self.client.exchange_refresh_token(&refresh_token_obj);
@@ -488,10 +640,19 @@ impl OAuth2Client {
             refresh_request = refresh_request.add_scope(Scope::new(scope.clone()));
         }
 
-        let token_result = refresh_request
-            .request_async(&oauth_http_client(&self.config.token_url)?)
-            .await
-            .map_err(|e| Error::AuthorizationFailed(format!("Token refresh failed: {e}")))?;
+        let http_client = oauth_http_client(&self.config.token_url)?;
+        let token_result = timeout(
+            self.refresh_timeout,
+            refresh_request.request_async(&http_client),
+        )
+        .await
+        .map_err(|_elapsed| {
+            Error::AuthorizationFailed(format!(
+                "Token refresh timed out after {:?}",
+                self.refresh_timeout
+            ))
+        })?
+        .map_err(|e| Error::AuthorizationFailed(format!("Token refresh failed: {e}")))?;
 
         let expires_in = token_result.expires_in();
         let oauth_token = OAuth2Token {
