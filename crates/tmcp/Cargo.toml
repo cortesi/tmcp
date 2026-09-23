@@ -17,9 +17,22 @@ doctest = false
 workspace = true
 
 [features]
-default = []
+default = ["runtime"]
+# Async clients, servers, connections, and transports built on Tokio. Without
+# this feature, the crate provides only the protocol data types.
+runtime = [
+    "dep:async-trait",
+    "dep:bytes",
+    "dep:dashmap",
+    "dep:futures",
+    "dep:http",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:tracing",
+]
 # Streamable HTTP transport (client and server) built on axum/reqwest.
 http = [
+    "runtime",
     "dep:axum",
     "dep:tower",
     "dep:tower-http",
@@ -37,22 +50,22 @@ render = ["dep:owo-colors"]
 # Reusable JSON Schema validation for advertised tool outputs.
 schema-validation = ["dep:jsonschema"]
 # Test helpers for building integration tests against tmcp.
-testutils = []
+testutils = ["runtime"]
 
 [dependencies]
 tmcp-macros = { path = "../tmcp-macros", version = "0.6.0" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.48", features = ["io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
-tokio-util = { version = "0.7", features = ["codec"] }
-futures = "0.3"
-tracing = "0.1"
+tokio = { version = "1.48", features = ["io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"], optional = true }
+tokio-util = { version = "0.7", features = ["codec"], optional = true }
+futures = { version = "0.3", optional = true }
+tracing = { version = "0.1", optional = true }
 thiserror = "2.0"
-async-trait = "0.1"
-bytes = "1.11"
+async-trait = { version = "0.1", optional = true }
+bytes = { version = "1.11", optional = true }
 schemars = "1.1"
-http = "1.4"
-dashmap = "6.1"
+http = { version = "1.4", optional = true }
+dashmap = { version = "6.1", optional = true }
 mime_guess = "2.0"
 base64 = "0.22"
 sha2 = "0.11.0"
@@ -88,6 +101,10 @@ required-features = ["testutils"]
 [[test]]
 name = "client_server_ping"
 required-features = ["testutils"]
+
+[[test]]
+name = "compile_fail"
+required-features = ["runtime"]
 
 [[test]]
 name = "concurrent_server_requests"

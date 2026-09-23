@@ -46,17 +46,26 @@ both client and server roles with async/await APIs.
 
 ## Cargo features
 
-tmcp's default feature set is empty. Core stdio and TCP clients and servers require no feature.
-Enable only the optional capabilities an application uses:
+tmcp's default feature set is `runtime`. Core stdio and TCP clients and servers require no other
+feature. Enable only the optional capabilities an application uses:
 
-- `http` provides streamable HTTP client and server transports.
+- `runtime` provides the Tokio clients, servers, connections, and transports.
+- `http` provides streamable HTTP client and server transports, and enables `runtime`.
 - `auth` provides OAuth client flows and bearer-token protection, and enables `http`.
 - `render` provides human-oriented MCP API rendering.
 - `schema-validation` compiles advertised tool schemas for repeated output validation.
-- `testutils` provides integration-test harnesses and transports.
+- `testutils` provides integration-test harnesses and transports, and enables `runtime`.
 
 ```toml
 tmcp = { version = "0.6", features = ["auth"] }
+```
+
+To use only the protocol data types, disable the default features. This configuration provides
+`tmcp::schema`, `Arguments`, `Error`, and the `McpApi` snapshot types, and compiles for
+`wasm32-unknown-unknown`:
+
+```toml
+tmcp = { version = "0.6", default-features = false, features = ["schema-validation"] }
 ```
 
 ---

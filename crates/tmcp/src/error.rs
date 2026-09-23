@@ -3,10 +3,7 @@ use std::{io, result::Result as StdResult};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::schema::{
-    CallToolResult, ErrorObject, INVALID_PARAMS, INVALID_REQUEST, JSONRPC_VERSION,
-    JSONRPCErrorResponse, METHOD_NOT_FOUND, PARSE_ERROR, RESOURCE_NOT_FOUND, RequestId,
-};
+use crate::schema::CallToolResult;
 
 #[derive(Error, Debug, Clone)]
 /// Error type for MCP operations.
@@ -201,69 +198,6 @@ impl Error {
             tool: tool.into(),
             message: message.into(),
         }
-    }
-
-    /// Convert error to a specific JSONRPC response if applicable
-    pub(crate) fn to_jsonrpc_response(
-        &self,
-        request_id: RequestId,
-    ) -> Option<JSONRPCErrorResponse> {
-        let (code, message, data) = match self {
-            Self::ToolNotFound(tool_name) => {
-                (INVALID_PARAMS, format!("Unknown tool: {tool_name}"), None)
-            }
-            Self::PromptNotFound(prompt_name) => (
-                INVALID_PARAMS,
-                format!("Unknown prompt: {prompt_name}"),
-                None,
-            ),
-            Self::ResourceNotFound { uri } => (
-                RESOURCE_NOT_FOUND,
-                "Resource not found".to_string(),
-                Some(serde_json::json!({ "uri": uri })),
-            ),
-            Self::MethodNotFound(method_name) => (
-                METHOD_NOT_FOUND,
-                format!("Method not found: {method_name}"),
-                None,
-            ),
-            Self::InvalidParams(message) => (
-                INVALID_PARAMS,
-                format!("Invalid parameters: {message}"),
-                None,
-            ),
-            Self::InvalidRequest(msg) => (INVALID_REQUEST, format!("Invalid request: {msg}"), None),
-            Self::GroupNotFound(group) => {
-                (INVALID_PARAMS, format!("Group not found: {group}"), None)
-            }
-            Self::GroupInactive { group, parent } => (
-                INVALID_PARAMS,
-                format!("Group '{group}' requires active parent '{parent}'"),
-                None,
-            ),
-            Self::JsonParse { message } => (
-                PARSE_ERROR,
-                format!("JSON serialization error: {message}"),
-                None,
-            ),
-            Self::InvalidMessageFormat { message } => (
-                PARSE_ERROR,
-                format!("Invalid message format: {message}"),
-                None,
-            ),
-            // Return None for errors that should use the generic INTERNAL_ERROR handling
-            _ => return None,
-        };
-
-        Some(JSONRPCErrorResponse {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: Some(request_id),
-            error: ErrorObject {
-                code,
-                message,
-                data,
-            },
-        })
     }
 }
 

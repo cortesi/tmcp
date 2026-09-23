@@ -148,19 +148,64 @@ where
                 },
             }))
         }
-        Err(e) => {
-            let error = e
-                .to_jsonrpc_response(id.clone())
-                .unwrap_or_else(|| JSONRPCErrorResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: Some(id),
-                    error: ErrorObject {
-                        code: INTERNAL_ERROR,
-                        message: e.to_string(),
-                        data: None,
-                    },
-                });
-            JSONRPCMessage::Response(JSONRPCResponse::Error(error))
+        Err(error) => JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: Some(id),
+            error: error_object(&error),
+        })),
+    }
+}
+
+/// Map an error to its JSON-RPC error object.
+///
+/// Errors without a specific protocol code use `INTERNAL_ERROR`.
+fn error_object(error: &Error) -> ErrorObject {
+    let (code, message, data) = match error {
+        Error::ToolNotFound(tool_name) => {
+            (INVALID_PARAMS, format!("Unknown tool: {tool_name}"), None)
         }
+        Error::PromptNotFound(prompt_name) => (
+            INVALID_PARAMS,
+            format!("Unknown prompt: {prompt_name}"),
+            None,
+        ),
+        Error::ResourceNotFound { uri } => (
+            RESOURCE_NOT_FOUND,
+            "Resource not found".to_string(),
+            Some(serde_json::json!({ "uri": uri })),
+        ),
+        Error::MethodNotFound(method_name) => (
+            METHOD_NOT_FOUND,
+            format!("Method not found: {method_name}"),
+            None,
+        ),
+        Error::InvalidParams(message) => (
+            INVALID_PARAMS,
+            format!("Invalid parameters: {message}"),
+            None,
+        ),
+        Error::InvalidRequest(msg) => (INVALID_REQUEST, format!("Invalid request: {msg}"), None),
+        Error::GroupNotFound(group) => (INVALID_PARAMS, format!("Group not found: {group}"), None),
+        Error::GroupInactive { group, parent } => (
+            INVALID_PARAMS,
+            format!("Group '{group}' requires active parent '{parent}'"),
+            None,
+        ),
+        Error::JsonParse { message } => (
+            PARSE_ERROR,
+            format!("JSON serialization error: {message}"),
+            None,
+        ),
+        Error::InvalidMessageFormat { message } => (
+            PARSE_ERROR,
+            format!("Invalid message format: {message}"),
+            None,
+        ),
+        _ => (INTERNAL_ERROR, error.to_string(), None),
+    };
+    ErrorObject {
+        code,
+        message,
+        data,
     }
 }

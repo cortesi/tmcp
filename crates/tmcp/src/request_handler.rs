@@ -30,9 +30,9 @@ type TimeoutResult<T> = StdResult<StdResult<T, oneshot::error::RecvError>, Elaps
 use crate::{
     error::{Error, Result},
     schema::{
-        AUTHORIZATION_FAILED, INVALID_PARAMS, JSONRPC_VERSION, JSONRPCMessage, JSONRPCNotification,
-        JSONRPCRequest, JSONRPCResponse, METHOD_NOT_FOUND, Notification, NotificationParams,
-        Request, RequestId, RequestMeta, RequestParams,
+        AUTHORIZATION_FAILED, ClientRequest, INVALID_PARAMS, JSONRPC_VERSION, JSONRPCMessage,
+        JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, METHOD_NOT_FOUND, Notification,
+        NotificationParams, Request, RequestId, RequestMeta, RequestParams, ServerRequest,
     },
     transport::TransportStream,
 };
@@ -492,6 +492,18 @@ impl RequestHandler {
 pub trait RequestMethod {
     /// Return the JSON-RPC method name for this request type.
     fn method(&self) -> &'static str;
+}
+
+impl RequestMethod for ClientRequest {
+    fn method(&self) -> &'static str {
+        self.method()
+    }
+}
+
+impl RequestMethod for ServerRequest {
+    fn method(&self) -> &'static str {
+        self.method()
+    }
 }
 
 #[cfg(test)]

@@ -24,9 +24,15 @@
 //! - **HTTP**: `server.listen_http("127.0.0.1:3000")` with the `http` feature
 //! - **Stdio**: `server.listen_stdio()` for subprocess integration
 //!
-//! The default feature set is empty. Enable `http`, `auth`, `render`,
-//! `schema-validation`, or `testutils` only where those optional capabilities
-//! are needed; `auth` enables `http`.
+//! The default feature set is `runtime`, which provides the Tokio clients,
+//! servers, connections, and transports. Without `runtime`, the crate provides
+//! only the protocol data types: [`schema`], [`Arguments`], [`Error`], and the
+//! [`McpApi`] snapshot types. That configuration compiles for
+//! `wasm32-unknown-unknown`, with or without `schema-validation` and `render`.
+//!
+//! Enable `http`, `auth`, `render`, `schema-validation`, or `testutils` only
+//! where those optional capabilities are necessary. The `auth` feature enables
+//! `http`, and the `http` and `testutils` features enable `runtime`.
 //!
 //! ## Building Servers: Macro vs Trait
 //!
@@ -101,12 +107,16 @@
 /// Argument envelope used by tool calls and prompt arguments.
 mod arguments;
 /// Client implementation and transport orchestration.
+#[cfg(feature = "runtime")]
 mod client;
 /// JSON-RPC codec for stream framing.
+#[cfg(feature = "runtime")]
 mod codec;
 /// Connection traits for clients and servers.
+#[cfg(feature = "runtime")]
 mod connection;
 /// Client/server context types.
+#[cfg(feature = "runtime")]
 mod context;
 /// Error types and Result alias.
 mod error;
@@ -114,19 +124,27 @@ mod error;
 #[cfg(feature = "http")]
 mod http;
 /// JSON-RPC message definitions.
+#[cfg(feature = "runtime")]
 mod jsonrpc;
-/// Helpers for inspecting a server's MCP API.
+/// Serializable snapshots of a server's MCP API.
 mod mcp_api;
+/// Inspection of MCP APIs from server handlers and connected clients.
+#[cfg(feature = "runtime")]
+mod mcp_api_inspect;
 /// Human-oriented rendering for MCP API snapshots.
 #[cfg(feature = "render")]
 mod mcp_api_render;
 /// Request/response routing and tracking.
+#[cfg(feature = "runtime")]
 mod request_handler;
 /// Server implementation and handle types.
+#[cfg(feature = "runtime")]
 mod server;
 /// Tool registration and progressive discovery support.
+#[cfg(feature = "runtime")]
 mod toolset;
 /// Transport traits and adapters.
+#[cfg(feature = "runtime")]
 mod transport;
 
 /// OAuth and authorization helpers.
@@ -139,8 +157,11 @@ pub mod schema;
 pub mod testutils;
 
 pub use arguments::Arguments;
+#[cfg(feature = "runtime")]
 pub use client::{Client, ClientRequestHandle, SpawnedServer};
+#[cfg(feature = "runtime")]
 pub use connection::{ClientHandler, ServerHandler};
+#[cfg(feature = "runtime")]
 pub use context::{ClientCtx, ServerCtx};
 pub use error::{
     Error, Result, TOOL_ERROR_INTERNAL, TOOL_ERROR_INVALID_INPUT, TOOL_ERROR_NOT_FOUND,
@@ -148,28 +169,30 @@ pub use error::{
 };
 #[cfg(feature = "http")]
 pub use http::CorsPolicy;
-pub use mcp_api::{
-    McpApi, McpApiOptions, McpApiRefreshSnapshot, McpApiRefreshState, collect_client_prompts,
-    collect_client_resource_templates, collect_client_resources, collect_client_tools,
-    inspect_client, inspect_server, inspect_server_with,
+pub use mcp_api::{McpApi, McpApiOptions, McpApiRefreshSnapshot, McpApiRefreshState};
+#[cfg(feature = "runtime")]
+pub use mcp_api_inspect::{
+    collect_client_prompts, collect_client_resource_templates, collect_client_resources,
+    collect_client_tools, inspect_client, inspect_server, inspect_server_with,
 };
 #[cfg(feature = "render")]
 pub use mcp_api_render::{McpApiRenderOptions, render_mcp_api};
 pub use schema::ToolResponse;
 #[cfg(feature = "http")]
 pub use server::{EmbeddedHttpServer, HttpBuilder};
+#[cfg(feature = "runtime")]
 pub use server::{Server, ServerHandle, TcpServerHandle};
-// Export user-facing macros directly from the crate root
-pub use tmcp_macros::{
-    Group, ToolResponse, delegate_server_handler, group, mcp_server, tool, tool_group, tool_params,
-    tool_result,
-};
+#[cfg(feature = "runtime")]
+pub use tmcp_macros::{Group, delegate_server_handler, group, mcp_server, tool, tool_group};
+pub use tmcp_macros::{ToolResponse, tool_params, tool_result};
+#[cfg(feature = "runtime")]
 pub use toolset::{
     ActivationHook, Group, GroupConfig, GroupInfo, ToolCallFuture, ToolFuture, ToolSet,
     ToolSetView, Visibility,
 };
 
 /// Static schema and dispatch contract for a generated delegated-tool group.
+#[cfg(feature = "runtime")]
 pub trait ToolGroup {
     /// Shared state resolved by the enclosing server for each tool call.
     type State: Send + Sync + 'static;
@@ -192,6 +215,7 @@ pub trait ToolGroup {
         task: Option<schema::TaskMetadata>,
     ) -> ToolCallFuture<'a>;
 }
+#[cfg(feature = "runtime")]
 #[doc(hidden)]
 pub use toolset::{GroupDispatch, GroupRegistration};
 
@@ -207,6 +231,7 @@ mod macros {
 /// stability guarantees; do not use it directly.
 #[doc(hidden)]
 pub mod __private {
+    #[cfg(feature = "runtime")]
     pub use async_trait;
     pub use schemars;
     pub use serde;

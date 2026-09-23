@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::*;
-use crate::{Arguments, macros::with_open_meta, request_handler::RequestMethod};
+use crate::{Arguments, macros::with_open_meta};
 
 // Messages sent from the client to the server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,12 +400,6 @@ impl ClientRequest {
     }
 }
 
-impl RequestMethod for ClientRequest {
-    fn method(&self) -> &'static str {
-        self.method()
-    }
-}
-
 /// Notifications sent from the client to the server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method")]
@@ -669,12 +663,6 @@ impl ServerRequest {
             Self::ListTasks { .. } => "tasks/list",
             Self::CancelTask { .. } => "tasks/cancel",
         }
-    }
-}
-
-impl RequestMethod for ServerRequest {
-    fn method(&self) -> &'static str {
-        self.method()
     }
 }
 
