@@ -143,6 +143,18 @@ use tokio::{
     process::{Child, Command},
     sync::mpsc::bounded::Sender,
 };
+/// Standard error code for internal errors.
+pub const TOOL_ERROR_INTERNAL: &str = "INTERNAL";
+
+/// Standard error code for invalid input parameters.
+pub const TOOL_ERROR_INVALID_INPUT: &str = "INVALID_INPUT";
+
+/// Standard error code for resource not found.
+pub const TOOL_ERROR_NOT_FOUND: &str = "NOT_FOUND";
+
+/// Standard error code for operation timeout.
+pub const TOOL_ERROR_TIMEOUT: &str = "TIMEOUT";
+
 /// Handler trait that client implementers must implement.
 ///
 /// Each client connection will have its own instance of the implementation.
@@ -1792,18 +1804,6 @@ pub async fn inspect_server_with(
     options: McpApiOptions,
 ) -> crate::Result<McpApi>;
 
-/// Standard error code for internal errors.
-pub const TOOL_ERROR_INTERNAL: &str = "INTERNAL";
-
-/// Standard error code for invalid input parameters.
-pub const TOOL_ERROR_INVALID_INPUT: &str = "INVALID_INPUT";
-
-/// Standard error code for resource not found.
-pub const TOOL_ERROR_NOT_FOUND: &str = "NOT_FOUND";
-
-/// Standard error code for operation timeout.
-pub const TOOL_ERROR_TIMEOUT: &str = "TIMEOUT";
-
 #[doc(hidden)]
 pub mod __private {
     //! Crates re-exported for use by tmcp's generated macro code.
@@ -1829,6 +1829,35 @@ pub mod schema {
     //! [MCP specification](https://spec.modelcontextprotocol.io/).
 
     pub use crate::ToolResponse;
+
+    /// Implementation-specific JSON-RPC error code indicating authorization failed.
+    pub const AUTHORIZATION_FAILED: i32 = -32041;
+
+    /// JSON-RPC internal error code.
+    pub const INTERNAL_ERROR: i32 = -32603;
+
+    /// JSON-RPC invalid params error code.
+    pub const INVALID_PARAMS: i32 = -32602;
+
+    /// JSON-RPC invalid request error code.
+    pub const INVALID_REQUEST: i32 = -32600;
+
+    /// JSON-RPC protocol version string.
+    pub const JSONRPC_VERSION: &str = "2.0";
+
+    /// JSON-RPC method not found error code.
+    pub const METHOD_NOT_FOUND: i32 = -32601;
+
+    /// JSON-RPC parse error code.
+    pub const PARSE_ERROR: i32 = -32700;
+
+    /// MCP-specific JSON-RPC error code indicating a requested resource was not
+    /// found.
+    pub const RESOURCE_NOT_FOUND: i32 = -32002;
+
+    /// Implementation-specific JSON-RPC error code indicating URL elicitation is
+    /// required.
+    pub const URL_ELICITATION_REQUIRED: i32 = -32042;
 
     /// Optional annotations for the client describing how to use content.
 #[derive(Clone, Debug, Default, Deserialize<'de>, Serialize)]
@@ -5911,33 +5940,4 @@ pub mod schema {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub default: Option<String>,
     }
-
-    /// Implementation-specific JSON-RPC error code indicating authorization failed.
-    pub const AUTHORIZATION_FAILED: i32 = -32041;
-
-    /// JSON-RPC internal error code.
-    pub const INTERNAL_ERROR: i32 = -32603;
-
-    /// JSON-RPC invalid params error code.
-    pub const INVALID_PARAMS: i32 = -32602;
-
-    /// JSON-RPC invalid request error code.
-    pub const INVALID_REQUEST: i32 = -32600;
-
-    /// JSON-RPC protocol version string.
-    pub const JSONRPC_VERSION: &str = "2.0";
-
-    /// JSON-RPC method not found error code.
-    pub const METHOD_NOT_FOUND: i32 = -32601;
-
-    /// JSON-RPC parse error code.
-    pub const PARSE_ERROR: i32 = -32700;
-
-    /// MCP-specific JSON-RPC error code indicating a requested resource was not
-    /// found.
-    pub const RESOURCE_NOT_FOUND: i32 = -32002;
-
-    /// Implementation-specific JSON-RPC error code indicating URL elicitation is
-    /// required.
-    pub const URL_ELICITATION_REQUIRED: i32 = -32042;
 }
