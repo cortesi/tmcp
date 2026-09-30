@@ -92,6 +92,11 @@
 //! - `title = "..."` (tool display title)
 //! - `task_support = "forbidden" | "optional" | "required"`
 //! - `output_schema = TypeName` (explicit output schema)
+//! - `description = expr` (a description from an expression, in place of the
+//!   doc comment)
+//! - `input_schema = expr` (an input schema from an expression that converts
+//!   into `ToolSchema`, such as a `serde_json::Value`; the parameter type still
+//!   parses the arguments)
 //! - `icon = "https://..."` or `icons("a", "b")`
 //! - `defaults` (treat missing arguments as an empty object and rely on serde
 //!   defaults)

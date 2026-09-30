@@ -119,6 +119,12 @@ pub struct ToolAttrs {
     pub task_support: Option<ToolTaskSupport>,
     /// Optional output schema override.
     pub output_schema: Option<syn::Type>,
+    /// Optional expression that supplies the description in place of the doc
+    /// comment.
+    pub description: Option<syn::Expr>,
+    /// Optional expression that supplies the input schema in place of the
+    /// schema of the parameter type.
+    pub input_schema: Option<syn::Expr>,
     /// Icon URLs for the tool.
     pub icons: Vec<String>,
     /// Whether to apply default argument handling.

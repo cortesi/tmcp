@@ -1004,4 +1004,66 @@ mod tests {
             _ => panic!("Expected text content"),
         }
     }
+    /// Description that an external definition supplies.
+    const EXTERNAL_DESCRIPTION: &str = "Echo a message from an external definition.";
+
+    /// Returns the input schema that an external definition supplies.
+    fn external_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "message": { "type": "string", "description": "Text to echo." },
+            },
+            "required": ["message"],
+            "additionalProperties": false,
+        })
+    }
+
+    #[derive(Debug, Default)]
+    struct ExternalDefinitionServer;
+
+    #[mcp_server]
+    /// Server whose tool takes its definition from expressions.
+    impl ExternalDefinitionServer {
+        #[tool(description = EXTERNAL_DESCRIPTION, input_schema = external_schema())]
+        /// This doc comment is not the description.
+        async fn external_echo(
+            &self,
+            _ctx: &ServerCtx,
+            params: EchoParams,
+        ) -> ToolResult<PingResponse> {
+            Ok(PingResponse {
+                message: params.message,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_takes_its_description_and_input_schema_from_expressions() {
+        let server = ExternalDefinitionServer;
+        let ctx = TestServerContext::new();
+        let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
+        assert_eq!(tools.tools.len(), 1);
+        let tool = &tools.tools[0];
+        assert_eq!(tool.name, "external_echo");
+        assert_eq!(tool.description.as_deref(), Some(EXTERNAL_DESCRIPTION));
+        assert_eq!(tool.input_schema.0, external_schema());
+        assert!(tool.output_schema.is_some(), "the output schema stays");
+
+        let result = server
+            .call_tool(
+                ctx.ctx(),
+                "external_echo".to_string(),
+                Some(tmcp::Arguments::new().insert("message", "hello")),
+                None,
+            )
+            .await
+            .unwrap()
+            .into_result()
+            .expect("immediate tool response");
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({ "message": "hello" }))
+        );
+    }
 }

@@ -354,6 +354,12 @@ fn parse_tool_attrs(attrs: &[syn::Attribute]) -> Result<Option<ToolAttrs>> {
                         "output_schema" => {
                             tool_attrs.output_schema = Some(parse_output_schema_type(&meta.value)?);
                         }
+                        "description" => {
+                            tool_attrs.description = Some(meta.value.clone());
+                        }
+                        "input_schema" => {
+                            tool_attrs.input_schema = Some(meta.value.clone());
+                        }
                         "icon" => {
                             tool_attrs.icons.push(parse_string_lit(&meta.value)?);
                         }

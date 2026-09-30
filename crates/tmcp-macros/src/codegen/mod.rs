@@ -370,6 +370,9 @@ fn generate_tool_call_arm(
 
 /// Build the input schema expression for a tool.
 fn tool_schema_expr(tool: &ToolMethod, owner_name: &str) -> TokenStream {
+    if let Some(schema) = &tool.attrs.input_schema {
+        return quote! { ::tmcp::schema::ToolSchema::from(#schema) };
+    }
     match tool.params_kind {
         ParamsKind::None | ParamsKind::Unit => {
             quote! { ::tmcp::schema::ToolSchema::default() }
@@ -392,10 +395,10 @@ fn build_tool_expr(
     schema_expr: &TokenStream,
 ) -> TokenStream {
     let description = &tool.docs;
-    let description_setter = if description.is_empty() {
-        quote! {}
-    } else {
-        quote! { tool = tool.with_description(#description); }
+    let description_setter = match &tool.attrs.description {
+        Some(expr) => quote! { tool = tool.with_description(#expr); },
+        None if description.is_empty() => quote! {},
+        None => quote! { tool = tool.with_description(#description); },
     };
 
     let title_setter = tool

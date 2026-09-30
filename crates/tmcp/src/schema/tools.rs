@@ -838,6 +838,12 @@ impl ToolSchemaValidationError {
     }
 }
 
+impl From<Value> for ToolSchema {
+    fn from(value: Value) -> Self {
+        Self(value)
+    }
+}
+
 impl Default for ToolSchema {
     fn default() -> Self {
         Self(serde_json::json!({
