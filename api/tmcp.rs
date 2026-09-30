@@ -5817,6 +5817,8 @@ pub mod schema {
         ) -> Self;
     }
 
+    impl From<Value> for ToolSchema {}
+
     /// Task support options for tool execution.
 #[derive(Clone, Debug, Deserialize<'de>, Serialize)]
 #[serde(rename_all = "lowercase")]
