@@ -846,18 +846,6 @@ impl Client<()> {
     /// server-initiated requests, which is appropriate for clients that don't
     /// need to respond to server callbacks.
     pub fn with_handler<C: ClientHandler>(self, handler: C) -> Client<C>;
-
-    /// Set the default request timeout for this connection.
-    ///
-    /// A zero duration disables the deadline. See
-    /// [`Self::without_request_timeout`].
-    pub fn with_request_timeout(self, timeout: Duration) -> Self;
-
-    /// Wait for every response without a deadline.
-    ///
-    /// Use this for a peer whose tools can block on a human decision. Transport
-    /// shutdown and cancellation still complete a pending request.
-    pub fn without_request_timeout(self) -> Self;
 }
 
 impl<C> Client<C>
@@ -1011,6 +999,20 @@ where
     where
         F: Future<Output = ()> + Send,
         T: 'static + DeserializeOwned + Send;
+
+    /// Set the default request timeout for this connection. A change after
+    /// the connect applies to later requests.
+    ///
+    /// A zero duration disables the deadline. See
+    /// [`Self::without_request_timeout`].
+    pub fn with_request_timeout(self, timeout: Duration) -> Self;
+
+    /// Wait for every response without a deadline.
+    ///
+    /// Use this for a peer whose tools can block on a human decision, or for a
+    /// handshake with a server that builds before it answers. Transport
+    /// shutdown and cancellation still complete a pending request.
+    pub fn without_request_timeout(self) -> Self;
 }
 
 /// Context provided to `ClientHandler` implementations for interacting with the

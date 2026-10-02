@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `Client::with_request_timeout` and `Client::without_request_timeout` also apply to a client with
+  a handler, and after the connect.
+
 ## v0.6.0
 
 - Breaking: The default feature set is now empty. Enable `http`, `auth`, `render`,

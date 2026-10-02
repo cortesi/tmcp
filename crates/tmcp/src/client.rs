@@ -183,8 +183,14 @@ impl Client<()> {
         self.client_capabilities = capabilities;
         self
     }
+}
 
-    /// Set the default request timeout for this connection.
+impl<C> Client<C>
+where
+    C: ClientHandler + Send + 'static,
+{
+    /// Set the default request timeout for this connection. A change after
+    /// the connect applies to later requests.
     ///
     /// A zero duration disables the deadline. See
     /// [`Self::without_request_timeout`].
@@ -195,18 +201,14 @@ impl Client<()> {
 
     /// Wait for every response without a deadline.
     ///
-    /// Use this for a peer whose tools can block on a human decision. Transport
+    /// Use this for a peer whose tools can block on a human decision, or for a
+    /// handshake with a server that builds before it answers. Transport
     /// shutdown and cancellation still complete a pending request.
     pub fn without_request_timeout(self) -> Self {
         self.request_handler.set_timeout(0);
         self
     }
-}
 
-impl<C> Client<C>
-where
-    C: ClientHandler + Send + 'static,
-{
     /// Connect using the provided transport
     pub(crate) async fn connect(&mut self, mut transport: Box<dyn Transport>) -> Result<()> {
         self.context = None;
@@ -1737,6 +1739,29 @@ mod tests {
         let result = timeout(Duration::from_millis(300), client.init()).await;
 
         assert!(result.is_err(), "expected the request to still be pending");
+    }
+
+    #[tokio::test]
+    async fn a_handler_client_takes_a_timeout_after_the_connect() {
+        let (client_transport, _server_transport) = TestTransport::create_pair();
+        let mut client = Client::new("test", "1.0")
+            .with_handler(())
+            .without_request_timeout();
+        client
+            .connect(client_transport)
+            .await
+            .expect("Failed to connect");
+
+        // The server transport is never read, so `initialize` has no response,
+        // and the deadline set after the connect ends the wait.
+        let mut client = client.with_request_timeout(Duration::from_millis(100));
+        let result = timeout(Duration::from_secs(5), client.init())
+            .await
+            .expect("the request deadline ends the wait");
+        assert!(
+            matches!(result, Err(Error::Timeout { .. })),
+            "Expected timeout error, got {result:?}"
+        );
     }
 
     #[tokio::test]
