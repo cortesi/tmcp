@@ -90,9 +90,8 @@ pub fn generate_call_tool(info: &ServerInfo, args: &ServerMacroArgs) -> TokenStr
 /// Generate the ServerHandler::list_tools implementation.
 ///
 /// The tool list (including schemars schema generation) is memoized in a
-/// `LazyLock` when the impl block has no type or const generics; otherwise the
-/// schema expressions may reference generic parameters and must be evaluated
-/// per call.
+/// `LazyLock` when its expressions do not reference impl generics or `Self`.
+/// Other expressions stay in the impl scope and are evaluated per call.
 pub fn generate_list_tools(info: &ServerInfo, args: &ServerMacroArgs) -> TokenStream {
     let mut tools: Vec<_> = info
         .tools
@@ -127,8 +126,10 @@ pub fn generate_list_tools(info: &ServerInfo, args: &ServerMacroArgs) -> TokenSt
             tools
         }
     };
-    let generic_idents = generic_param_idents(&info.generics);
-    let body = if !tokens_mention_ident(tools_expr.clone(), &generic_idents) {
+    let self_type = format_ident!("Self");
+    let mut scoped_idents = generic_param_idents(&info.generics);
+    scoped_idents.push(&self_type);
+    let body = if !tokens_mention_ident(tools_expr.clone(), &scoped_idents) {
         quote! {
             static TOOLS: ::std::sync::LazyLock<Vec<::tmcp::schema::Tool>> =
                 ::std::sync::LazyLock::new(|| #tools_expr);

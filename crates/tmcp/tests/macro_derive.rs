@@ -1022,6 +1022,39 @@ mod tests {
     #[derive(Debug, Default)]
     struct ExternalDefinitionServer;
 
+    #[derive(Debug, Default)]
+    /// Server whose tool definition uses associated items.
+    struct AssociatedDefinitionServer;
+
+    #[mcp_server]
+    impl AssociatedDefinitionServer {
+        /// Description supplied by the server type.
+        const DESCRIPTION: &'static str = "Echo with an associated definition.";
+
+        /// Schema supplied by the server type.
+        fn input_schema() -> serde_json::Value {
+            external_schema()
+        }
+        #[tool(description = Self::DESCRIPTION, input_schema = Self::input_schema())]
+        async fn associated_echo(&self, params: EchoParams) -> ToolResult<PingResponse> {
+            Ok(PingResponse {
+                message: params.message,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_definition_can_refer_to_its_server_type() {
+        let server = AssociatedDefinitionServer;
+        let ctx = TestServerContext::new();
+        let tools = server.list_tools(ctx.ctx(), None).await.unwrap();
+        assert_eq!(
+            tools.tools[0].description.as_deref(),
+            Some(AssociatedDefinitionServer::DESCRIPTION)
+        );
+        assert_eq!(tools.tools[0].input_schema.0, external_schema());
+    }
+
     #[mcp_server]
     /// Server whose tool takes its definition from expressions.
     impl ExternalDefinitionServer {
