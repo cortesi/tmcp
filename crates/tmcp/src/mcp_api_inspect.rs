@@ -126,7 +126,10 @@ where
 /// inspection.
 fn inspection_context() -> (ServerCtx, mpsc::Receiver<ServerNotification>) {
     let (notification_tx, notification_rx) = mpsc::channel(INSPECTION_NOTIFICATION_BUFFER);
-    (ServerCtx::new(notification_tx, None), notification_rx)
+    (
+        ServerCtx::notification_only(notification_tx),
+        notification_rx,
+    )
 }
 
 /// Retain one pagination cursor and reject a cycle before the next request.

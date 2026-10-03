@@ -19,17 +19,17 @@ mod tests {
     use serde::{Deserialize, de::DeserializeOwned};
     use serde_json::{Value, json};
     use tmcp::{
-        Arguments, Client, ClientCtx, ClientHandler, CustomRequest, Error, Result, ServerCtx,
-        ServerHandle, ServerHandler, handle_request,
+        Arguments, Client, ClientCtx, ClientHandler, CustomRequest, Error, Result, Server,
+        ServerCtx, ServerHandle, ServerHandler, handle_request,
         schema::{
             CallToolResponse, CallToolResult, ClientCapabilities, ClientRequest, GetPromptResult,
-            Implementation, InitializeResult, ListRootsResult, ProtocolVersion, RequestId, Root,
-            ServerNotification, TaskMetadata,
+            Implementation, InitializeResult, ListRootsResult, LoggingLevel, ProtocolVersion,
+            RequestId, Root, ServerNotification, TaskMetadata,
         },
         testutils::{connected_client_and_server_with_conn, make_duplex_pair},
     };
     use tokio::{
-        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader, duplex},
         sync::mpsc,
         time::{sleep, timeout},
     };
@@ -567,6 +567,168 @@ mod tests {
             late.is_err(),
             "the client answered a cancelled request: {late:?}"
         );
+    }
+
+    /// The number of `hold` calls of the saturation test: more than the
+    /// response queue of a connection holds.
+    const HOLDS: usize = 80;
+
+    /// A server that abandons a custom request while the queues of its
+    /// connection are full.
+    ///
+    /// Its `hold` calls wait for `release`. Its `abandon` call sends
+    /// `test/wait`, waits for `abandon`, fills the notification queue, and
+    /// then drops the request.
+    #[derive(Clone)]
+    struct Saturator {
+        /// Events of the server, in order.
+        events: mpsc::UnboundedSender<String>,
+        /// Ends the wait of each `hold` call.
+        release: CancellationToken,
+        /// Lets the `abandon` call drop its request.
+        abandon: CancellationToken,
+    }
+
+    #[async_trait]
+    impl ServerHandler for Saturator {
+        async fn initialize(
+            &self,
+            _context: &ServerCtx,
+            _protocol_version: ProtocolVersion,
+            _capabilities: ClientCapabilities,
+            _client_info: Implementation,
+        ) -> Result<InitializeResult> {
+            Ok(InitializeResult::new("saturator")
+                .with_tools(None)
+                .with_logging())
+        }
+
+        async fn call_tool(
+            &self,
+            context: &ServerCtx,
+            name: String,
+            _arguments: Option<Arguments>,
+            _task: Option<TaskMetadata>,
+        ) -> Result<CallToolResponse> {
+            match name.as_str() {
+                "hold" => {
+                    self.events.send("held".to_owned()).expect("events");
+                    self.release.cancelled().await;
+                }
+                "abandon" => {
+                    let request = CustomRequest::new("test/wait", ())?.without_timeout();
+                    let mut send = Box::pin(context.send_request::<Value>(request));
+                    tokio::select! {
+                        result = &mut send => panic!("the client answered: {result:?}"),
+                        () = self.abandon.cancelled() => {}
+                    }
+                    let mut queued = 0;
+                    while context
+                        .notify(ServerNotification::logging_message(
+                            LoggingLevel::Info,
+                            None,
+                            json!("fill"),
+                        ))
+                        .is_ok()
+                    {
+                        queued += 1;
+                    }
+                    self.events
+                        .send(format!("queued {queued}"))
+                        .expect("events");
+                    drop(send);
+                }
+                _ => return Err(Error::ToolNotFound(name)),
+            }
+            Ok(CallToolResult::new().with_text_content("done").into())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancellation_reaches_the_client_when_the_queues_are_full() {
+        // The buffer from the server to the client holds about two responses,
+        // so the connection loop stalls while the test does not read.
+        let (server_reader, mut client_writer) = duplex(64 * 1024);
+        let (client_reader, server_writer) = duplex(256);
+        let mut lines = BufReader::new(client_reader).lines();
+        let (events, mut event_rx) = mpsc::unbounded_channel();
+        let server = Saturator {
+            events,
+            release: CancellationToken::new(),
+            abandon: CancellationToken::new(),
+        };
+        let (release, abandon) = (server.release.clone(), server.abandon.clone());
+        let _server = ServerHandle::from_stream(
+            Server::new(move || server.clone()),
+            server_reader,
+            server_writer,
+        )
+        .await
+        .expect("start server");
+        let mut send = async |message: Value| {
+            let mut line = serde_json::to_vec(&message).expect("message");
+            line.push(b'\n');
+            client_writer.write_all(&line).await.expect("write");
+        };
+        let call = |id: usize, name: &str| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": name, "arguments": {} }
+            })
+        };
+        let mut next_message = async || -> Value {
+            let line = timeout(EVENT_WAIT, lines.next_line())
+                .await
+                .expect("a message in time")
+                .expect("read")
+                .expect("a message line");
+            serde_json::from_str(&line).expect("message")
+        };
+
+        send(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "test-client", "version": "1.0.0" }
+            }
+        }))
+        .await;
+        assert_eq!(next_message().await["id"], 1);
+        send(call(2, "abandon")).await;
+        let request = next_message().await;
+        assert_eq!(request["method"], "test/wait");
+        let request_id = request["id"].clone();
+
+        // Each hold call waits, so the loop reads all of them.
+        for id in 0..HOLDS {
+            send(call(100 + id, "hold")).await;
+        }
+        for _ in 0..HOLDS {
+            assert_eq!(next_event(&mut event_rx).await, "held");
+        }
+        // The responses fill the transport buffer and then the response
+        // queue. Paused time advances only when every task waits, so the
+        // sleep ends when the loop has stalled.
+        release.cancel();
+        sleep(Duration::from_millis(10)).await;
+        // The abandon call fills the notification queue, and then drops its
+        // request.
+        abandon.cancel();
+        let queued = next_event(&mut event_rx).await;
+        assert_ne!(queued, "queued 0", "the notification queue had space");
+
+        loop {
+            let message = next_message().await;
+            if message["method"] == "notifications/cancelled" {
+                assert_eq!(message["params"]["requestId"], request_id);
+                break;
+            }
+        }
     }
 
     #[test]

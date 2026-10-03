@@ -7,7 +7,6 @@
 use std::{
     future::Future,
     pin::Pin,
-    result::Result as StdResult,
     sync::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -20,12 +19,9 @@ use dashmap::DashMap;
 use futures::{SinkExt, stream::SplitSink};
 use serde::de::DeserializeOwned;
 use tokio::{
-    sync::{Mutex as TokioMutex, oneshot},
-    time::{error::Elapsed, timeout},
+    sync::{Mutex as TokioMutex, mpsc, oneshot},
+    time::{Instant, timeout_at},
 };
-
-/// Type alias for the nested Result type from timeout + channel receive.
-type TimeoutResult<T> = StdResult<StdResult<T, oneshot::error::RecvError>, Elapsed>;
 
 use crate::{
     error::{Error, Result},
@@ -62,6 +58,13 @@ pub fn timeout_millis(timeout: Duration) -> u64 {
 /// Transport sink type used by the request handler.
 pub type TransportSink = Arc<TokioMutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
 
+/// The sender of the cancellation notices of a connection.
+///
+/// Each notice is the ID of a request that the sender abandoned. The queue is
+/// unbounded, so a notice never waits for capacity and is never dropped. It
+/// holds at most one notice for each abandoned request.
+pub type CancelSender = mpsc::UnboundedSender<RequestId>;
+
 /// Metadata for a pending request.
 struct PendingRequest {
     /// Channel to send the response back to the caller.
@@ -69,19 +72,14 @@ struct PendingRequest {
 }
 
 /// A typed response future for an outbound JSON-RPC request.
+///
+/// The deadline of the request started before its send. A first poll after
+/// the deadline returns a response that has arrived, or fails with
+/// [`Error::Timeout`] at once. When the future drops before the response
+/// arrives, the request releases its pending slot.
 pub struct Pending<Res> {
-    /// Future waiting for and decoding the response.
+    /// Future waiting for and decoding the response. It owns the request.
     inner: Pin<Box<dyn Future<Output = Result<Res>> + Send + 'static>>,
-    /// Cleanup state for removing the request slot if the future is dropped.
-    cleanup: PendingCleanup,
-}
-
-/// State needed to clean up a dropped pending request.
-struct PendingCleanup {
-    /// Shared handler that owns pending request storage.
-    handler: RequestHandler,
-    /// Request id to remove on drop.
-    id: RequestId,
 }
 
 impl<Res> Future for Pending<Res> {
@@ -92,13 +90,129 @@ impl<Res> Future for Pending<Res> {
     }
 }
 
-impl<Res> Drop for Pending<Res> {
-    fn drop(&mut self) {
-        self.cleanup
-            .handler
+/// One outbound request, from before its send until its response.
+///
+/// The request owns its pending slot, its absolute deadline, and its
+/// cancellation notice through the send and the wait. A request that drops
+/// before it settles, because the caller dropped it or its deadline passed,
+/// releases its slot and sends its cancellation notice.
+struct OutboundRequest {
+    /// Shared handler that owns the pending slot.
+    handler: RequestHandler,
+    /// The ID of the request.
+    id: RequestId,
+    /// The deadline and its length in milliseconds, or `None` without a
+    /// deadline.
+    deadline: Option<(Instant, u64)>,
+    /// Where to send the cancellation notice, or `None` when the request has
+    /// no notice or has settled.
+    cancel: Option<CancelSender>,
+}
+
+impl OutboundRequest {
+    /// Store the pending slot of a new request and start its deadline.
+    fn start(
+        handler: &RequestHandler,
+        timeout_ms: u64,
+        cancel: Option<CancelSender>,
+    ) -> (Self, oneshot::Receiver<JSONRPCResponse>) {
+        let id = handler.next_request_id();
+        let (response_tx, response_rx) = oneshot::channel();
+        handler
             .inner
             .pending_requests
-            .remove(&self.cleanup.id);
+            .insert(id.clone(), PendingRequest { response_tx });
+        tracing::debug!(
+            "Stored pending request with ID: {}, total pending: {}",
+            id,
+            handler.inner.pending_requests.len()
+        );
+        // A deadline past the range of `Instant` is no deadline in practice.
+        let deadline = (timeout_ms != NO_TIMEOUT_MS)
+            .then(|| Instant::now().checked_add(Duration::from_millis(timeout_ms)))
+            .flatten()
+            .map(|deadline| (deadline, timeout_ms));
+        let request = Self {
+            handler: handler.clone(),
+            id,
+            deadline,
+            cancel,
+        };
+        (request, response_rx)
+    }
+
+    /// Run `future` until the deadline of the request.
+    async fn before_deadline<T>(&self, future: impl Future<Output = T>) -> Result<T> {
+        // Without a deadline, the caller accepts an unbounded wait, such as a
+        // tool that blocks on a human decision. Transport shutdown still wakes
+        // the pending request.
+        let Some((deadline, timeout_ms)) = self.deadline else {
+            return Ok(future.await);
+        };
+        timeout_at(deadline, future).await.map_err(|_| {
+            tracing::warn!("Request {} timed out after {}ms", self.id, timeout_ms);
+            Error::Timeout {
+                request_id: self.id.to_string(),
+                timeout_ms,
+            }
+        })
+    }
+
+    /// Send the request over the transport before its deadline.
+    async fn send(&mut self, request: Request) -> Result<()> {
+        tracing::info!(
+            "Sending request with ID: {} method: {}",
+            self.id,
+            request.method
+        );
+        let message = JSONRPCMessage::Request(JSONRPCRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: self.id.clone(),
+            request,
+        });
+        let sent = self
+            .before_deadline(self.handler.send_message(message))
+            .await?;
+        if sent.is_err() {
+            // The transport failed, so the peer has no request to cancel.
+            self.cancel = None;
+        }
+        sent
+    }
+
+    /// Wait for the response until the deadline.
+    async fn response(
+        mut self,
+        response_rx: oneshot::Receiver<JSONRPCResponse>,
+    ) -> Result<JSONRPCResponse> {
+        let received = self.before_deadline(response_rx).await?;
+        self.cancel = None;
+        received.map_err(|_recv_error| {
+            if self.handler.inner.shutting_down.load(Ordering::Acquire) {
+                Error::TransportDisconnected
+            } else {
+                Error::Protocol("Response channel closed unexpectedly".to_string())
+            }
+        })
+    }
+}
+
+impl Drop for OutboundRequest {
+    fn drop(&mut self) {
+        self.handler.inner.pending_requests.remove(&self.id);
+        let Some(cancel) = self.cancel.take() else {
+            return;
+        };
+        // The request of a closed connection needs no notice.
+        if self.handler.inner.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        if cancel.send(self.id.clone()).is_err() {
+            tracing::debug!(
+                "The connection closed before the cancellation of request {}",
+                self.id
+            );
+        }
     }
 }
 
@@ -231,7 +345,7 @@ impl RequestHandler {
     {
         let request = request_body(&request)?;
         let method = request.method.clone();
-        self.send_pending(request, timeout_override, move |response| {
+        self.send_pending(request, timeout_override, None, move |response| {
             Self::decode_response(&method, response)
         })
         .await
@@ -239,132 +353,45 @@ impl RequestHandler {
 
     /// Send a request body, optionally overriding the connection's default
     /// timeout, and return its id plus a future of the raw response.
+    ///
+    /// When the caller abandons the request, because it drops the request
+    /// during the send or the wait, or the deadline passes, the request sends
+    /// its ID to `cancel`.
     pub(crate) async fn request_raw_pending(
         &self,
         request: Request,
         timeout_override: Option<Duration>,
+        cancel: Option<CancelSender>,
     ) -> Result<(RequestId, Pending<JSONRPCResponse>)> {
-        self.send_pending(request, timeout_override, Ok).await
+        self.send_pending(request, timeout_override, cancel, Ok)
+            .await
     }
 
     /// Send a request body and return its id plus a future that finishes its
     /// response with `finish`.
+    ///
+    /// The request starts its deadline before the send, so a blocked
+    /// transport counts toward the deadline.
     async fn send_pending<Res, F>(
         &self,
         request: Request,
         timeout_override: Option<Duration>,
+        cancel: Option<CancelSender>,
         finish: F,
     ) -> Result<(RequestId, Pending<Res>)>
     where
         Res: Send + 'static,
         F: FnOnce(JSONRPCResponse) -> Result<Res> + Send + 'static,
     {
-        let id = self.next_request_id();
-
-        // Store and send the request
-        let response_rx = self.store_and_send_request(id.clone(), request).await?;
-        let handler = self.clone();
-        let pending_id = id.clone();
-        let cleanup = PendingCleanup {
-            handler: self.clone(),
-            id: id.clone(),
-        };
-        let timeout_ms = timeout_override.map(timeout_millis);
-        let inner = Box::pin(async move {
-            finish(
-                handler
-                    .await_response(pending_id, response_rx, timeout_ms)
-                    .await?,
-            )
-        });
-
-        Ok((id, Pending { inner, cleanup }))
-    }
-
-    /// Store a pending request and send it over the transport.
-    async fn store_and_send_request(
-        &self,
-        id: RequestId,
-        request: Request,
-    ) -> Result<oneshot::Receiver<JSONRPCResponse>> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.inner
-            .pending_requests
-            .insert(id.clone(), PendingRequest { response_tx });
-
-        tracing::debug!(
-            "Stored pending request with ID: {}, total pending: {}",
-            id,
-            self.inner.pending_requests.len()
+        let timeout_ms = timeout_override.map_or_else(
+            || self.inner.timeout_ms.load(Ordering::Relaxed),
+            timeout_millis,
         );
-
-        tracing::info!("Sending request with ID: {} method: {}", id, request.method);
-        let jsonrpc_request = JSONRPCRequest {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: id.clone(),
-            request,
-        };
-
-        if let Err(e) = self
-            .send_message(JSONRPCMessage::Request(jsonrpc_request))
-            .await
-        {
-            self.inner.pending_requests.remove(&id);
-            return Err(e);
-        }
-
-        Ok(response_rx)
-    }
-
-    /// Wait for a response with timeout and cancellation support.
-    async fn await_response(
-        &self,
-        id: RequestId,
-        response_rx: oneshot::Receiver<JSONRPCResponse>,
-        timeout_override: Option<u64>,
-    ) -> Result<JSONRPCResponse> {
-        let timeout_ms =
-            timeout_override.unwrap_or_else(|| self.inner.timeout_ms.load(Ordering::Relaxed));
-        // A zero timeout means the caller accepts an unbounded wait, such as a
-        // tool that blocks on a human decision. Transport shutdown
-        // still wakes the pending request.
-        let result = if timeout_ms == NO_TIMEOUT_MS {
-            Ok(response_rx.await)
-        } else {
-            timeout(Duration::from_millis(timeout_ms), response_rx).await
-        };
-        self.process_response_result(&id, result, timeout_ms)
-    }
-
-    /// Process the result of waiting for a response.
-    fn process_response_result(
-        &self,
-        id: &RequestId,
-        result: TimeoutResult<JSONRPCResponse>,
-        timeout_ms: u64,
-    ) -> Result<JSONRPCResponse> {
-        match result {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_recv_error)) => {
-                self.inner.pending_requests.remove(id);
-                if self.inner.shutting_down.load(Ordering::Acquire) {
-                    Err(Error::TransportDisconnected)
-                } else {
-                    Err(Error::Protocol(
-                        "Response channel closed unexpectedly".to_string(),
-                    ))
-                }
-            }
-            Err(_timeout) => {
-                self.inner.pending_requests.remove(id);
-                tracing::warn!("Request {} timed out after {}ms", id, timeout_ms);
-                Err(Error::Timeout {
-                    request_id: id.to_string(),
-                    timeout_ms,
-                })
-            }
-        }
+        let (mut outbound, response_rx) = OutboundRequest::start(self, timeout_ms, cancel);
+        let id = outbound.id.clone();
+        outbound.send(request).await?;
+        let inner = Box::pin(async move { finish(outbound.response(response_rx).await?) });
+        Ok((id, Pending { inner }))
     }
 
     /// Send a message through the transport.
@@ -529,16 +556,33 @@ impl RequestMethod for ServerRequest {
 
 #[cfg(test)]
 mod tests {
-    use futures::future::pending;
+    use futures::StreamExt;
+    use tokio::{
+        io::{DuplexStream, duplex},
+        time::timeout,
+    };
 
     use super::*;
-    use crate::schema::{ErrorObject, JSONRPCErrorResponse};
+    use crate::{
+        schema::{ErrorObject, JSONRPCErrorResponse, JSONRPCResult, JSONRPCResultResponse},
+        transport::{StreamTransport, Transport},
+    };
 
     #[test]
     fn a_short_deadline_keeps_a_deadline() {
         assert_eq!(timeout_millis(Duration::ZERO), NO_TIMEOUT_MS);
         assert_eq!(timeout_millis(Duration::from_micros(500)), 1);
         assert_eq!(timeout_millis(Duration::from_millis(1500)), 1500);
+    }
+
+    #[tokio::test]
+    async fn a_deadline_past_the_range_of_an_instant_is_no_deadline() {
+        let (handler, _peer) = handler_over(64 * 1024);
+        let (_, pending) = handler
+            .request_raw_pending(large_request(), Some(Duration::MAX), None)
+            .await
+            .expect("the request is sent");
+        assert!(timeout(Duration::from_millis(10), pending).await.is_err());
     }
 
     #[test]
@@ -550,28 +594,115 @@ mod tests {
         assert_eq!(format!("{num_id}"), "123");
     }
 
-    #[test]
-    fn test_pending_drop_cleans_request_slot() {
-        let handler = RequestHandler::new(None, "test".to_string());
-        let id = handler.next_request_id();
-        let (response_tx, _response_rx) = oneshot::channel();
+    /// Create a request handler over a transport with a buffer of `buffer`
+    /// bytes, and return the other end of the transport, which never reads.
+    fn handler_over(buffer: usize) -> (RequestHandler, DuplexStream) {
+        let (local, peer) = duplex(buffer);
+        let stream = Box::new(StreamTransport::new(local))
+            .framed()
+            .expect("framed transport");
+        let (sink, _stream) = stream.split();
+        let handler = RequestHandler::new(Some(Arc::new(TokioMutex::new(sink))), "test".into());
+        (handler, peer)
+    }
+
+    /// A request body larger than the transport buffer of a blocked handler.
+    fn large_request() -> Request {
+        let mut params = serde_json::Map::new();
+        params.insert("data".into(), serde_json::json!("x".repeat(1024)));
+        Request {
+            method: "test/large".into(),
+            params: request_params(params),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_blocked_send_ends_at_the_deadline_and_cancels_the_request() {
+        let (handler, _peer) = handler_over(16);
+        let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
+
+        let result = timeout(
+            Duration::from_secs(60),
+            handler.request_raw_pending(
+                large_request(),
+                Some(Duration::from_secs(1)),
+                Some(cancel_tx),
+            ),
+        )
+        .await
+        .expect("the deadline ends the send");
+
+        assert!(
+            matches!(result, Err(Error::Timeout { ref request_id, timeout_ms: 1000 }) if request_id == "test-1"),
+            "Expected timeout error, got {:?}",
+            result.map(|(id, _)| id)
+        );
+        assert!(handler.inner.pending_requests.is_empty());
+        assert_eq!(
+            cancel_rx.try_recv().expect("a cancellation notice"),
+            RequestId::String("test-1".into())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_dropped_during_its_send_releases_its_slot_and_cancels() {
+        let (handler, _peer) = handler_over(16);
+        let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
+
+        let send = handler.request_raw_pending(
+            large_request(),
+            Some(Duration::from_secs(60)),
+            Some(cancel_tx),
+        );
+        // The caller stops waiting while the send is blocked.
+        assert!(timeout(Duration::from_secs(1), send).await.is_err());
+
+        assert!(handler.inner.pending_requests.is_empty());
+        assert_eq!(
+            cancel_rx.try_recv().expect("a cancellation notice"),
+            RequestId::String("test-1".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_pending_request_releases_its_slot_and_cancels() {
+        let (handler, _peer) = handler_over(64 * 1024);
+        let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
+        let (id, pending) = handler
+            .request_raw_pending(large_request(), None, Some(cancel_tx))
+            .await
+            .expect("the request is sent");
+        assert_eq!(handler.inner.pending_requests.len(), 1);
+
+        drop(pending);
+
+        assert!(handler.inner.pending_requests.is_empty());
+        assert_eq!(cancel_rx.try_recv().expect("a cancellation notice"), id);
+    }
+
+    #[tokio::test]
+    async fn an_answered_request_sends_no_cancellation() {
+        let (handler, _peer) = handler_over(64 * 1024);
+        let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
+        let (id, pending) = handler
+            .request_raw_pending(large_request(), None, Some(cancel_tx))
+            .await
+            .expect("the request is sent");
 
         handler
-            .inner
-            .pending_requests
-            .insert(id.clone(), PendingRequest { response_tx });
+            .handle_response(JSONRPCResponse::Result(JSONRPCResultResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: id.clone(),
+                result: JSONRPCResult {
+                    _meta: None,
+                    other: serde_json::Map::new(),
+                },
+            }))
+            .await;
+        pending.await.expect("the response");
 
-        let pending: Pending<serde_json::Value> = Pending {
-            inner: Box::pin(pending()),
-            cleanup: PendingCleanup {
-                handler: handler.clone(),
-                id,
-            },
-        };
-
-        assert_eq!(handler.inner.pending_requests.len(), 1);
-        drop(pending);
         assert!(handler.inner.pending_requests.is_empty());
+        assert!(cancel_rx.try_recv().is_err());
     }
 
     #[test]

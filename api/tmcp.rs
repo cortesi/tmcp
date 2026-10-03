@@ -1015,7 +1015,9 @@ where
     /// Send a request with a per-request timeout overriding the connection
     /// default, and return a handle exposing its id and pending response.
     ///
-    /// A zero duration disables the deadline of this request.
+    /// The deadline starts before the send, not when the caller first polls
+    /// the pending response. A zero duration disables the deadline of this
+    /// request.
     pub async fn request_handle_with_timeout<T>(
         &self,
         request: ClientRequest,
@@ -1051,7 +1053,8 @@ where
     /// Set the default request timeout for this connection. A change after
     /// the connect applies to later requests.
     ///
-    /// A zero duration disables the deadline. See
+    /// The deadline of a request starts before its send, so a blocked
+    /// transport counts toward it. A zero duration disables the deadline. See
     /// [`Self::without_request_timeout`].
     pub fn with_request_timeout(self, timeout: Duration) -> Self;
 
@@ -1650,10 +1653,13 @@ impl ServerCtx {
     /// and the result decodes into `T`. A client without an answer for the
     /// method returns [`Error::MethodNotFound`].
     ///
-    /// The client sees the request cancelled when the server stops waiting:
-    /// when the caller drops the future, for example in `tokio::select!`, or
-    /// when the deadline of the request passes ([`Error::Timeout`]). When the
-    /// connection ends, the request fails with
+    /// The deadline of the request starts before its send, so a slow
+    /// transport counts toward it. The client sees the request cancelled when
+    /// the server stops waiting: when the caller drops the future, for
+    /// example in `tokio::select!`, also during the send, or when the
+    /// deadline of the request passes ([`Error::Timeout`]). The cancellation
+    /// notice does not use the bounded notification queue, so a full queue
+    /// does not drop it. When the connection ends, the request fails with
     /// [`Error::TransportDisconnected`].
     ///
     /// The cancellation of the current request does not cancel the custom

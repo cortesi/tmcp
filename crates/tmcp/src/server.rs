@@ -484,6 +484,11 @@ impl ServerHandle {
         // Wrap the sink in an Arc<Mutex> for sharing
         let sink_tx = Arc::new(Mutex::new(sink_tx));
 
+        // Control queue for the cancellation notices of abandoned custom
+        // requests. It shares no capacity with the bounded queues, so a full
+        // queue cannot drop a notice.
+        let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel::<RequestId>();
+
         // Clone notification_tx for the handle
         let notification_tx_handle = notification_tx.clone();
 
@@ -493,7 +498,7 @@ impl ServerHandle {
 
         // Create a single ServerCtx instance that will be used throughout the
         // connection
-        let server_ctx = ServerCtx::new(notification_tx, Some(sink_tx.clone()));
+        let server_ctx = ServerCtx::connected(notification_tx, sink_tx.clone(), cancel_tx);
 
         // Create shutdown token for coordinating shutdown
         let shutdown_token = CancellationToken::new();
@@ -651,11 +656,23 @@ impl ServerHandle {
                             }
                         }
                     }
+
+                    // Tell the client about each custom request that the
+                    // server abandoned.
+                    Some(request_id) = cancel_rx.recv() => {
+                        let mut sink = sink_tx.lock().await;
+                        if let Err(e) = sink.send(cancellation_notice(request_id)).await {
+                            error!("Error sending cancellation to client: {}", e);
+                            server_ctx.shutdown_requests();
+                            break;
+                        }
+                    }
                 }
 
                 if client_disconnected
                     && in_flight_requests.load(Ordering::SeqCst) == 0
                     && outbound_rx.is_empty()
+                    && cancel_rx.is_empty()
                 {
                     break;
                 }
@@ -809,6 +826,15 @@ impl TcpServerHandle {
     }
 }
 
+/// Build the notification that cancels an abandoned request of the server.
+fn cancellation_notice(request_id: RequestId) -> JSONRPCMessage {
+    let notification = ServerNotification::cancelled(
+        Some(request_id),
+        Some("the server stopped waiting for the response".to_owned()),
+    );
+    JSONRPCMessage::Notification(create_jsonrpc_notification(&notification))
+}
+
 /// Build the error response for a repeated initialize request.
 fn reinitialize_error_response(id: RequestId) -> JSONRPCMessage {
     JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
@@ -917,8 +943,7 @@ fn spawn_request_handler(
     tokio::spawn(async move {
         let request_id = request.id.clone();
         let response = dispatch_request(&*conn, request, &ctx).await;
-        let suppressed = ctx.is_cancelled();
-        ctx.end_request();
+        let suppressed = ctx.finish_request();
         in_flight_requests.fetch_sub(1, Ordering::SeqCst);
 
         let payload = if suppressed {

@@ -15,6 +15,13 @@
 - Add `Client::request_handle_with_timeout` for a deadline on one request.
 - A request timeout shorter than one millisecond rounds up to one millisecond. Before, it disabled
   the deadline, as a zero timeout does.
+- The deadline of a request starts before its send, so a blocked transport counts toward it, and a
+  pending response that is first polled after its deadline fails at once. A request that is dropped
+  during its send releases its pending slot, and a dropped custom request sends its cancellation.
+- A server sends the cancellation of an abandoned custom request through its own unbounded queue,
+  so full notification and response queues no longer drop it.
+- The completion of a request and its cancellation have one order: a cancellation that reaches the
+  handler always suppresses the response.
 
 ## v0.6.0
 

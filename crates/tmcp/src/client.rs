@@ -195,7 +195,8 @@ where
     /// Set the default request timeout for this connection. A change after
     /// the connect applies to later requests.
     ///
-    /// A zero duration disables the deadline. See
+    /// The deadline of a request starts before its send, so a blocked
+    /// transport counts toward it. A zero duration disables the deadline. See
     /// [`Self::without_request_timeout`].
     pub fn with_request_timeout(self, timeout: Duration) -> Self {
         self.request_handler.set_timeout(timeout_millis(timeout));
@@ -499,7 +500,9 @@ where
     /// Send a request with a per-request timeout overriding the connection
     /// default, and return a handle exposing its id and pending response.
     ///
-    /// A zero duration disables the deadline of this request.
+    /// The deadline starts before the send, not when the caller first polls
+    /// the pending response. A zero duration disables the deadline of this
+    /// request.
     pub async fn request_handle_with_timeout<T>(
         &self,
         request: ClientRequest,
@@ -678,9 +681,7 @@ where
                                         let sink = tx.clone();
                                         tokio::spawn(async move {
                                             let response = handle_server_request(conn.as_ref(), &ctx, request).await;
-                                            let cancelled = ctx.is_cancelled();
-                                            ctx.end_request();
-                                            if cancelled {
+                                            if ctx.finish_request() {
                                                 info!("Client suppressing response for cancelled request: {:?}", ctx.request_id());
                                                 return;
                                             }
@@ -1805,6 +1806,68 @@ mod tests {
         let result = timeout(Duration::from_millis(300), client.init()).await;
 
         assert!(result.is_err(), "expected the request to still be pending");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_blocked_transport_ends_a_request_at_its_deadline() {
+        // The server never reads, and the buffer of its transport is smaller
+        // than one request, so the send of the request blocks.
+        let (client_stream, _server_stream) = duplex(16);
+        let mut client = Client::new("test", "1.0");
+        client
+            .connect(Box::new(StreamTransport::new(client_stream)))
+            .await
+            .expect("Failed to connect");
+
+        let result = timeout(
+            Duration::from_secs(60),
+            client
+                .request_with_timeout::<EmptyResult>(ClientRequest::ping(), Duration::from_secs(1)),
+        )
+        .await
+        .expect("the deadline ends a blocked send");
+        assert!(
+            matches!(
+                result,
+                Err(Error::Timeout {
+                    timeout_ms: 1000,
+                    ..
+                })
+            ),
+            "Expected timeout error, got {result:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_handle_keeps_the_deadline_that_started_at_its_send() {
+        // The server transport is never read, so the request has no response.
+        let (client_transport, _server_transport) = TestTransport::create_pair();
+        let mut client = Client::new("test", "1.0");
+        client
+            .connect(client_transport)
+            .await
+            .expect("Failed to connect");
+        let handle: ClientRequestHandle<EmptyResult> = client
+            .request_handle_with_timeout(ClientRequest::ping(), Duration::from_secs(10))
+            .await
+            .expect("request handle");
+
+        // The deadline passes before the caller first polls the response.
+        sleep(Duration::from_secs(11)).await;
+        let (_, pending) = handle.into_parts();
+        let result = timeout(Duration::from_secs(1), pending)
+            .await
+            .expect("the deadline passed before the first poll");
+        assert!(
+            matches!(
+                result,
+                Err(Error::Timeout {
+                    timeout_ms: 10_000,
+                    ..
+                })
+            ),
+            "Expected timeout error, got {result:?}"
+        );
     }
 
     #[tokio::test]
