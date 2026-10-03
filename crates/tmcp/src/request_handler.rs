@@ -45,6 +45,20 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 /// transport.
 pub const NO_TIMEOUT_MS: u64 = 0;
 
+/// Return the deadline of a request in milliseconds.
+///
+/// A zero duration disables the deadline. A shorter duration than one
+/// millisecond rounds up to one millisecond, so that it keeps a deadline.
+pub fn timeout_millis(timeout: Duration) -> u64 {
+    if timeout.is_zero() {
+        NO_TIMEOUT_MS
+    } else {
+        u64::try_from(timeout.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1)
+    }
+}
+
 /// Transport sink type used by the request handler.
 pub type TransportSink = Arc<TokioMutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
 
@@ -255,7 +269,7 @@ impl RequestHandler {
             handler: self.clone(),
             id: id.clone(),
         };
-        let timeout_ms = timeout_override.map(|duration| duration.as_millis() as u64);
+        let timeout_ms = timeout_override.map(timeout_millis);
         let inner = Box::pin(async move {
             finish(
                 handler
@@ -519,6 +533,13 @@ mod tests {
 
     use super::*;
     use crate::schema::{ErrorObject, JSONRPCErrorResponse};
+
+    #[test]
+    fn a_short_deadline_keeps_a_deadline() {
+        assert_eq!(timeout_millis(Duration::ZERO), NO_TIMEOUT_MS);
+        assert_eq!(timeout_millis(Duration::from_micros(500)), 1);
+        assert_eq!(timeout_millis(Duration::from_millis(1500)), 1500);
+    }
 
     #[test]
     fn test_request_id_display() {

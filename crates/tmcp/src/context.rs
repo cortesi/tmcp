@@ -25,6 +25,7 @@ use crate::{
     error::{Error, Result},
     request_handler::{
         DEFAULT_TIMEOUT_MS, NO_TIMEOUT_MS, RequestHandler, TransportSink, request_body,
+        timeout_millis,
     },
     schema::{self},
 };
@@ -260,8 +261,7 @@ impl InProcessClient {
             handle_server_request(handler.as_ref(), &context, request).await
         });
         let guard = cancel.drop_guard();
-        let timeout_ms =
-            timeout_override.map_or(DEFAULT_TIMEOUT_MS, |duration| duration.as_millis() as u64);
+        let timeout_ms = timeout_override.map_or(DEFAULT_TIMEOUT_MS, timeout_millis);
         let joined = if timeout_ms == NO_TIMEOUT_MS {
             task.await
         } else if let Ok(joined) = timeout(Duration::from_millis(timeout_ms), task).await {

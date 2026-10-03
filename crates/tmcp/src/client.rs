@@ -24,7 +24,7 @@ use crate::{
         create_jsonrpc_notification, jsonrpc_response, params_object, parse_typed_notification,
         parse_typed_request,
     },
-    request_handler::{Pending, RequestHandler},
+    request_handler::{Pending, RequestHandler, timeout_millis},
     schema::*,
     transport::{
         GenericDuplex, StdioTransport, StreamTransport, TcpClientTransport, Transport,
@@ -198,7 +198,7 @@ where
     /// A zero duration disables the deadline. See
     /// [`Self::without_request_timeout`].
     pub fn with_request_timeout(self, timeout: Duration) -> Self {
-        self.request_handler.set_timeout(timeout.as_millis() as u64);
+        self.request_handler.set_timeout(timeout_millis(timeout));
         self
     }
 
