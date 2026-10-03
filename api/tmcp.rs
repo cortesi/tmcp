@@ -143,6 +143,12 @@ use tokio::{
     process::{Child, Command},
     sync::mpsc::bounded::Sender,
 };
+use tokio_util::sync::CancellationToken;
+/// Default payload limit of a custom request, in bytes of JSON: 1 MiB.
+///
+/// The limit applies to the params of a custom request and to its result.
+pub const CUSTOM_PAYLOAD_LIMIT: usize = _;
+
 /// Standard error code for internal errors.
 pub const TOOL_ERROR_INTERNAL: &str = "INTERNAL";
 
@@ -179,6 +185,34 @@ pub trait ClientHandler: Send + Sync {
         _params: CreateMessageParams,
     ) -> crate::Result<CreateMessageResult> {
     }
+
+    /// Handle a request from the server with a method outside the MCP schema.
+    ///
+    /// A server sends it with [`ServerCtx::send_request`]. `params` holds the
+    /// params object of the request, with its `_meta`, or `None` for a
+    /// request without params. Return a JSON object: the server decodes it as
+    /// the result. An error goes to the server as a JSON-RPC error.
+    ///
+    /// The context gives the request ID and the cancellation of the request.
+    /// After the server cancels the request, the client sends no response.
+    ///
+    /// The default implementation refuses each method with
+    /// [`Error::MethodNotFound`].
+    async fn custom_request(
+        &self,
+        _context: &ClientCtx,
+        method: &str,
+        _params: Option<Value>,
+    ) -> crate::Result<Value> {
+    }
+
+    /// Return the largest params of a custom request that this client
+    /// accepts, in bytes of JSON.
+    ///
+    /// A custom request with larger params gets an invalid-params error, and
+    /// [`Self::custom_request`] does not see it. The default is
+    /// [`CUSTOM_PAYLOAD_LIMIT`].
+    fn custom_request_limit(&self) -> usize {}
 
     /// Handle an elicitation request from the server for user input.
     async fn elicit(
@@ -841,6 +875,8 @@ impl Client<()> {
     ///   capability enabled)
     /// - [`ClientHandler::list_roots`] - Filesystem root discovery
     /// - [`ClientHandler::elicit`] - User input requests
+    /// - [`ClientHandler::custom_request`] - Requests with methods outside the
+    ///   MCP schema
     ///
     /// Without a custom handler, the default `()` handler returns errors for
     /// server-initiated requests, which is appropriate for clients that don't
@@ -977,6 +1013,18 @@ where
         T: 'static + DeserializeOwned + Send;
 
     /// Send a request with a per-request timeout overriding the connection
+    /// default, and return a handle exposing its id and pending response.
+    ///
+    /// A zero duration disables the deadline of this request.
+    pub async fn request_handle_with_timeout<T>(
+        &self,
+        request: ClientRequest,
+        timeout: Duration,
+    ) -> crate::Result<ClientRequestHandle<T>>
+    where
+        T: 'static + DeserializeOwned + Send;
+
+    /// Send a request with a per-request timeout overriding the connection
     /// default, and wait for the typed response.
     pub async fn request_with_timeout<T>(
         &self,
@@ -1028,8 +1076,26 @@ impl ClientCtx {
     /// Send a cancellation notification for the current request
     pub fn cancel(&self, reason: Option<String>) -> crate::Result<()>;
 
+    /// Wait until the server cancels the request that this context handles.
+    ///
+    /// A server across a transport cancels a request with
+    /// `notifications/cancelled`, and the client then sends no response. A
+    /// server in the same process (see [`ServerCtx::in_process`]) cancels a
+    /// request when it stops waiting for the response. A context without a
+    /// request never resolves this future.
+    pub async fn cancelled(&self);
+
+    /// Return whether the server cancelled the request that this context
+    /// handles.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool;
+
     /// Send a notification to the server
     pub fn notify(&self, notification: ClientNotification) -> crate::Result<()>;
+
+    /// Return the ID of the server request that this context handles.
+    #[must_use]
+    pub fn request_id(&self) -> Option<&RequestId>;
 }
 
 /// In-flight client request with its assigned JSON-RPC request id.
@@ -1044,6 +1110,53 @@ impl<T> ClientRequestHandle<T> {
 }
 
 impl !Sync for ClientRequestHandle {}
+
+/// A request from a server to its client with a method outside the MCP schema.
+///
+/// A server sends it with
+/// [`ServerCtx::send_request`](crate::ServerCtx::send_request), and a client
+/// answers it with
+/// [`ClientHandler::custom_request`](crate::ClientHandler::custom_request).
+/// Put the method in a namespace, such as `vendor/action`.
+///
+/// The request has the default deadline of the connection, and the payload
+/// limit [`CUSTOM_PAYLOAD_LIMIT`] for its params and its result.
+#[derive(Clone, Debug)]
+pub struct CustomRequest {/* private fields */}
+
+impl CustomRequest {
+    /// Return the method of the request.
+    #[must_use]
+    pub fn method(&self) -> &str;
+
+    /// Create a custom request with the params that `params` serializes to.
+    ///
+    /// Use `()` for a request without params.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidRequest`] when `method` is the method of a
+    /// standard MCP server request, and [`Error::InvalidParams`] when `params`
+    /// does not serialize to a JSON object or null.
+    pub fn new(method: impl Into<String>, params: impl Serialize) -> crate::Result<Self>;
+
+    /// Set the largest params and result that the request accepts, in bytes
+    /// of JSON.
+    #[must_use]
+    pub fn with_payload_limit(self, limit: usize) -> Self;
+
+    /// Set the deadline of the request. A zero duration disables the
+    /// deadline.
+    #[must_use]
+    pub fn with_timeout(self, timeout: Duration) -> Self;
+
+    /// Wait for the result without a deadline.
+    ///
+    /// Use this for a request that waits for a person. Cancellation and the
+    /// end of the connection still end the wait.
+    #[must_use]
+    pub fn without_timeout(self) -> Self;
+}
 
 /// Error type for MCP operations.
 #[derive(Clone, Debug, Display, std::error::Error)]
@@ -1140,6 +1253,16 @@ pub enum Error {
     Cancelled {
         /// The request ID that was cancelled.
         request_id: String,
+    },
+    /// A custom request or its result is larger than its payload limit.
+    #[error("Payload of {method} is {size} bytes, over the limit of {limit} bytes")]
+    PayloadTooLarge {
+        /// The method of the request.
+        method: String,
+        /// The size of the JSON encoding of the payload, in bytes.
+        size: usize,
+        /// The payload limit, in bytes.
+        limit: usize,
     },
 }
 
@@ -1375,7 +1498,11 @@ impl ServerCtx {
         task_id: impl Into<String> + Send,
     ) -> crate::Result<CancelTaskResult>;
 
-    /// Wait until the current request is cancelled by the client.
+    /// Wait until the current request is cancelled.
+    ///
+    /// A client cancels a request with `notifications/cancelled`. A host
+    /// without a transport cancels the token of [`Self::for_request`]. A
+    /// context without a request never resolves this future.
     pub async fn cancelled(&self);
 
     /// Wait until connection input ends or the server stops this connection.
@@ -1383,8 +1510,8 @@ impl ServerCtx {
     /// Stream EOF includes a client's write-side half-close. Handlers may use
     /// this signal to abandon work that needs a connected client. It does not
     /// mark requests cancelled or suppress responses: handlers that ignore it
-    /// can still finish and respond after EOF. Notification-only contexts
-    /// have no connection and never resolve this future.
+    /// can still finish and respond after EOF. Notification-only and
+    /// in-process contexts have no connection and never resolve this future.
     pub async fn connection_closed(&self);
 
     /// Handle LLM sampling requests - ask the client to create a message
@@ -1399,6 +1526,18 @@ impl ServerCtx {
     /// Return per-request transport extensions.
     pub fn extensions(&self) -> &Extensions;
 
+    /// Create the context of one request: its ID and the token that cancels
+    /// it.
+    ///
+    /// The new context keeps the notification channel, the client, the
+    /// connection, and the extensions of this context. It drops the progress
+    /// token and the request metadata of an earlier request. A host that
+    /// drives a server handler without a transport uses it with
+    /// [`handle_request`](crate::handle_request): a cancelled token cancels
+    /// the request, as `notifications/cancelled` from a client does.
+    #[must_use]
+    pub fn for_request(&self, request_id: RequestId, cancel: CancellationToken) -> Self;
+
     /// Retrieve the state of a task from the client
     pub async fn get_task(&self, task_id: impl Into<String> + Send)
     -> crate::Result<GetTaskResult>;
@@ -1409,7 +1548,24 @@ impl ServerCtx {
         task_id: impl Into<String> + Send,
     ) -> crate::Result<GetTaskPayloadResult>;
 
-    /// Return whether the current request has been cancelled by the client.
+    /// Create the connection context of a server that a host drives in its
+    /// own process, without a transport.
+    ///
+    /// Server notifications go to `notification_tx`. Each request of the
+    /// server to its client, standard or custom, goes to `client` on its own
+    /// task. The requests keep their deadlines, cancellation, and payload
+    /// limits, and the server sees the results and errors that a client across
+    /// a transport gives. The [`ClientCtx`] of `client` cannot notify the
+    /// server.
+    ///
+    /// Derive the context of each request with [`Self::for_request`], and
+    /// dispatch the request with [`handle_request`](crate::handle_request).
+    pub fn in_process(
+        notification_tx: Sender<ServerNotification>,
+        client: impl 'static + ClientHandler,
+    ) -> Self;
+
+    /// Return whether the current request has been cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool;
 
@@ -1435,6 +1591,10 @@ impl ServerCtx {
     /// Return the progress token for this request, if present.
     #[must_use]
     pub fn progress_token(&self) -> Option<&ProgressToken>;
+
+    /// Return the ID of the current request.
+    #[must_use]
+    pub fn request_id(&self) -> Option<&RequestId>;
 
     /// Return one `_meta` field the client sent with the active request.
     #[must_use]
@@ -1482,6 +1642,38 @@ impl ServerCtx {
     /// Progress is best-effort: missing tokens and bounded-queue failures are
     /// ignored.
     pub fn send_progress_with_total(&self, message: &str, total: f64);
+
+    /// Send a custom request to the client and wait for its result.
+    ///
+    /// The client answers with
+    /// [`ClientHandler::custom_request`](crate::ClientHandler::custom_request),
+    /// and the result decodes into `T`. A client without an answer for the
+    /// method returns [`Error::MethodNotFound`].
+    ///
+    /// The client sees the request cancelled when the server stops waiting:
+    /// when the caller drops the future, for example in `tokio::select!`, or
+    /// when the deadline of the request passes ([`Error::Timeout`]). When the
+    /// connection ends, the request fails with
+    /// [`Error::TransportDisconnected`].
+    ///
+    /// The cancellation of the current request does not cancel the custom
+    /// request. Select on [`Self::cancelled`] for that.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PayloadTooLarge`] when the params or the result are
+    /// larger than the payload limit of the request. The server does not send
+    /// params over the limit.
+    pub async fn send_request<T>(&self, request: CustomRequest) -> crate::Result<T>
+    where
+        T: DeserializeOwned;
+
+    /// Create a new context with request-scoped extensions.
+    ///
+    /// A transport sets the extensions of each request, such as the parts of
+    /// an HTTP request. A host without a transport can set its own values.
+    #[must_use]
+    pub fn with_extensions(&self, extensions: Extensions) -> Self;
 
     /// Create a new context with a specific progress token.
     #[must_use]
@@ -1776,6 +1968,38 @@ where
 pub async fn collect_client_tools<C>(client: &Client<C>) -> crate::Result<Vec<Tool>>
 where
     C: 'static + ClientHandler + Send;
+
+/// Handle one client request with a server handler, without a transport.
+///
+/// The request takes the path of a request on a connection: tmcp calls
+/// [`ServerHandler::handle_request`], so an override of it (middleware) and
+/// the conversion of invalid tool parameters into a tool error apply. The
+/// result and the error are those that a [`Client`](crate::Client) across a
+/// transport returns, and the result decodes into `T`.
+///
+/// `context` is the context of this request: derive it with
+/// [`ServerCtx::for_request`] from a connection context, such as
+/// [`ServerCtx::in_process`]. An initialize request negotiates the protocol
+/// version as a connection does. The host calls
+/// [`ServerHandler::on_connect`], [`ServerHandler::notification`], and
+/// [`ServerHandler::on_shutdown`] itself.
+///
+/// The handler runs in the task of the caller. When the token of `context` is
+/// cancelled, the handler sees the cancellation, and this function returns
+/// [`Error::Cancelled`] after the handler finishes, because a connection
+/// sends no response for a cancelled request.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidRequest`] when `context` has no request ID.
+pub async fn handle_request<H, T>(
+    handler: &H,
+    context: &ServerCtx,
+    request: ClientRequest,
+) -> crate::Result<T>
+where
+    H: ?Sized + ServerHandler,
+    T: DeserializeOwned;
 
 /// Inspect a connected MCP client using an already captured initialize result.
 ///

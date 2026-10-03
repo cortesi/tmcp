@@ -118,6 +118,9 @@ mod connection;
 /// Client/server context types.
 #[cfg(feature = "runtime")]
 mod context;
+/// Custom requests from a server to its client.
+#[cfg(feature = "runtime")]
+mod custom;
 /// Error types and Result alias.
 mod error;
 /// HTTP transport implementation.
@@ -163,6 +166,8 @@ pub use client::{Client, ClientRequestHandle, SpawnedServer};
 pub use connection::{ClientHandler, ServerHandler};
 #[cfg(feature = "runtime")]
 pub use context::{ClientCtx, ServerCtx};
+#[cfg(feature = "runtime")]
+pub use custom::{CUSTOM_PAYLOAD_LIMIT, CustomRequest};
 pub use error::{
     Error, Result, TOOL_ERROR_INTERNAL, TOOL_ERROR_INVALID_INPUT, TOOL_ERROR_NOT_FOUND,
     TOOL_ERROR_TIMEOUT, ToolError, ToolResult,
@@ -181,7 +186,7 @@ pub use schema::ToolResponse;
 #[cfg(feature = "http")]
 pub use server::{EmbeddedHttpServer, HttpBuilder};
 #[cfg(feature = "runtime")]
-pub use server::{Server, ServerHandle, TcpServerHandle};
+pub use server::{Server, ServerHandle, TcpServerHandle, handle_request};
 #[cfg(feature = "runtime")]
 pub use tmcp_macros::{Group, delegate_server_handler, group, mcp_server, tool, tool_group};
 pub use tmcp_macros::{ToolResponse, tool_params, tool_result};

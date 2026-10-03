@@ -29,20 +29,21 @@ type TimeoutResult<T> = StdResult<StdResult<T, oneshot::error::RecvError>, Elaps
 
 use crate::{
     error::{Error, Result},
+    jsonrpc::request_params,
     schema::{
         AUTHORIZATION_FAILED, ClientRequest, INVALID_PARAMS, JSONRPC_VERSION, JSONRPCMessage,
         JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, METHOD_NOT_FOUND, Notification,
-        NotificationParams, Request, RequestId, RequestMeta, RequestParams, ServerRequest,
+        NotificationParams, Request, RequestId, ServerRequest,
     },
     transport::TransportStream,
 };
 
 /// Default request timeout in milliseconds (30 seconds).
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 /// Timeout value that disables the deadline and waits for the peer or the
 /// transport.
-const NO_TIMEOUT_MS: u64 = 0;
+pub const NO_TIMEOUT_MS: u64 = 0;
 
 /// Transport sink type used by the request handler.
 pub type TransportSink = Arc<TokioMutex<SplitSink<Box<dyn TransportStream>, JSONRPCMessage>>>;
@@ -214,11 +215,40 @@ impl RequestHandler {
         Req: serde::Serialize + RequestMethod,
         Res: DeserializeOwned + Send + 'static,
     {
+        let request = request_body(&request)?;
+        let method = request.method.clone();
+        self.send_pending(request, timeout_override, move |response| {
+            Self::decode_response(&method, response)
+        })
+        .await
+    }
+
+    /// Send a request body, optionally overriding the connection's default
+    /// timeout, and return its id plus a future of the raw response.
+    pub(crate) async fn request_raw_pending(
+        &self,
+        request: Request,
+        timeout_override: Option<Duration>,
+    ) -> Result<(RequestId, Pending<JSONRPCResponse>)> {
+        self.send_pending(request, timeout_override, Ok).await
+    }
+
+    /// Send a request body and return its id plus a future that finishes its
+    /// response with `finish`.
+    async fn send_pending<Res, F>(
+        &self,
+        request: Request,
+        timeout_override: Option<Duration>,
+        finish: F,
+    ) -> Result<(RequestId, Pending<Res>)>
+    where
+        Res: Send + 'static,
+        F: FnOnce(JSONRPCResponse) -> Result<Res> + Send + 'static,
+    {
         let id = self.next_request_id();
-        let method = request.method().to_string();
 
         // Store and send the request
-        let response_rx = self.store_and_send_request(id.clone(), &request).await?;
+        let response_rx = self.store_and_send_request(id.clone(), request).await?;
         let handler = self.clone();
         let pending_id = id.clone();
         let cleanup = PendingCleanup {
@@ -227,23 +257,22 @@ impl RequestHandler {
         };
         let timeout_ms = timeout_override.map(|duration| duration.as_millis() as u64);
         let inner = Box::pin(async move {
-            handler
-                .await_response(pending_id, &method, response_rx, timeout_ms)
-                .await
+            finish(
+                handler
+                    .await_response(pending_id, response_rx, timeout_ms)
+                    .await?,
+            )
         });
 
         Ok((id, Pending { inner, cleanup }))
     }
 
     /// Store a pending request and send it over the transport.
-    async fn store_and_send_request<Req>(
+    async fn store_and_send_request(
         &self,
         id: RequestId,
-        request: &Req,
-    ) -> Result<oneshot::Receiver<JSONRPCResponse>>
-    where
-        Req: serde::Serialize + RequestMethod,
-    {
+        request: Request,
+    ) -> Result<oneshot::Receiver<JSONRPCResponse>> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.inner
@@ -256,12 +285,12 @@ impl RequestHandler {
             self.inner.pending_requests.len()
         );
 
-        let jsonrpc_request = Self::build_request(id.clone(), request)?;
-        tracing::info!(
-            "Sending request with ID: {} method: {}",
-            id,
-            request.method()
-        );
+        tracing::info!("Sending request with ID: {} method: {}", id, request.method);
+        let jsonrpc_request = JSONRPCRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: id.clone(),
+            request,
+        };
 
         if let Err(e) = self
             .send_message(JSONRPCMessage::Request(jsonrpc_request))
@@ -275,16 +304,12 @@ impl RequestHandler {
     }
 
     /// Wait for a response with timeout and cancellation support.
-    async fn await_response<Res>(
+    async fn await_response(
         &self,
         id: RequestId,
-        method: &str,
         response_rx: oneshot::Receiver<JSONRPCResponse>,
         timeout_override: Option<u64>,
-    ) -> Result<Res>
-    where
-        Res: DeserializeOwned,
-    {
+    ) -> Result<JSONRPCResponse> {
         let timeout_ms =
             timeout_override.unwrap_or_else(|| self.inner.timeout_ms.load(Ordering::Relaxed));
         // A zero timeout means the caller accepts an unbounded wait, such as a
@@ -295,22 +320,18 @@ impl RequestHandler {
         } else {
             timeout(Duration::from_millis(timeout_ms), response_rx).await
         };
-        self.process_response_result(&id, method, result, timeout_ms)
+        self.process_response_result(&id, result, timeout_ms)
     }
 
     /// Process the result of waiting for a response.
-    fn process_response_result<Res>(
+    fn process_response_result(
         &self,
         id: &RequestId,
-        method: &str,
         result: TimeoutResult<JSONRPCResponse>,
         timeout_ms: u64,
-    ) -> Result<Res>
-    where
-        Res: DeserializeOwned,
-    {
+    ) -> Result<JSONRPCResponse> {
         match result {
-            Ok(Ok(response)) => Self::decode_response(method, response),
+            Ok(Ok(response)) => Ok(response),
             Ok(Err(_recv_error)) => {
                 self.inner.pending_requests.remove(id);
                 if self.inner.shutting_down.load(Ordering::Acquire) {
@@ -389,39 +410,9 @@ impl RequestHandler {
         RequestId::String(format!("{}-{}", self.inner.id_prefix, id))
     }
 
-    /// Build a JSON-RPC request message from a typed request.
-    fn build_request<Req>(id: RequestId, request: &Req) -> Result<JSONRPCRequest>
-    where
-        Req: serde::Serialize + RequestMethod,
-    {
-        let mut params_obj = match serde_json::to_value(request)? {
-            serde_json::Value::Object(map) => map,
-            _ => serde_json::Map::new(),
-        };
-        params_obj.remove("method");
-        let meta = params_obj
-            .remove("_meta")
-            .and_then(|value| serde_json::from_value::<RequestMeta>(value).ok());
-        let params = if params_obj.is_empty() && meta.is_none() {
-            None
-        } else {
-            Some(RequestParams {
-                _meta: meta,
-                other: params_obj,
-            })
-        };
-        Ok(JSONRPCRequest {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id,
-            request: Request {
-                method: request.method().to_string(),
-                params,
-            },
-        })
-    }
-
-    /// Decode a response payload into the expected result type.
-    fn decode_response<Res>(method: &str, response: JSONRPCResponse) -> Result<Res>
+    /// Decode a response payload into the expected result type, as a client
+    /// receives it.
+    pub(crate) fn decode_response<Res>(method: &str, response: JSONRPCResponse) -> Result<Res>
     where
         Res: DeserializeOwned,
     {
@@ -486,6 +477,22 @@ impl RequestHandler {
             tracing::warn!("Received response for unknown request ID: {}", id);
         }
     }
+}
+
+/// Build the method and params of a JSON-RPC request from a typed request.
+pub fn request_body<Req>(request: &Req) -> Result<Request>
+where
+    Req: serde::Serialize + RequestMethod,
+{
+    let mut params_obj = match serde_json::to_value(request)? {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    params_obj.remove("method");
+    Ok(Request {
+        method: request.method().to_string(),
+        params: request_params(params_obj),
+    })
 }
 
 /// Trait for types that can provide a method name for requests.

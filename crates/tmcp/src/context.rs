@@ -1,26 +1,74 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     future::pending,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use http::Extensions;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
-use tokio::sync::{
-    Notify,
-    mpsc::{self, error::TrySendError},
+use tokio::{
+    sync::mpsc::{self, error::TrySendError},
+    time::timeout,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 
 use crate::{
+    client::handle_server_request,
+    connection::ClientHandler,
+    custom::{CustomRequest, check_payload},
     error::{Error, Result},
-    request_handler::{RequestHandler, TransportSink},
+    request_handler::{
+        DEFAULT_TIMEOUT_MS, NO_TIMEOUT_MS, RequestHandler, TransportSink, request_body,
+    },
     schema::{self},
 };
+
+/// Requests in flight on one connection, each with the token that cancels it.
+#[derive(Clone, Default)]
+struct InFlight(Arc<Mutex<HashMap<schema::RequestId, CancellationToken>>>);
+
+impl InFlight {
+    /// Record that a request has started, and return its cancellation token.
+    fn begin(&self, request_id: &schema::RequestId) -> CancellationToken {
+        let token = CancellationToken::new();
+        self.0
+            .lock()
+            .expect("in-flight request lock")
+            .insert(request_id.clone(), token.clone());
+        token
+    }
+
+    /// Record that a request has finished.
+    fn end(&self, request_id: &schema::RequestId) {
+        self.0
+            .lock()
+            .expect("in-flight request lock")
+            .remove(request_id);
+    }
+
+    /// Cancel one in-flight request.
+    ///
+    /// Cancellations for requests that are not in flight (already completed,
+    /// or never seen) are ignored, so late cancellations cannot grow state
+    /// without bound.
+    fn cancel(&self, request_id: &schema::RequestId) {
+        let token = self
+            .0
+            .lock()
+            .expect("in-flight request lock")
+            .get(request_id)
+            .cloned();
+        if let Some(token) = token {
+            token.cancel();
+        }
+    }
+}
 
 /// Context provided to `ClientHandler` implementations for interacting with the
 /// server
@@ -34,6 +82,10 @@ pub struct ClientCtx {
     pub(crate) notification_tx: mpsc::Sender<schema::ClientNotification>,
     /// The current request ID, if this context is handling a request
     pub(crate) request_id: Option<schema::RequestId>,
+    /// Cancellation of the server request that this context handles.
+    cancel: Option<CancellationToken>,
+    /// Server requests in flight on this connection.
+    in_flight: InFlight,
 }
 
 impl ClientCtx {
@@ -42,6 +94,8 @@ impl ClientCtx {
         Self {
             notification_tx,
             request_id: None,
+            cancel: None,
+            in_flight: InFlight::default(),
         }
     }
 
@@ -53,11 +107,64 @@ impl ClientCtx {
         Ok(())
     }
 
-    /// Create a new context with a specific request ID
-    pub(crate) fn with_request_id(&self, request_id: schema::RequestId) -> Self {
+    /// Return the ID of the server request that this context handles.
+    #[must_use]
+    pub fn request_id(&self) -> Option<&schema::RequestId> {
+        self.request_id.as_ref()
+    }
+
+    /// Return whether the server cancelled the request that this context
+    /// handles.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    }
+
+    /// Wait until the server cancels the request that this context handles.
+    ///
+    /// A server across a transport cancels a request with
+    /// `notifications/cancelled`, and the client then sends no response. A
+    /// server in the same process (see [`ServerCtx::in_process`]) cancels a
+    /// request when it stops waiting for the response. A context without a
+    /// request never resolves this future.
+    pub async fn cancelled(&self) {
+        match &self.cancel {
+            Some(token) => token.cancelled().await,
+            None => pending().await,
+        }
+    }
+
+    /// Create the context of one server request with its cancellation token.
+    pub(crate) fn for_request(
+        &self,
+        request_id: schema::RequestId,
+        cancel: CancellationToken,
+    ) -> Self {
         let mut ctx = self.clone();
         ctx.request_id = Some(request_id);
+        ctx.cancel = Some(cancel);
         ctx
+    }
+
+    /// Create the context of one server request, and track the request so
+    /// that a cancellation notification reaches it.
+    pub(crate) fn begin_request(&self, request_id: &schema::RequestId) -> Self {
+        let cancel = self.in_flight.begin(request_id);
+        self.for_request(request_id.clone(), cancel)
+    }
+
+    /// Stop tracking the request of this context.
+    pub(crate) fn end_request(&self) {
+        if let Some(request_id) = &self.request_id {
+            self.in_flight.end(request_id);
+        }
+    }
+
+    /// Cancel one server request that is in flight on this connection.
+    pub(crate) fn mark_cancelled(&self, request_id: &schema::RequestId) {
+        self.in_flight.cancel(request_id);
     }
 
     /// Send a cancellation notification for the current request
@@ -86,10 +193,12 @@ impl ClientCtx {
 pub struct ServerCtx {
     /// Sender for server notifications
     pub(crate) notification_tx: mpsc::Sender<schema::ServerNotification>,
-    /// Request handler for making requests to clients
-    request_handler: RequestHandler,
+    /// The client that receives the requests of this server.
+    peer: ClientPeer,
     /// The current request ID, if this context is handling a request
-    pub(crate) request_id: Option<schema::RequestId>,
+    request_id: Option<schema::RequestId>,
+    /// Cancellation of the current request, if this context is handling one.
+    cancel: Option<CancellationToken>,
     /// Per-request transport extensions.
     extensions: Extensions,
     /// Optional progress token attached to the active request.
@@ -100,17 +209,106 @@ pub struct ServerCtx {
     /// Shared progress counter for all clones derived from the same request
     /// context.
     progress_counter: Option<Arc<AtomicU64>>,
-    /// Request IDs cancelled by the client on this connection.
-    cancelled_requests: Arc<Mutex<HashSet<schema::RequestId>>>,
-    /// Notifiers for request-scoped cancellation waiters.
-    cancellation_notifiers: Arc<Mutex<HashMap<schema::RequestId, Arc<Notify>>>>,
-    /// Request IDs currently being handled on this connection.
-    ///
-    /// Cancellation notifications for requests that are not in flight are
-    /// ignored, so late cancellations cannot grow state without bound.
-    in_flight: Arc<Mutex<HashSet<schema::RequestId>>>,
+    /// Requests currently being handled on this connection.
+    in_flight: InFlight,
     /// Connection input ended or the server stopped this connection.
     connection_closed: CancellationToken,
+}
+
+/// The client that receives the requests of a server.
+#[derive(Clone)]
+enum ClientPeer {
+    /// A client across a transport. A notification-only context has no
+    /// transport.
+    Remote(RequestHandler),
+    /// A client handler in the same process as the server.
+    InProcess(Arc<InProcessClient>),
+}
+
+/// A client handler that a host runs in the same process as a server.
+struct InProcessClient {
+    /// The handler that answers each server request.
+    handler: Arc<dyn ClientHandler>,
+    /// The connection context of the handler. It cannot notify the server.
+    context: ClientCtx,
+    /// Next request ID counter.
+    next_request_id: AtomicU64,
+}
+
+impl InProcessClient {
+    /// Handle one request on its own task, and return its response.
+    ///
+    /// The handler runs until it finishes. When the caller stops waiting,
+    /// because it drops the future or reaches the deadline, the context of the
+    /// handler sees cancellation.
+    async fn dispatch(
+        &self,
+        request: schema::Request,
+        timeout_override: Option<Duration>,
+    ) -> Result<schema::JSONRPCResponse> {
+        let next = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let request_id = schema::RequestId::String(format!("srv-req-{next}"));
+        let cancel = CancellationToken::new();
+        let context = self.context.for_request(request_id.clone(), cancel.clone());
+        let handler = Arc::clone(&self.handler);
+        let request = schema::JSONRPCRequest {
+            jsonrpc: schema::JSONRPC_VERSION.to_string(),
+            id: request_id.clone(),
+            request,
+        };
+        let task = tokio::spawn(async move {
+            handle_server_request(handler.as_ref(), &context, request).await
+        });
+        let guard = cancel.drop_guard();
+        let timeout_ms =
+            timeout_override.map_or(DEFAULT_TIMEOUT_MS, |duration| duration.as_millis() as u64);
+        let joined = if timeout_ms == NO_TIMEOUT_MS {
+            task.await
+        } else if let Ok(joined) = timeout(Duration::from_millis(timeout_ms), task).await {
+            joined
+        } else {
+            debug!("In-process request {request_id} timed out after {timeout_ms}ms");
+            return Err(Error::Timeout {
+                request_id: request_id.to_string(),
+                timeout_ms,
+            });
+        };
+        guard.disarm();
+        joined.map_err(|error| Error::InternalError(format!("client handler failed: {error}")))
+    }
+}
+
+/// Tells the client that the server no longer waits for one request, unless
+/// it is disarmed first.
+struct CancelNotice {
+    /// Sender for server notifications.
+    notification_tx: mpsc::Sender<schema::ServerNotification>,
+    /// The request to cancel, or `None` once disarmed.
+    request_id: Option<schema::RequestId>,
+}
+
+impl CancelNotice {
+    /// Keep the request from being cancelled.
+    fn disarm(&mut self) {
+        self.request_id = None;
+    }
+}
+
+impl Drop for CancelNotice {
+    fn drop(&mut self) {
+        let Some(request_id) = self.request_id.take() else {
+            return;
+        };
+        let notification = schema::ServerNotification::cancelled(
+            Some(request_id),
+            Some("the server stopped waiting for the response".to_owned()),
+        );
+        // Cancellation is advisory: a full or closed queue means that the
+        // connection is busy or gone.
+        if self.notification_tx.try_send(notification).is_err() {
+            debug!("Could not queue a cancellation notification");
+        }
+    }
 }
 
 impl ServerCtx {
@@ -120,22 +318,57 @@ impl ServerCtx {
         Self::new(notification_tx, None)
     }
 
+    /// Create the connection context of a server that a host drives in its
+    /// own process, without a transport.
+    ///
+    /// Server notifications go to `notification_tx`. Each request of the
+    /// server to its client, standard or custom, goes to `client` on its own
+    /// task. The requests keep their deadlines, cancellation, and payload
+    /// limits, and the server sees the results and errors that a client across
+    /// a transport gives. The [`ClientCtx`] of `client` cannot notify the
+    /// server.
+    ///
+    /// Derive the context of each request with [`Self::for_request`], and
+    /// dispatch the request with [`handle_request`](crate::handle_request).
+    pub fn in_process(
+        notification_tx: mpsc::Sender<schema::ServerNotification>,
+        client: impl ClientHandler + 'static,
+    ) -> Self {
+        // The receiver is dropped, so a notification from the client handler
+        // fails with a disconnected transport.
+        let (client_notification_tx, _) = mpsc::channel(1);
+        let client = InProcessClient {
+            handler: Arc::new(client),
+            context: ClientCtx::new(client_notification_tx),
+            next_request_id: AtomicU64::new(1),
+        };
+        Self::with_peer(notification_tx, ClientPeer::InProcess(Arc::new(client)))
+    }
+
     /// Create a new ServerCtx with notification channel and transport
     pub(crate) fn new(
         notification_tx: mpsc::Sender<schema::ServerNotification>,
         transport_tx: Option<TransportSink>,
     ) -> Self {
+        let handler = RequestHandler::new(transport_tx, "srv-req".to_string());
+        Self::with_peer(notification_tx, ClientPeer::Remote(handler))
+    }
+
+    /// Create a connection context for one client.
+    fn with_peer(
+        notification_tx: mpsc::Sender<schema::ServerNotification>,
+        peer: ClientPeer,
+    ) -> Self {
         Self {
             notification_tx,
-            request_handler: RequestHandler::new(transport_tx, "srv-req".to_string()),
+            peer,
             request_id: None,
+            cancel: None,
             extensions: Extensions::new(),
             progress_token: None,
             request_meta: None,
             progress_counter: None,
-            cancelled_requests: Arc::new(Mutex::new(HashSet::new())),
-            cancellation_notifiers: Arc::new(Mutex::new(HashMap::new())),
-            in_flight: Arc::new(Mutex::new(HashSet::new())),
+            in_flight: InFlight::default(),
             connection_closed: CancellationToken::new(),
         }
     }
@@ -148,33 +381,59 @@ impl ServerCtx {
         Ok(())
     }
 
-    /// Create a new context with a specific request ID
-    pub(crate) fn with_request_id(&self, request_id: schema::RequestId) -> Self {
+    /// Return the ID of the current request.
+    #[must_use]
+    pub fn request_id(&self) -> Option<&schema::RequestId> {
+        self.request_id.as_ref()
+    }
+
+    /// Create the context of one request: its ID and the token that cancels
+    /// it.
+    ///
+    /// The new context keeps the notification channel, the client, the
+    /// connection, and the extensions of this context. It drops the progress
+    /// token and the request metadata of an earlier request. A host that
+    /// drives a server handler without a transport uses it with
+    /// [`handle_request`](crate::handle_request): a cancelled token cancels
+    /// the request, as `notifications/cancelled` from a client does.
+    #[must_use]
+    pub fn for_request(&self, request_id: schema::RequestId, cancel: CancellationToken) -> Self {
         let mut ctx = self.clone();
         ctx.request_id = Some(request_id);
+        ctx.cancel = Some(cancel);
+        ctx.progress_token = None;
+        ctx.progress_counter = None;
+        ctx.request_meta = None;
         ctx
     }
 
-    /// Return whether the current request has been cancelled by the client.
+    /// Create a new context with a specific request ID that cannot be
+    /// cancelled.
+    pub(crate) fn with_request_id(&self, request_id: schema::RequestId) -> Self {
+        let mut ctx = self.clone();
+        ctx.request_id = Some(request_id);
+        ctx.cancel = None;
+        ctx
+    }
+
+    /// Return whether the current request has been cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        let Some(request_id) = &self.request_id else {
-            return false;
-        };
-        self.is_request_cancelled(request_id)
+        self.cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
     }
 
-    /// Return whether a specific request has been cancelled by the client.
-    pub(crate) fn is_request_cancelled(&self, request_id: &schema::RequestId) -> bool {
-        self.cancelled_requests
-            .lock()
-            .expect("cancelled request lock")
-            .contains(request_id)
-    }
-
-    /// Wait until the current request is cancelled by the client.
+    /// Wait until the current request is cancelled.
+    ///
+    /// A client cancels a request with `notifications/cancelled`. A host
+    /// without a transport cancels the token of [`Self::for_request`]. A
+    /// context without a request never resolves this future.
     pub async fn cancelled(&self) {
-        self.cancelled_with_hook(|_| {}).await;
+        match &self.cancel {
+            Some(token) => token.cancelled().await,
+            None => pending().await,
+        }
     }
 
     /// Wait until connection input ends or the server stops this connection.
@@ -182,39 +441,10 @@ impl ServerCtx {
     /// Stream EOF includes a client's write-side half-close. Handlers may use
     /// this signal to abandon work that needs a connected client. It does not
     /// mark requests cancelled or suppress responses: handlers that ignore it
-    /// can still finish and respond after EOF. Notification-only contexts
-    /// have no connection and never resolve this future.
+    /// can still finish and respond after EOF. Notification-only and
+    /// in-process contexts have no connection and never resolve this future.
     pub async fn connection_closed(&self) {
         self.connection_closed.cancelled().await;
-    }
-
-    /// Wait for cancellation while exposing race boundaries to unit tests.
-    async fn cancelled_with_hook(&self, mut hook: impl FnMut(CancellationWaitPhase)) {
-        let Some(request_id) = &self.request_id else {
-            pending::<()>().await;
-            return;
-        };
-        let notifier = {
-            let mut notifiers = self
-                .cancellation_notifiers
-                .lock()
-                .expect("cancellation notifier lock");
-            Arc::clone(
-                notifiers
-                    .entry(request_id.clone())
-                    .or_insert_with(|| Arc::new(Notify::new())),
-            )
-        };
-        hook(CancellationWaitPhase::BeforeRegistration);
-        let notified = notifier.notified();
-        tokio::pin!(notified);
-        hook(CancellationWaitPhase::DuringRegistration);
-        notified.as_mut().enable();
-        if self.is_cancelled() {
-            return;
-        }
-        hook(CancellationWaitPhase::AfterStateCheck);
-        notified.await;
     }
 
     /// Create a new context with a specific progress token.
@@ -332,62 +562,36 @@ impl ServerCtx {
     }
 
     /// Create a new context with request-scoped extensions.
-    pub(crate) fn with_extensions(&self, extensions: Extensions) -> Self {
+    ///
+    /// A transport sets the extensions of each request, such as the parts of
+    /// an HTTP request. A host without a transport can set its own values.
+    #[must_use]
+    pub fn with_extensions(&self, extensions: Extensions) -> Self {
         let mut ctx = self.clone();
         ctx.extensions = extensions;
         ctx
     }
 
-    /// Record that a request has started being handled.
-    pub(crate) fn begin_request(&self, request_id: &schema::RequestId) {
-        self.in_flight
-            .lock()
-            .expect("in-flight request lock")
-            .insert(request_id.clone());
+    /// Create the context of one request, and track the request so that a
+    /// cancellation notification reaches it.
+    pub(crate) fn begin_request(&self, request_id: &schema::RequestId) -> Self {
+        let cancel = self.in_flight.begin(request_id);
+        self.for_request(request_id.clone(), cancel)
     }
 
-    /// Record that a request has finished, clearing its cancellation state.
-    pub(crate) fn end_request(&self, request_id: &schema::RequestId) {
-        self.in_flight
-            .lock()
-            .expect("in-flight request lock")
-            .remove(request_id);
-        self.cancelled_requests
-            .lock()
-            .expect("cancelled request lock")
-            .remove(request_id);
-        self.cancellation_notifiers
-            .lock()
-            .expect("cancellation notifier lock")
-            .remove(request_id);
+    /// Stop tracking the request of this context.
+    pub(crate) fn end_request(&self) {
+        if let Some(request_id) = &self.request_id {
+            self.in_flight.end(request_id);
+        }
     }
 
-    /// Mark one in-flight request as cancelled and wake any waiters.
+    /// Cancel one request that is in flight on this connection.
     ///
     /// Cancellations for requests that are not in flight (already completed,
     /// or never seen) are ignored.
     pub(crate) fn mark_cancelled(&self, request_id: &schema::RequestId) {
-        if !self
-            .in_flight
-            .lock()
-            .expect("in-flight request lock")
-            .contains(request_id)
-        {
-            return;
-        }
-        self.cancelled_requests
-            .lock()
-            .expect("cancelled request lock")
-            .insert(request_id.clone());
-        let notifier = self
-            .cancellation_notifiers
-            .lock()
-            .expect("cancellation notifier lock")
-            .get(request_id)
-            .cloned();
-        if let Some(notifier) = notifier {
-            notifier.notify_waiters();
-        }
+        self.in_flight.cancel(request_id);
     }
 
     /// Send a request to the client and wait for response
@@ -395,21 +599,80 @@ impl ServerCtx {
     where
         T: DeserializeOwned + Send + 'static,
     {
-        self.request_handler.request(request).await
+        match &self.peer {
+            ClientPeer::Remote(handler) => handler.request(request).await,
+            ClientPeer::InProcess(client) => {
+                let response = client.dispatch(request_body(&request)?, None).await?;
+                RequestHandler::decode_response(request.method(), response)
+            }
+        }
+    }
+
+    /// Send a custom request to the client and wait for its result.
+    ///
+    /// The client answers with
+    /// [`ClientHandler::custom_request`](crate::ClientHandler::custom_request),
+    /// and the result decodes into `T`. A client without an answer for the
+    /// method returns [`Error::MethodNotFound`].
+    ///
+    /// The client sees the request cancelled when the server stops waiting:
+    /// when the caller drops the future, for example in `tokio::select!`, or
+    /// when the deadline of the request passes ([`Error::Timeout`]). When the
+    /// connection ends, the request fails with
+    /// [`Error::TransportDisconnected`].
+    ///
+    /// The cancellation of the current request does not cancel the custom
+    /// request. Select on [`Self::cancelled`] for that.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PayloadTooLarge`] when the params or the result are
+    /// larger than the payload limit of the request. The server does not send
+    /// params over the limit.
+    pub async fn send_request<T>(&self, request: CustomRequest) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        let (body, timeout_override, payload_limit) = request.prepare()?;
+        let method = body.method.clone();
+        let response = match &self.peer {
+            ClientPeer::Remote(handler) => {
+                let (request_id, pending) =
+                    handler.request_raw_pending(body, timeout_override).await?;
+                let mut notice = CancelNotice {
+                    notification_tx: self.notification_tx.clone(),
+                    request_id: Some(request_id),
+                };
+                let response = pending.await;
+                // Only a request at its deadline is still pending at the
+                // client. A dropped future drops the armed notice.
+                if !matches!(response, Err(Error::Timeout { .. })) {
+                    notice.disarm();
+                }
+                response?
+            }
+            ClientPeer::InProcess(client) => client.dispatch(body, timeout_override).await?,
+        };
+        if let schema::JSONRPCResponse::Result(result) = &response {
+            check_payload(&method, &result.result, payload_limit)?;
+        }
+        RequestHandler::decode_response(&method, response)
     }
 
     /// Handle a response from the client
     pub(crate) async fn handle_client_response(&self, response: schema::JSONRPCResponse) {
-        // Clone the handler to avoid holding locks across await points
-        let handler = self.request_handler.clone();
-        handler.handle_response(response).await
+        if let ClientPeer::Remote(handler) = &self.peer {
+            handler.handle_response(response).await;
+        }
     }
 
     /// Notify handlers of connection closure and stop server-to-client
     /// requests.
     pub(crate) fn shutdown_requests(&self) {
         self.connection_closed.cancel();
-        self.request_handler.shutdown();
+        if let ClientPeer::Remote(handler) = &self.peer {
+            handler.shutdown();
+        }
     }
 
     /// Send a cancellation notification for the current request
@@ -494,17 +757,6 @@ impl ServerCtx {
     }
 }
 
-/// Observable phases of cancellation waiter registration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CancellationWaitPhase {
-    /// The shared notifier exists, but the wait future does not.
-    BeforeRegistration,
-    /// The wait future exists, but has not been enabled.
-    DuringRegistration,
-    /// The final state check completed after enabling the wait future.
-    AfterStateCheck,
-}
-
 /// Convert a bounded notification queue error into the crate error type.
 fn notification_send_error<T>(err: &TrySendError<T>) -> Error {
     match err {
@@ -515,8 +767,6 @@ fn notification_send_error<T>(err: &TrySendError<T>) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
-
     use tokio::{
         sync::mpsc,
         task::yield_now,
@@ -608,74 +858,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_registration_closes_every_lost_wakeup_gap() {
-        for target in [
-            CancellationWaitPhase::BeforeRegistration,
-            CancellationWaitPhase::DuringRegistration,
-            CancellationWaitPhase::AfterStateCheck,
-        ] {
-            let (notification_tx, _notification_rx) = mpsc::channel(1);
-            let request_id = schema::RequestId::String(format!("request-{target:?}"));
-            let ctx = ServerCtx::new(notification_tx, None).with_request_id(request_id.clone());
-            ctx.begin_request(&request_id);
-            let cancelling_ctx = ctx.clone();
-            let cancelling_id = request_id.clone();
-
-            timeout(
-                Duration::from_millis(100),
-                ctx.cancelled_with_hook(move |phase| {
-                    if phase == target {
-                        cancelling_ctx.mark_cancelled(&cancelling_id);
-                    }
-                }),
-            )
-            .await
-            .unwrap_or_else(|_| panic!("cancellation at {target:?} was lost"));
-            assert!(ctx.is_cancelled());
-            ctx.end_request(&request_id);
-        }
-    }
-
-    #[tokio::test]
-    async fn cancellation_wakes_multiple_registered_waiters() {
+    async fn cancellation_wakes_current_and_late_waiters() {
         let (notification_tx, _notification_rx) = mpsc::channel(1);
-        let request_id = schema::RequestId::String("multiple-waiters".to_owned());
-        let ctx = ServerCtx::new(notification_tx, None).with_request_id(request_id.clone());
-        ctx.begin_request(&request_id);
-        let ready = Arc::new(AtomicUsize::new(0));
-
-        let waiter = |waiter_ctx: ServerCtx| {
-            let cancelling_ctx = waiter_ctx.clone();
-            let cancelling_id = request_id.clone();
-            let ready = Arc::clone(&ready);
-            async move {
-                waiter_ctx
-                    .cancelled_with_hook(move |phase| {
-                        if phase == CancellationWaitPhase::AfterStateCheck
-                            && ready.fetch_add(1, Ordering::SeqCst) == 1
-                        {
-                            cancelling_ctx.mark_cancelled(&cancelling_id);
-                        }
-                    })
-                    .await;
-            }
-        };
+        let connection = ServerCtx::new(notification_tx, None);
+        let request_id = schema::RequestId::String("waiters".to_owned());
+        let ctx = connection.begin_request(&request_id);
 
         timeout(Duration::from_millis(100), async {
-            tokio::join!(waiter(ctx.clone()), waiter(ctx.clone()))
+            tokio::join!(ctx.cancelled(), ctx.cancelled(), async {
+                yield_now().await;
+                connection.mark_cancelled(&request_id);
+            });
+            ctx.cancelled().await;
         })
         .await
         .expect("all cancellation waiters wake");
         assert!(ctx.is_cancelled());
-        ctx.end_request(&request_id);
+        ctx.end_request();
+    }
+
+    #[test]
+    fn late_cancellation_is_ignored() {
+        let (notification_tx, _notification_rx) = mpsc::channel(1);
+        let connection = ServerCtx::new(notification_tx, None);
+        let request_id = schema::RequestId::Number(7);
+        let ctx = connection.begin_request(&request_id);
+        ctx.end_request();
+
+        connection.mark_cancelled(&request_id);
+
+        assert!(!ctx.is_cancelled());
+        assert!(connection.in_flight.0.lock().expect("lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_request_context_takes_the_cancellation_of_the_host() {
+        let (notification_tx, _notification_rx) = mpsc::channel(1);
+        let connection = ServerCtx::notification_only(notification_tx)
+            .with_progress_token(ProgressToken::String("earlier".to_owned()));
+        let cancel = CancellationToken::new();
+        let ctx = connection.for_request(schema::RequestId::Number(3), cancel.clone());
+
+        assert_eq!(ctx.request_id(), Some(&schema::RequestId::Number(3)));
+        assert!(ctx.progress_token().is_none());
+        assert!(!ctx.is_cancelled());
+        cancel.cancel();
+        timeout(Duration::from_millis(100), ctx.cancelled())
+            .await
+            .expect("the host token cancels the request");
+        assert!(ctx.is_cancelled());
+        assert!(!connection.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn client_cancellation_reaches_only_its_request() {
+        let (notification_tx, _notification_rx) = mpsc::channel(1);
+        let connection = ClientCtx::new(notification_tx);
+        let first = connection.begin_request(&schema::RequestId::Number(1));
+        let second = connection.begin_request(&schema::RequestId::Number(2));
+
+        connection.mark_cancelled(&schema::RequestId::Number(1));
+
+        timeout(Duration::from_millis(100), first.cancelled())
+            .await
+            .expect("the cancelled request wakes");
+        assert!(first.is_cancelled());
+        assert!(!second.is_cancelled());
+        assert_eq!(second.request_id(), Some(&schema::RequestId::Number(2)));
+        first.end_request();
+        second.end_request();
     }
 
     #[tokio::test]
     async fn connection_shutdown_wakes_current_and_late_waiters_without_cancelling_requests() {
         let (tx, _rx) = mpsc::channel(1);
         let id = schema::RequestId::String("pending".into());
-        let ctx = ServerCtx::new(tx, None).with_request_id(id.clone());
-        ctx.begin_request(&id);
+        let ctx = ServerCtx::new(tx, None).begin_request(&id);
         let stop = ctx.clone();
         timeout(Duration::from_secs(1), async {
             tokio::join!(ctx.connection_closed(), ctx.connection_closed(), async {
@@ -687,7 +945,7 @@ mod tests {
         .await
         .expect("all connection waiters wake");
         assert!(!ctx.is_cancelled());
-        ctx.end_request(&id);
+        ctx.end_request();
     }
 
     #[test]

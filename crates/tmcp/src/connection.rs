@@ -7,6 +7,7 @@ use tracing::info;
 use crate::{
     Error, Result,
     context::{ClientCtx, ServerCtx},
+    custom::CUSTOM_PAYLOAD_LIMIT,
     error::ToolError,
     schema::{
         self, CallToolResponse, CallToolResult, ClientRequest, Cursor, ElicitRequestParams,
@@ -113,6 +114,37 @@ pub trait ClientHandler: Send + Sync {
         _notification: schema::ServerNotification,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Handle a request from the server with a method outside the MCP schema.
+    ///
+    /// A server sends it with [`ServerCtx::send_request`]. `params` holds the
+    /// params object of the request, with its `_meta`, or `None` for a
+    /// request without params. Return a JSON object: the server decodes it as
+    /// the result. An error goes to the server as a JSON-RPC error.
+    ///
+    /// The context gives the request ID and the cancellation of the request.
+    /// After the server cancels the request, the client sends no response.
+    ///
+    /// The default implementation refuses each method with
+    /// [`Error::MethodNotFound`].
+    async fn custom_request(
+        &self,
+        _context: &ClientCtx,
+        method: &str,
+        _params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        Err(Error::MethodNotFound(method.to_owned()))
+    }
+
+    /// Return the largest params of a custom request that this client
+    /// accepts, in bytes of JSON.
+    ///
+    /// A custom request with larger params gets an invalid-params error, and
+    /// [`Self::custom_request`] does not see it. The default is
+    /// [`CUSTOM_PAYLOAD_LIMIT`].
+    fn custom_request_limit(&self) -> usize {
+        CUSTOM_PAYLOAD_LIMIT
     }
 
     /// Dispatches a parsed server request to the appropriate handler method.

@@ -18,10 +18,11 @@ use crate::http::HttpClientTransport;
 use crate::{
     connection::ClientHandler,
     context::ClientCtx,
+    custom::{check_payload, is_server_request_method},
     error::{Error, Result},
     jsonrpc::{
-        create_jsonrpc_notification, parse_typed_notification, parse_typed_request,
-        result_to_jsonrpc_response,
+        create_jsonrpc_notification, jsonrpc_response, params_object, parse_typed_notification,
+        parse_typed_request,
     },
     request_handler::{Pending, RequestHandler},
     schema::*,
@@ -160,6 +161,8 @@ impl Client<()> {
     ///   capability enabled)
     /// - [`ClientHandler::list_roots`] - Filesystem root discovery
     /// - [`ClientHandler::elicit`] - User input requests
+    /// - [`ClientHandler::custom_request`] - Requests with methods outside the
+    ///   MCP schema
     ///
     /// Without a custom handler, the default `()` handler returns errors for
     /// server-initiated requests, which is appropriate for clients that don't
@@ -494,6 +497,28 @@ where
     }
 
     /// Send a request with a per-request timeout overriding the connection
+    /// default, and return a handle exposing its id and pending response.
+    ///
+    /// A zero duration disables the deadline of this request.
+    pub async fn request_handle_with_timeout<T>(
+        &self,
+        request: ClientRequest,
+        timeout: Duration,
+    ) -> Result<ClientRequestHandle<T>>
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
+        let (request_id, pending) = self
+            .request_handler
+            .request_pending_with_timeout(request, Some(timeout))
+            .await?;
+        Ok(ClientRequestHandle {
+            request_id,
+            pending,
+        })
+    }
+
+    /// Send a request with a per-request timeout overriding the connection
     /// default, and wait for the typed response.
     pub async fn request_with_timeout<T>(
         &self,
@@ -645,14 +670,22 @@ where
                                         // Handle server-initiated requests (elicitation,
                                         // sampling, …) on their own task: they can take
                                         // arbitrarily long and must not stall response
-                                        // dispatch for the client's own requests.
+                                        // dispatch for the client's own requests. Track the
+                                        // request before the loop reads the next message, so
+                                        // that a cancellation notification reaches it.
                                         let conn = connection.clone();
-                                        let ctx = context.clone();
+                                        let ctx = context.begin_request(&request.id);
                                         let sink = tx.clone();
                                         tokio::spawn(async move {
                                             let response = handle_server_request(conn.as_ref(), &ctx, request).await;
+                                            let cancelled = ctx.is_cancelled();
+                                            ctx.end_request();
+                                            if cancelled {
+                                                info!("Client suppressing response for cancelled request: {:?}", ctx.request_id());
+                                                return;
+                                            }
                                             let mut sink = sink.lock().await;
-                                            if let Err(e) = sink.send(response).await {
+                                            if let Err(e) = sink.send(JSONRPCMessage::Response(response)).await {
                                                 error!("Failed to send response to server: {}", e);
                                             }
                                         });
@@ -1041,38 +1074,71 @@ where
     }
 }
 
-/// Handle a request from the server using the ClientHandler trait
-async fn handle_server_request<C: ClientHandler>(
+/// Handle a request from the server using the ClientHandler trait.
+///
+/// `context` is the context of this request. A standard request goes to
+/// [`ClientHandler::handle_request`], and each other method to
+/// [`ClientHandler::custom_request`].
+pub async fn handle_server_request<C: ClientHandler + ?Sized>(
     connection: &C,
     context: &ClientCtx,
     request: JSONRPCRequest,
-) -> JSONRPCMessage {
+) -> JSONRPCResponse {
     let JSONRPCRequest {
         id,
         request: Request { method, params },
         ..
     } = request;
-    let ctx_with_request = context.with_request_id(id.clone());
 
-    let result = match parse_typed_request::<ServerRequest>(&method, params) {
-        Ok(server_request) => {
-            connection
-                .handle_request(&ctx_with_request, server_request, &method)
-                .await
+    let result = if is_server_request_method(&method) {
+        match parse_typed_request::<ServerRequest>(&method, params) {
+            Ok(server_request) => {
+                connection
+                    .handle_request(context, server_request, &method)
+                    .await
+            }
+            Err(e) => Err(e),
         }
-        Err(e) => Err(e),
+    } else {
+        handle_custom_request(connection, context, &method, params).await
     };
-    result_to_jsonrpc_response(id, result)
+    jsonrpc_response(id, result)
+}
+
+/// Check the params of a custom request against the limit of the handler, and
+/// pass the request to it.
+async fn handle_custom_request<C: ClientHandler + ?Sized>(
+    connection: &C,
+    context: &ClientCtx,
+    method: &str,
+    params: Option<RequestParams>,
+) -> Result<serde_json::Value> {
+    let params = params.map(params_object).transpose()?;
+    if let Some(params) = &params {
+        check_payload(method, params, connection.custom_request_limit())?;
+    }
+    connection
+        .custom_request(context, method, params.map(serde_json::Value::Object))
+        .await
 }
 
 /// Convert a JSON-RPC notification into a typed ServerNotification and pass it
 /// to the connection implementation for further handling.
+///
+/// A cancellation notification also cancels the server request that it names.
 async fn handle_server_notification<C: ClientHandler>(
     connection: &C,
     context: &ClientCtx,
     notification: JSONRPCNotification,
 ) -> Result<()> {
     let typed = parse_typed_notification::<ServerNotification>(notification.notification)?;
+    if let ServerNotification::Cancelled {
+        request_id: Some(request_id),
+        ..
+    } = &typed
+    {
+        context.mark_cancelled(request_id);
+    }
     connection.notification(context, typed).await
 }
 

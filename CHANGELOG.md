@@ -4,6 +4,15 @@
 
 - `Client::with_request_timeout` and `Client::without_request_timeout` also apply to a client with
   a handler, and after the connect.
+- Add custom requests from a server to its client: `CustomRequest`, `ServerCtx::send_request`, and
+  `ClientHandler::custom_request`, with deadlines, cancellation in both directions, and payload
+  limits (`Error::PayloadTooLarge`).
+- `ClientCtx` gives the request ID and the cancellation of a server request. A client sends no
+  response for a server request that the server cancelled.
+- Add `ServerCtx::in_process`, `ServerCtx::for_request`, `ServerCtx::request_id`, and a public
+  `ServerCtx::with_extensions`, and the free function `handle_request`, so that a host can drive a
+  server handler without a transport.
+- Add `Client::request_handle_with_timeout` for a deadline on one request.
 
 ## v0.6.0
 

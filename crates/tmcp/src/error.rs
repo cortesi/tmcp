@@ -121,6 +121,17 @@ pub enum Error {
         /// The request ID that was cancelled.
         request_id: String,
     },
+
+    /// A custom request or its result is larger than its payload limit.
+    #[error("Payload of {method} is {size} bytes, over the limit of {limit} bytes")]
+    PayloadTooLarge {
+        /// The method of the request.
+        method: String,
+        /// The size of the JSON encoding of the payload, in bytes.
+        size: usize,
+        /// The payload limit, in bytes.
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Clone, Error)]

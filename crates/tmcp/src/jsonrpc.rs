@@ -17,12 +17,37 @@ where
     let mut object = serde_json::Map::new();
     object.insert("method".to_string(), Value::String(method.to_string()));
     if let Some(params) = params {
-        if let Some(meta) = params._meta {
-            object.insert("_meta".to_string(), serde_json::to_value(meta)?);
-        }
-        object.extend(params.other);
+        object.extend(params_object(params)?);
     }
     serde_json::from_value(Value::Object(object)).map_err(|err| classify_parse_error(method, &err))
+}
+
+/// Fold the `_meta` of request params back into one params object, as the
+/// wire carries it.
+pub fn params_object(params: RequestParams) -> Result<serde_json::Map<String, Value>> {
+    let mut object = params.other;
+    if let Some(meta) = params._meta {
+        object.insert("_meta".to_string(), serde_json::to_value(meta)?);
+    }
+    Ok(object)
+}
+
+/// Split a params object into the `_meta` and the other params of a request.
+///
+/// A `_meta` value that is not valid request metadata is dropped, as the
+/// encoding of a typed request drops it.
+pub fn request_params(mut object: serde_json::Map<String, Value>) -> Option<RequestParams> {
+    let meta = object
+        .remove("_meta")
+        .and_then(|value| serde_json::from_value::<RequestMeta>(value).ok());
+    if object.is_empty() && meta.is_none() {
+        None
+    } else {
+        Some(RequestParams {
+            _meta: meta,
+            other: object,
+        })
+    }
 }
 
 /// Parse a typed inbound notification from its JSON-RPC envelope.
@@ -128,15 +153,23 @@ impl NotificationTrait for schema::ClientNotification {
     }
 }
 
-/// Convert a Result<T> to a JSONRPC response
+/// Convert a Result<T> to a JSONRPC response message
 pub fn result_to_jsonrpc_response<T>(id: RequestId, result: Result<T>) -> JSONRPCMessage
+where
+    T: serde::Serialize,
+{
+    JSONRPCMessage::Response(jsonrpc_response(id, result))
+}
+
+/// Convert a Result<T> to the JSON-RPC response that a transport carries.
+pub fn jsonrpc_response<T>(id: RequestId, result: Result<T>) -> JSONRPCResponse
 where
     T: serde::Serialize,
 {
     match result {
         Ok(value) => {
             let json_value = serde_json::to_value(value).unwrap_or(serde_json::json!({}));
-            JSONRPCMessage::Response(JSONRPCResponse::Result(JSONRPCResultResponse {
+            JSONRPCResponse::Result(JSONRPCResultResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id,
                 result: schema::JSONRPCResult {
@@ -146,13 +179,13 @@ where
                         other => serde_json::Map::from_iter([("result".to_string(), other)]),
                     },
                 },
-            }))
+            })
         }
-        Err(error) => JSONRPCMessage::Response(JSONRPCResponse::Error(JSONRPCErrorResponse {
+        Err(error) => JSONRPCResponse::Error(JSONRPCErrorResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id: Some(id),
             error: error_object(&error),
-        })),
+        }),
     }
 }
 
@@ -184,6 +217,7 @@ fn error_object(error: &Error) -> ErrorObject {
             format!("Invalid parameters: {message}"),
             None,
         ),
+        Error::PayloadTooLarge { .. } => (INVALID_PARAMS, error.to_string(), None),
         Error::InvalidRequest(msg) => (INVALID_REQUEST, format!("Invalid request: {msg}"), None),
         Error::GroupNotFound(group) => (INVALID_PARAMS, format!("Group not found: {group}"), None),
         Error::GroupInactive { group, parent } => (

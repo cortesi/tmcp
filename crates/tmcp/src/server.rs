@@ -9,6 +9,7 @@ use std::{
 #[cfg(feature = "http")]
 use axum::Router;
 use futures::{SinkExt, StreamExt};
+use serde::de::DeserializeOwned;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, ToSocketAddrs},
@@ -28,9 +29,10 @@ use crate::{
     context::ServerCtx,
     error::{Error, Result},
     jsonrpc::{
-        create_jsonrpc_notification, parse_typed_notification, parse_typed_request,
-        result_to_jsonrpc_response,
+        create_jsonrpc_notification, jsonrpc_response, parse_typed_notification,
+        parse_typed_request, result_to_jsonrpc_response,
     },
+    request_handler::RequestHandler,
     schema::*,
     transport::{GenericDuplex, StdioTransport, StreamTransport, Transport},
 };
@@ -907,25 +909,24 @@ fn spawn_request_handler(
     context: &ServerCtx,
 ) {
     let conn = connection.clone();
-    let ctx = context.clone();
 
     // Track the request as in flight before yielding to the loop, so a
     // cancellation notification processed next is not ignored.
-    ctx.begin_request(&request.id);
+    let ctx = context.begin_request(&request.id);
 
     tokio::spawn(async move {
         let request_id = request.id.clone();
-        let response_message = handle_request(&*conn, request, &ctx).await;
-        let suppressed = ctx.is_request_cancelled(&request_id);
-        ctx.end_request(&request_id);
+        let response = dispatch_request(&*conn, request, &ctx).await;
+        let suppressed = ctx.is_cancelled();
+        ctx.end_request();
         in_flight_requests.fetch_sub(1, Ordering::SeqCst);
 
         let payload = if suppressed {
             tracing::info!("Server suppressing response for cancelled request: {request_id:?}");
             None
         } else {
-            tracing::info!("Server sending response: {:?}", response_message);
-            Some(response_message)
+            tracing::info!("Server sending response: {:?}", response);
+            Some(JSONRPCMessage::Response(response))
         };
         if outbound_tx.send(payload).await.is_err() {
             error!("Failed to queue response for request {request_id:?}");
@@ -951,8 +952,8 @@ async fn handle_initialize_request(
     } = request;
     let ctx_with_request = context.with_request_id(id.clone());
 
-    let initialize = match parse_typed_request::<ClientRequest>("initialize", params) {
-        Ok(initialize) => initialize,
+    let initialize_request = match parse_typed_request::<ClientRequest>("initialize", params) {
+        Ok(initialize_request) => initialize_request,
         Err(error) => {
             return (
                 result_to_jsonrpc_response::<InitializeResult>(id, Err(error)),
@@ -961,46 +962,59 @@ async fn handle_initialize_request(
         }
     };
     let ClientRequest::Initialize {
-        protocol_version: requested_version,
+        protocol_version,
         capabilities,
         client_info,
         ..
-    } = initialize
+    } = initialize_request
     else {
         unreachable!("initialize method deserialized as another request")
     };
+    let result = initialize(
+        connection,
+        &ctx_with_request,
+        protocol_version,
+        *capabilities,
+        client_info,
+        protocol_versions,
+    )
+    .await;
+    let caps = result
+        .as_ref()
+        .ok()
+        .map(|result| result.capabilities.clone());
+    (result_to_jsonrpc_response(id, result), caps)
+}
+
+/// Negotiate the protocol version of an initialize request and call the
+/// initialize method of the handler.
+async fn initialize<H: ServerHandler + ?Sized>(
+    connection: &H,
+    context: &ServerCtx,
+    requested_version: ProtocolVersion,
+    capabilities: ClientCapabilities,
+    client_info: Implementation,
+    protocol_versions: &SupportedProtocolVersions,
+) -> Result<InitializeResult> {
     let protocol_version = if protocol_versions.contains(&requested_version) {
         requested_version
     } else {
         protocol_versions.latest().clone()
     };
-
-    // Call the handler's initialize method
-    let (caps, result) = match connection
-        .initialize(
-            &ctx_with_request,
-            protocol_version.clone(),
-            *capabilities,
-            client_info,
-        )
-        .await
-    {
-        Ok(mut result) => {
-            result.protocol_version = protocol_version;
-            (Some(result.capabilities.clone()), Ok(result))
-        }
-        Err(e) => (None, Err(e)),
-    };
-    (result_to_jsonrpc_response(id, result), caps)
+    let mut result = connection
+        .initialize(context, protocol_version.clone(), capabilities, client_info)
+        .await?;
+    result.protocol_version = protocol_version;
+    Ok(result)
 }
 
-/// Handle a request using the Connection trait and convert result to
-/// JSONRPCMessage
-async fn handle_request(
+/// Parse one request, dispatch it to the handler with the request context
+/// `context`, and build its response.
+async fn dispatch_request(
     connection: &dyn ServerHandler,
     request: JSONRPCRequest,
     context: &ServerCtx,
-) -> JSONRPCMessage {
+) -> JSONRPCResponse {
     let JSONRPCRequest {
         id,
         request: Request { method, params },
@@ -1008,16 +1022,75 @@ async fn handle_request(
     } = request;
     tracing::info!("Server handling request: {:?} method: {}", id, method);
 
-    let ctx_with_request = context.with_request_id(id.clone());
     let result = match parse_typed_request::<ClientRequest>(&method, params) {
-        Ok(client_request) => {
-            connection
-                .handle_request(&ctx_with_request, client_request)
-                .await
-        }
+        Ok(client_request) => connection.handle_request(context, client_request).await,
         Err(e) => Err(e),
     };
-    result_to_jsonrpc_response(id, result)
+    jsonrpc_response(id, result)
+}
+
+/// Handle one client request with a server handler, without a transport.
+///
+/// The request takes the path of a request on a connection: tmcp calls
+/// [`ServerHandler::handle_request`], so an override of it (middleware) and
+/// the conversion of invalid tool parameters into a tool error apply. The
+/// result and the error are those that a [`Client`](crate::Client) across a
+/// transport returns, and the result decodes into `T`.
+///
+/// `context` is the context of this request: derive it with
+/// [`ServerCtx::for_request`] from a connection context, such as
+/// [`ServerCtx::in_process`]. An initialize request negotiates the protocol
+/// version as a connection does. The host calls
+/// [`ServerHandler::on_connect`], [`ServerHandler::notification`], and
+/// [`ServerHandler::on_shutdown`] itself.
+///
+/// The handler runs in the task of the caller. When the token of `context` is
+/// cancelled, the handler sees the cancellation, and this function returns
+/// [`Error::Cancelled`] after the handler finishes, because a connection
+/// sends no response for a cancelled request.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidRequest`] when `context` has no request ID.
+pub async fn handle_request<H, T>(
+    handler: &H,
+    context: &ServerCtx,
+    request: ClientRequest,
+) -> Result<T>
+where
+    H: ServerHandler + ?Sized,
+    T: DeserializeOwned,
+{
+    let Some(request_id) = context.request_id().cloned() else {
+        return Err(Error::InvalidRequest(
+            "a request context needs a request ID: use ServerCtx::for_request".to_owned(),
+        ));
+    };
+    let method = request.method();
+    let result = match request {
+        ClientRequest::Initialize {
+            protocol_version,
+            capabilities,
+            client_info,
+            ..
+        } => initialize(
+            handler,
+            context,
+            protocol_version,
+            *capabilities,
+            client_info,
+            &SupportedProtocolVersions::default(),
+        )
+        .await
+        .and_then(|result| serde_json::to_value(result).map_err(Into::into)),
+        request => handler.handle_request(context, request).await,
+    };
+    if context.is_cancelled() {
+        return Err(Error::Cancelled {
+            request_id: request_id.to_string(),
+        });
+    }
+    RequestHandler::decode_response(method, jsonrpc_response(request_id, result))
 }
 
 /// Handle a notification using the Connection trait
