@@ -655,7 +655,7 @@ where
                         match result {
                             Some(Ok(incoming)) => {
                                 let message = incoming.message;
-                                debug!("Received message: {:?}", message);
+                                debug!("Received {}", message.summary());
 
                                 match message {
                                     JSONRPCMessage::Response(response) => {

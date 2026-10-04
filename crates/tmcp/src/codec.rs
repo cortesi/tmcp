@@ -1,5 +1,3 @@
-use std::str;
-
 use bytes::{BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, error};
@@ -83,15 +81,21 @@ impl Decoder for JsonRpcCodec {
             // Parse JSON, excluding the trailing newline
             let json_bytes = &line[..line.len() - 1];
 
-            debug!(
-                "Decoding JSON-RPC message: {:?}",
-                str::from_utf8(json_bytes)
-            );
-
             return match serde_json::from_slice::<JSONRPCMessage>(json_bytes) {
-                Ok(message) => Ok(Some(Frame::Message(message))),
+                Ok(message) => {
+                    debug!(
+                        "Decoded JSON-RPC {} ({} bytes)",
+                        message.summary(),
+                        json_bytes.len()
+                    );
+                    Ok(Some(Frame::Message(message)))
+                }
                 Err(e) => {
-                    error!("Failed to parse JSON-RPC message: {}", e);
+                    error!(
+                        "Failed to parse JSON-RPC message ({} bytes): {}",
+                        json_bytes.len(),
+                        e
+                    );
                     Ok(Some(Frame::Malformed(format!("Invalid JSON: {e}"))))
                 }
             };
@@ -117,7 +121,7 @@ impl Encoder<JSONRPCMessage> for JsonRpcCodec {
         dst.reserve(json.len() + 1);
         dst.put_slice(&json);
         dst.put_u8(b'\n');
-        debug!("Encoded JSON-RPC message: {:?}", str::from_utf8(&json));
+        debug!("Encoded JSON-RPC {} ({} bytes)", item.summary(), json.len());
         Ok(())
     }
 }
@@ -156,6 +160,22 @@ mod tests {
             }
             _ => panic!("Expected request message"),
         }
+    }
+
+    #[test]
+    fn summaries_bound_peer_strings() {
+        let method = "m".repeat(500);
+        let message = JSONRPCMessage::Request(JSONRPCRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: RequestId::Number(1),
+            request: Request {
+                method,
+                params: None,
+            },
+        });
+        let summary = message.summary().to_string();
+        assert!(summary.len() < 100, "{summary}");
+        assert!(summary.ends_with("..."), "{summary}");
     }
 
     #[test]

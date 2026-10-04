@@ -185,6 +185,82 @@ pub enum JSONRPCMessage {
     Response(JSONRPCResponse),
 }
 
+#[cfg(feature = "runtime")]
+impl JSONRPCMessage {
+    /// Returns the metadata of the message for a transport log: its kind,
+    /// ID, method, and error code. It never shows a payload.
+    pub(crate) fn summary(&self) -> MessageSummary<'_> {
+        MessageSummary(self)
+    }
+}
+
+#[cfg(feature = "runtime")]
+/// The longest method name or request ID that a transport log shows.
+const SUMMARY_FIELD_CHARS: usize = 64;
+
+#[cfg(feature = "runtime")]
+/// The metadata of one message for a transport log.
+pub struct MessageSummary<'a>(&'a JSONRPCMessage);
+
+#[cfg(feature = "runtime")]
+impl Display for MessageSummary<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            JSONRPCMessage::Request(request) => write!(
+                f,
+                "request {} {}",
+                BoundedId(&request.id),
+                Bounded(&request.request.method)
+            ),
+            JSONRPCMessage::Notification(notification) => write!(
+                f,
+                "notification {}",
+                Bounded(&notification.notification.method)
+            ),
+            JSONRPCMessage::Response(JSONRPCResponse::Result(response)) => {
+                write!(f, "response {}", BoundedId(&response.id))
+            }
+            JSONRPCMessage::Response(JSONRPCResponse::Error(response)) => match &response.id {
+                Some(id) => write!(
+                    f,
+                    "error response {} code {}",
+                    BoundedId(id),
+                    response.error.code
+                ),
+                None => write!(f, "error response code {}", response.error.code),
+            },
+        }
+    }
+}
+
+#[cfg(feature = "runtime")]
+/// A peer-supplied string, cut at `SUMMARY_FIELD_CHARS` characters.
+struct Bounded<'a>(&'a str);
+
+#[cfg(feature = "runtime")]
+impl Display for Bounded<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0.char_indices().nth(SUMMARY_FIELD_CHARS) {
+            Some((end, _)) => write!(f, "{:?}...", &self.0[..end]),
+            None => write!(f, "{:?}", self.0),
+        }
+    }
+}
+
+/// A request ID: a number as it is, and a string through `Bounded`.
+#[cfg(feature = "runtime")]
+struct BoundedId<'a>(&'a RequestId);
+
+#[cfg(feature = "runtime")]
+impl Display for BoundedId<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            RequestId::Number(number) => write!(f, "{number}"),
+            RequestId::String(text) => Bounded(text).fmt(f),
+        }
+    }
+}
+
 /// A progress token, used to associate progress notifications with the original
 /// request.
 #[derive(Debug, Clone, Serialize, Deserialize)]

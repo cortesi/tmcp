@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Transport logs show the kind, ID, method, error code, and size of each message, and never its
+  payload. Before, the codec, the client, the server, and the HTTP transport logged whole messages
+  at debug and info level. Logged method names and string IDs stop at 64 characters.
 - `Client::with_request_timeout` and `Client::without_request_timeout` also apply to a client with
   a handler, and after the connect.
 - Add custom requests from a server to its client: `CustomRequest`, `ServerCtx::send_request`, and

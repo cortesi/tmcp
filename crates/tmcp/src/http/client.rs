@@ -236,7 +236,7 @@ async fn forward_parsed_response(
     headers: &HeaderMap,
     ctx: &OutboundContext,
 ) {
-    debug!("HTTP client received response: {:?}", response);
+    debug!("HTTP client received {}", response.summary());
     update_negotiated_protocol_version(request, &response, ctx).await;
     update_session_id(is_initialize, headers, ctx).await;
     if let Err(error) = ctx.sender.unbounded_send(response) {
@@ -548,7 +548,7 @@ async fn run_sse_manager(ctx: OutboundContext, shutdown: CancellationToken) {
 
 /// Send one outbound message, retrying once after an OAuth refresh on 401.
 async fn send_outbound(ctx: OutboundContext, msg: JSONRPCMessage) {
-    debug!("HTTP client sending message: {:?}", msg);
+    debug!("HTTP client sending {}", msg.summary());
 
     let is_initialize =
         matches!(&msg, JSONRPCMessage::Request(req) if req.request.method == "initialize");

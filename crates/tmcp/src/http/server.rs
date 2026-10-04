@@ -596,7 +596,7 @@ async fn handle_post(State(state): State<HttpServerState>, request: Request) -> 
         Err(response) => return *response,
     };
 
-    debug!("HTTP server received POST request: {:?}", message);
+    debug!("HTTP server received POST {}", message.summary());
 
     // Initialize establishes a new session with its own connection loop. Any
     // client-supplied session id is ignored: session ids are server-generated.

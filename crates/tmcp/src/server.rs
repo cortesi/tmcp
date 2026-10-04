@@ -950,8 +950,9 @@ fn spawn_request_handler(
             tracing::info!("Server suppressing response for cancelled request: {request_id:?}");
             None
         } else {
-            tracing::info!("Server sending response: {:?}", response);
-            Some(JSONRPCMessage::Response(response))
+            let message = JSONRPCMessage::Response(response);
+            tracing::info!("Server sending {}", message.summary());
+            Some(message)
         };
         if outbound_tx.send(payload).await.is_err() {
             error!("Failed to queue response for request {request_id:?}");
