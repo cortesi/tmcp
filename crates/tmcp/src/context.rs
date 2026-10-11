@@ -595,10 +595,29 @@ impl ServerCtx {
     where
         T: DeserializeOwned + Send + 'static,
     {
+        self.request_with_timeout(request, None).await
+    }
+
+    /// Send a request to the client and wait for its response, with
+    /// `timeout` as its deadline, or the default deadline of the connection
+    /// for `None`.
+    async fn request_with_timeout<T>(
+        &self,
+        request: schema::ServerRequest,
+        timeout: Option<Duration>,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
         match &self.peer {
-            ClientPeer::Remote { requests, .. } => requests.request(request).await,
+            ClientPeer::Remote { requests, .. } => {
+                let (_, pending) = requests
+                    .request_pending_with_timeout(request, timeout)
+                    .await?;
+                pending.await
+            }
             ClientPeer::InProcess(client) => {
-                let response = client.dispatch(request_body(&request)?, None).await?;
+                let response = client.dispatch(request_body(&request)?, timeout).await?;
                 RequestHandler::decode_response(request.method(), response)
             }
         }
@@ -712,6 +731,22 @@ impl ServerCtx {
         params: schema::ElicitRequestParams,
     ) -> Result<schema::ElicitResult> {
         self.request(schema::ServerRequest::elicit(params)).await
+    }
+
+    /// Ask the client for user input, with `timeout` as the deadline of the
+    /// request in place of the default deadline of the connection.
+    ///
+    /// A person answers an elicitation, so a server can wait longer than for
+    /// a machine. A zero duration disables the deadline: cancellation and the
+    /// end of the connection still end the wait. A request past its deadline
+    /// fails with [`Error::Timeout`].
+    pub async fn elicit_with_timeout(
+        &self,
+        params: schema::ElicitRequestParams,
+        timeout: Duration,
+    ) -> Result<schema::ElicitResult> {
+        self.request_with_timeout(schema::ServerRequest::elicit(params), Some(timeout))
+            .await
     }
 
     /// Retrieve the state of a task from the client

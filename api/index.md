@@ -24,7 +24,7 @@ Macros to make defining MCP servers easier
 - Workspace dependencies: tmcp-macros
 - Workspace dependents: tmcp-examples
 - Unnameable: crate::jsonrpc::NotificationTrait, crate::request_handler::Pending, crate::request_handler::RequestMethod, crate::transport::Transport
-- Items: 723
+- Items: 725
 - Exposes: base64, futures, http, schemars, serde, serde_core, serde_json, tokio, tokio-util
 
 ## tmcp-examples

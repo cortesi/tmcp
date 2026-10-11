@@ -112,6 +112,10 @@ name = "concurrent_server_requests"
 required-features = ["testutils"]
 
 [[test]]
+name = "elicit_deadline"
+required-features = ["testutils"]
+
+[[test]]
 name = "custom_requests"
 required-features = ["testutils"]
 

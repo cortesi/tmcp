@@ -138,9 +138,9 @@ pub use tmcp_macros::{
     tool_result,
 };
 use tokio::{
+    Child, Command,
     io::{async_read::AsyncRead, async_write::AsyncWrite},
     net::addr::ToSocketAddrs,
-    process::{Child, Command},
     sync::mpsc::bounded::Sender,
 };
 use tokio_util::sync::CancellationToken;
@@ -1525,6 +1525,19 @@ impl ServerCtx {
 
     /// Handle elicitation requests - ask the client for user input
     pub async fn elicit(&self, params: ElicitRequestParams) -> crate::Result<ElicitResult>;
+
+    /// Ask the client for user input, with `timeout` as the deadline of the
+    /// request in place of the default deadline of the connection.
+    ///
+    /// A person answers an elicitation, so a server can wait longer than for
+    /// a machine. A zero duration disables the deadline: cancellation and the
+    /// end of the connection still end the wait. A request past its deadline
+    /// fails with [`Error::Timeout`].
+    pub async fn elicit_with_timeout(
+        &self,
+        params: ElicitRequestParams,
+        timeout: Duration,
+    ) -> crate::Result<ElicitResult>;
 
     /// Return per-request transport extensions.
     pub fn extensions(&self) -> &Extensions;
@@ -4185,6 +4198,10 @@ pub mod schema {
         /// The system is unusable.
         Emergency,
     }
+
+    /// The metadata of one message for a transport log.
+    #[derive(Display)]
+    pub struct MessageSummary<'a>(_);
 
     /// Hint describing a preferred model by name.
 #[derive(Clone, Debug, Deserialize<'de>, Serialize)]

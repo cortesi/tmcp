@@ -16,6 +16,8 @@
   `ServerCtx::with_extensions`, and the free function `handle_request`, so that a host can drive a
   server handler without a transport.
 - Add `Client::request_handle_with_timeout` for a deadline on one request.
+- Add `ServerCtx::elicit_with_timeout` for the deadline of one elicitation, such as a wait for a
+  person that is longer than the default deadline of the connection.
 - A request timeout shorter than one millisecond rounds up to one millisecond. Before, it disabled
   the deadline, as a zero timeout does.
 - The deadline of a request starts before its send, so a blocked transport counts toward it, and a
