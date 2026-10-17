@@ -6,9 +6,9 @@
 //! - Connect to it using the process's stdin/stdout
 //! - Manage the process lifecycle
 
-#[path = "src/cargo_env.rs"]
-mod cargo_env;
+mod support;
 
+use support::cargo_env;
 use tmcp::{Arguments, Client, Result};
 use tokio::process::Command;
 use tracing::{Level, error, info};

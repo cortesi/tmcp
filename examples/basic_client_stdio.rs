@@ -7,10 +7,10 @@
 //! Usage:
 //!   cargo run --example basic_client_stdio
 
-#[path = "src/cargo_env.rs"]
-mod cargo_env;
+mod support;
 
 use serde::{Deserialize, Serialize};
+use support::cargo_env;
 use tmcp::{Client, Result};
 use tokio::process::Command;
 use tracing::info;
