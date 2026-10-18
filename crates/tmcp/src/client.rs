@@ -556,14 +556,7 @@ where
         tokio::select! {
             biased;
             () = &mut cancel => {
-                let cancel_result = self.cancel(request_id.clone()).await;
                 drop(pending);
-                if let Err(error) = cancel_result {
-                    warn!(
-                        request_id = ?request_id,
-                        "failed to notify MCP server request cancellation: {error}"
-                    );
-                }
                 Err(Error::Cancelled {
                     request_id: request_id.to_string(),
                 })
@@ -636,6 +629,11 @@ where
         // Create mpsc channel for client notifications
         let (client_notification_tx, mut client_notification_rx) =
             mpsc::channel(CLIENT_NOTIFICATION_BUFFER);
+
+        // Keep abandoned-request cancellations off the bounded notification
+        // queue, so a full application queue cannot strand remote work.
+        let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
+        self.request_handler.set_cancellations(Some(cancel_tx));
 
         // Create the context for the connection
         let context = ClientCtx::new(client_notification_tx);
@@ -717,6 +715,22 @@ where
                         let mut sink = notification_sink.lock().await;
                         if let Err(e) = sink.send(JSONRPCMessage::Notification(jsonrpc_notification)).await {
                             error!("Error sending notification to server: {}", e);
+                            request_handler.shutdown();
+                            break;
+                        }
+                    }
+
+                    // Tell the server about each request that this client
+                    // stopped waiting for, including one whose deadline passed.
+                    Some(request_id) = cancel_rx.recv() => {
+                        let notification = ClientNotification::cancelled(
+                            Some(request_id),
+                            Some("the client stopped waiting for the response".to_owned()),
+                        );
+                        let message = create_jsonrpc_notification(&notification);
+                        let mut sink = notification_sink.lock().await;
+                        if let Err(e) = sink.send(JSONRPCMessage::Notification(message)).await {
+                            error!("Error sending cancellation to server: {}", e);
                             request_handler.shutdown();
                             break;
                         }

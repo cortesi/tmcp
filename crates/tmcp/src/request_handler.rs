@@ -199,7 +199,17 @@ impl OutboundRequest {
 
 impl Drop for OutboundRequest {
     fn drop(&mut self) {
-        self.handler.inner.pending_requests.remove(&self.id);
+        // Response dispatch removes the slot before it delivers the response.
+        // Only a request that still owned its unresolved slot was abandoned.
+        if self
+            .handler
+            .inner
+            .pending_requests
+            .remove(&self.id)
+            .is_none()
+        {
+            return;
+        }
         let Some(cancel) = self.cancel.take() else {
             return;
         };
@@ -242,6 +252,8 @@ struct RequestHandlerInner {
     id_prefix: String,
     /// Request timeout in milliseconds.
     timeout_ms: AtomicU64,
+    /// Connection control queue for notices about abandoned requests.
+    cancellations: StdMutex<Option<CancelSender>>,
     /// Tracks whether the current transport is shutting down.
     shutting_down: AtomicBool,
 }
@@ -256,6 +268,7 @@ impl RequestHandler {
                 next_request_id: AtomicU64::new(1),
                 id_prefix,
                 timeout_ms: AtomicU64::new(DEFAULT_TIMEOUT_MS),
+                cancellations: StdMutex::new(None),
                 shutting_down: AtomicBool::new(false),
             }),
         }
@@ -267,6 +280,13 @@ impl RequestHandler {
             *lock = Some(transport_tx);
         }
         self.inner.shutting_down.store(false, Ordering::Release);
+    }
+
+    /// Set the connection control queue for abandoned-request notices.
+    pub(crate) fn set_cancellations(&self, cancellations: Option<CancelSender>) {
+        if let Ok(mut lock) = self.inner.cancellations.lock() {
+            *lock = cancellations;
+        }
     }
 
     /// Set the default request timeout in milliseconds for this connection.
@@ -283,6 +303,7 @@ impl RequestHandler {
         if let Ok(mut lock) = self.inner.transport_tx.lock() {
             *lock = None;
         }
+        self.set_cancellations(None);
         self.inner.pending_requests.clear();
     }
 
@@ -345,7 +366,13 @@ impl RequestHandler {
     {
         let request = request_body(&request)?;
         let method = request.method.clone();
-        self.send_pending(request, timeout_override, None, move |response| {
+        let cancellations = self
+            .inner
+            .cancellations
+            .lock()
+            .ok()
+            .and_then(|sender| sender.clone());
+        self.send_pending(request, timeout_override, cancellations, move |response| {
             Self::decode_response(&method, response)
         })
         .await
@@ -700,6 +727,31 @@ mod tests {
             }))
             .await;
         pending.await.expect("the response");
+
+        assert!(handler.inner.pending_requests.is_empty());
+        assert!(cancel_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_delivered_unpolled_response_sends_no_cancellation_when_dropped() {
+        let (handler, _peer) = handler_over(64 * 1024);
+        let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
+        let (id, pending) = handler
+            .request_raw_pending(large_request(), None, Some(cancel_tx))
+            .await
+            .expect("the request is sent");
+
+        handler
+            .handle_response(JSONRPCResponse::Result(JSONRPCResultResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id,
+                result: JSONRPCResult {
+                    _meta: None,
+                    other: serde_json::Map::new(),
+                },
+            }))
+            .await;
+        drop(pending);
 
         assert!(handler.inner.pending_requests.is_empty());
         assert!(cancel_rx.try_recv().is_err());

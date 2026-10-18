@@ -7,9 +7,9 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use tmcp::{
-        Result, Server, ServerCtx, ServerHandle, ServerHandler,
+        Error, Result, Server, ServerCtx, ServerHandle, ServerHandler,
         schema::{self, ProtocolVersion},
-        testutils::make_duplex_pair,
+        testutils::{connected_client_and_server, make_duplex_pair},
     };
     use tokio::{
         io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
@@ -21,6 +21,44 @@ mod tests {
     struct CancellationServer {
         observed: Arc<Notify>,
         release: Arc<Notify>,
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_client_request_notifies_the_server() {
+        let observed = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let handler = CancellationServer {
+            observed: Arc::clone(&observed),
+            release: Arc::clone(&release),
+        };
+        let (mut client, server) = connected_client_and_server(move || handler.clone())
+            .await
+            .expect("connect client and server");
+        client.init().await.expect("initialize client");
+
+        let result = client
+            .request_with_timeout::<schema::CallToolResponse>(
+                schema::ClientRequest::call_tool("wait_for_cancel", None, None),
+                Duration::from_secs(1),
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::Timeout {
+                    timeout_ms: 1000,
+                    ..
+                })
+            ),
+            "request did not end at its deadline: {result:?}"
+        );
+        timeout(Duration::from_secs(1), observed.notified())
+            .await
+            .expect("server did not observe timeout cancellation");
+
+        release.notify_one();
+        drop(client);
+        server.stop().await.expect("stop server");
     }
 
     #[async_trait]

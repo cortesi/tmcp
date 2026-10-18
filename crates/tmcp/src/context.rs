@@ -340,6 +340,7 @@ impl ServerCtx {
         cancellations: CancelSender,
     ) -> Self {
         let requests = RequestHandler::new(Some(transport_tx), "srv-req".to_string());
+        requests.set_cancellations(Some(cancellations.clone()));
         Self::with_peer(
             notification_tx,
             ClientPeer::Remote {
