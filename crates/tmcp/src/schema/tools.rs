@@ -252,11 +252,14 @@ impl CallToolResult {
     /// [`crate::TOOL_ERROR_INVALID_INPUT`], matching the
     /// [`crate::ToolError`] code convention.
     pub fn error(code: &'static str, message: impl Into<String>) -> Self {
+        let message = message.into();
+        // Clients that read only text content still see why the call failed.
         Self::new()
             .with_is_error(true)
+            .with_text_content(message.clone())
             .with_structured_content(json!({
                 "code": code,
-                "message": message.into(),
+                "message": message,
             }))
     }
 
