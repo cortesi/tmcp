@@ -2,7 +2,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::{
-    error::{Error, Result},
+    Error, Result,
     schema::{self, *},
 };
 

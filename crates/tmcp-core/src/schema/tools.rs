@@ -1,6 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, mem};
-#[cfg(feature = "schema-validation")]
-use std::{fmt::Display, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt::Display, mem, sync::Arc};
 
 use schemars::generate::SchemaSettings;
 use serde::{
@@ -153,7 +151,6 @@ pub enum ToolResultDecodeError {
 }
 
 /// A prepared tool-result extraction and validation contract.
-#[cfg(feature = "schema-validation")]
 #[derive(Clone)]
 pub struct PreparedToolResultContract {
     /// Extraction mode supplied by the consumer.
@@ -165,7 +162,6 @@ pub struct PreparedToolResultContract {
 }
 
 /// Failure to apply a prepared tool-result contract.
-#[cfg(feature = "schema-validation")]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PreparedToolResultError {
     /// The output schema could not be compiled.
@@ -179,7 +175,6 @@ pub enum PreparedToolResultError {
     SchemaValidation(#[from] ToolSchemaValidationError),
 }
 
-#[cfg(feature = "schema-validation")]
 impl PreparedToolResultContract {
     /// Prepare result extraction and compile the optional output schema.
     pub fn new(mode: ToolResultMode, output_schema: Option<Value>) -> Self {
@@ -799,7 +794,6 @@ impl Tool {
 pub struct ToolSchema(pub Value);
 
 /// Reusable validator compiled from a tool schema.
-#[cfg(feature = "schema-validation")]
 #[derive(Clone)]
 pub struct ToolSchemaValidator {
     /// Shared compiled validator.
@@ -807,7 +801,6 @@ pub struct ToolSchemaValidator {
 }
 
 /// Failure to compile a tool schema.
-#[cfg(feature = "schema-validation")]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("tool schema compilation failed: {message}")]
 pub struct ToolSchemaCompileError {
@@ -815,7 +808,6 @@ pub struct ToolSchemaCompileError {
     message: String,
 }
 
-#[cfg(feature = "schema-validation")]
 impl ToolSchemaCompileError {
     /// Return the underlying schema diagnostic without tmcp's display prefix.
     pub fn message(&self) -> &str {
@@ -824,7 +816,6 @@ impl ToolSchemaCompileError {
 }
 
 /// Failure to validate a value against a compiled tool schema.
-#[cfg(feature = "schema-validation")]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("tool result did not match its schema: {message}")]
 pub struct ToolSchemaValidationError {
@@ -832,7 +823,6 @@ pub struct ToolSchemaValidationError {
     message: String,
 }
 
-#[cfg(feature = "schema-validation")]
 impl ToolSchemaValidationError {
     /// Return the underlying validation diagnostic without tmcp's display
     /// prefix.
@@ -857,7 +847,6 @@ impl Default for ToolSchema {
 
 impl ToolSchema {
     /// Compile this schema for repeated validation.
-    #[cfg(feature = "schema-validation")]
     pub fn compile(&self) -> Result<ToolSchemaValidator, ToolSchemaCompileError> {
         jsonschema::Validator::options()
             .build(&self.0)
@@ -1004,7 +993,6 @@ impl ToolSchema {
     }
 }
 
-#[cfg(feature = "schema-validation")]
 impl ToolSchemaValidator {
     /// Validate a value against the compiled schema.
     pub fn validate(&self, value: &Value) -> Result<(), ToolSchemaValidationError> {
@@ -1017,7 +1005,6 @@ impl ToolSchemaValidator {
 }
 
 /// Return the first validation diagnostic or a deterministic fallback.
-#[cfg(feature = "schema-validation")]
 fn first_error_message(errors: impl IntoIterator<Item = impl Display>) -> String {
     errors
         .into_iter()
@@ -1288,7 +1275,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "schema-validation")]
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
@@ -1773,7 +1759,6 @@ mod tests {
         assert!(schema.0.get("$schema").is_none());
     }
 
-    #[cfg(feature = "schema-validation")]
     #[test]
     fn prepared_contract_promotes_auto_and_validates_json() {
         let schema = json!({
@@ -1806,7 +1791,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "schema-validation")]
     #[test]
     fn prepared_contract_retains_compile_error_but_excludes_text_and_content() {
         let invalid_schema = json!({"type": 42});
@@ -1836,7 +1820,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "schema-validation")]
     #[test]
     fn tool_schema_compiles_and_reuses_validation() {
         assert_send_sync::<ToolSchemaValidator>();
@@ -1871,7 +1854,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "schema-validation")]
     #[test]
     fn tool_schema_reports_compile_errors_and_matches_default_options() {
         let invalid = ToolSchema(json!({"type": 42}));

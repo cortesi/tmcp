@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use tmcp::auth::{
+    use tmcp_http::auth::{
         ClientMetadata, ClientRegistrationResponse, DynamicRegistrationClient, OAuth2Config,
     };
 

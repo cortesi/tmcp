@@ -6,8 +6,6 @@ use std::{
     },
 };
 
-#[cfg(feature = "http")]
-use axum::Router;
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use tokio::{
@@ -20,14 +18,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-#[cfg(feature = "auth")]
-use crate::auth::server::{AuthConfig, BearerAuthLayer, protected_resource_handler};
-#[cfg(feature = "http")]
-use crate::http::{CorsPolicy, EmbeddedHttpRoutes, HttpServer, normalize_endpoint_path};
 use crate::{
+    Error, Result,
     connection::ServerHandler,
     context::ServerCtx,
-    error::{Error, Result},
     jsonrpc::{
         create_jsonrpc_notification, jsonrpc_response, parse_typed_notification,
         parse_typed_request, result_to_jsonrpc_response,
@@ -49,35 +43,6 @@ const SERVER_NOTIFICATION_BUFFER: usize = 64;
 /// Maximum number of queued server responses before request handlers
 /// backpressure.
 const SERVER_RESPONSE_BUFFER: usize = 64;
-
-/// Builder that configures and serves the HTTP transport.
-#[cfg(feature = "http")]
-pub struct HttpBuilder {
-    /// Server to serve.
-    server: Server,
-    /// Bind address for the HTTP listener.
-    bind_addr: Option<String>,
-    /// Public endpoint path where MCP is served.
-    endpoint_path: String,
-    /// Transformation applied to the MCP routes after state is attached.
-    middleware: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
-    /// Additional routes merged outside the middleware scope.
-    routes: Option<Router>,
-    /// Cross-origin policy for the MCP routes.
-    cors: CorsPolicy,
-}
-
-/// Result of embedding tmcp HTTP routes into an existing Axum application.
-#[cfg(feature = "http")]
-pub struct EmbeddedHttpServer {
-    /// Router containing the mounted MCP handlers and any auxiliary routes.
-    ///
-    /// Merge this router into the host application at the root.
-    pub router: Router,
-    /// Live tmcp server handle that must be shut down with the host
-    /// application.
-    pub handle: ServerHandle,
-}
 
 /// MCP Server implementation
 pub struct Server {
@@ -147,8 +112,11 @@ impl Server {
     }
 
     /// Create a server from a shared, pre-boxed handler factory.
-    #[cfg(feature = "http")]
-    pub(crate) fn from_factory(
+    ///
+    /// A hook for the HTTP transport of `tmcp-http`, which creates one server
+    /// for each session. Not a stable API.
+    #[doc(hidden)]
+    pub fn from_factory(
         factory: HandlerFactory,
         protocol_versions: SupportedProtocolVersions,
     ) -> Self {
@@ -156,6 +124,14 @@ impl Server {
             connection_factory: factory,
             protocol_versions,
         }
+    }
+
+    /// Return the handler factory and the protocol versions of the server.
+    ///
+    /// A hook for the HTTP transport of `tmcp-http`. Not a stable API.
+    #[doc(hidden)]
+    pub fn into_factory(self) -> (HandlerFactory, SupportedProtocolVersions) {
+        (self.connection_factory, self.protocol_versions)
     }
 
     /// Serve a single connection using the provided transport
@@ -269,169 +245,6 @@ impl Server {
             bound_addr,
         })
     }
-
-    /// Configure an HTTP server bound to the provided address.
-    ///
-    /// Returns an [`HttpBuilder`] for further configuration; call
-    /// [`HttpBuilder::serve`] to start serving.
-    #[cfg(feature = "http")]
-    pub fn http(self, addr: impl AsRef<str>) -> HttpBuilder {
-        HttpBuilder {
-            server: self,
-            bind_addr: Some(addr.as_ref().to_string()),
-            endpoint_path: "/".to_string(),
-            middleware: None,
-            routes: None,
-            cors: CorsPolicy::default(),
-        }
-    }
-
-    /// Configure an HTTP server for embedding into an existing Axum
-    /// application.
-    #[cfg(feature = "http")]
-    pub fn http_embed(self) -> HttpBuilder {
-        HttpBuilder {
-            server: self,
-            bind_addr: None,
-            endpoint_path: "/".to_string(),
-            middleware: None,
-            routes: None,
-            cors: CorsPolicy::default(),
-        }
-    }
-
-    /// Serve HTTP connections
-    /// This is a convenience method for the common HTTP server use case
-    /// Returns a ServerHandle that can be used to stop the server
-    #[cfg(feature = "http")]
-    pub async fn serve_http(self, addr: impl AsRef<str>) -> Result<ServerHandle> {
-        self.http(addr).serve().await
-    }
-}
-
-#[cfg(feature = "http")]
-impl HttpBuilder {
-    /// Override the public endpoint path where the MCP handlers are mounted.
-    pub fn with_endpoint_path(mut self, endpoint_path: impl Into<String>) -> Self {
-        self.endpoint_path = normalize_endpoint_path(endpoint_path);
-        self
-    }
-
-    /// Wrap the MCP routes in middleware after state has been attached.
-    pub fn with_middleware<G>(mut self, middleware: G) -> Self
-    where
-        G: FnOnce(Router) -> Router + Send + 'static,
-    {
-        self.middleware = Some(match self.middleware.take() {
-            Some(previous) => Box::new(move |router| middleware(previous(router))),
-            None => Box::new(middleware),
-        });
-        self
-    }
-
-    /// Merge additional routes that bypass the configured middleware.
-    pub fn with_routes(mut self, routes: Router) -> Self {
-        self.routes = Some(match self.routes.take() {
-            Some(existing) => existing.merge(routes),
-            None => routes,
-        });
-        self
-    }
-
-    /// Set the cross-origin policy for the MCP routes.
-    ///
-    /// The default is [`CorsPolicy::SameOrigin`], which rejects cross-origin
-    /// browser requests and emits no CORS headers.
-    pub fn with_cors(mut self, cors: CorsPolicy) -> Self {
-        self.cors = cors;
-        self
-    }
-
-    /// Protect the MCP routes with bearer-token auth and expose PRM discovery
-    /// routes.
-    #[cfg(feature = "auth")]
-    pub fn with_auth(self, config: &AuthConfig) -> Self {
-        let middleware = BearerAuthLayer::new(config.validator.clone(), &config.endpoint_path)
-            .with_base_url(&config.base_url)
-            .with_trusted_forwarded_headers(config.trust_forwarded_headers);
-        self.with_endpoint_path(&config.endpoint_path)
-            .with_middleware(|router| router.layer(middleware))
-            .with_routes(protected_resource_handler(config))
-    }
-
-    /// Start serving the configured HTTP transport.
-    pub async fn serve(self) -> Result<ServerHandle> {
-        let bind_addr = self.bind_addr.clone().ok_or_else(|| {
-            Error::InvalidConfiguration(
-                "HTTP embed builders do not have a bind address; call into_router()".to_string(),
-            )
-        })?;
-        let http = HttpServer::new(
-            self.server.connection_factory,
-            self.server.protocol_versions,
-            self.cors,
-        );
-        let EmbeddedHttpRoutes {
-            mcp_router,
-            aux_routes,
-        } = http.routes(&self.endpoint_path, self.middleware, self.routes);
-        let router = mcp_router.merge(aux_routes);
-
-        let (task, bound_addr) = http.listen(&bind_addr, router).await?;
-        let mut handle =
-            ServerHandle::listener(task, http.shutdown_token(), http.notification_fanout());
-        handle.bound_addr = Some(bound_addr);
-        handle.endpoint_path = Some(self.endpoint_path);
-        Ok(handle)
-    }
-
-    /// Build tmcp HTTP routers for embedding into an existing Axum application.
-    pub async fn into_router(self) -> Result<EmbeddedHttpServer> {
-        let endpoint_path = self.endpoint_path;
-        let http = HttpServer::new(
-            self.server.connection_factory,
-            self.server.protocol_versions,
-            self.cors,
-        );
-        let EmbeddedHttpRoutes {
-            mcp_router,
-            aux_routes,
-        } = http.routes("/", self.middleware, self.routes);
-        let router = mount_embedded_router(&endpoint_path, mcp_router, aux_routes);
-
-        let shutdown_token = http.shutdown_token();
-        let watch_token = shutdown_token.clone();
-        let task = tokio::spawn(async move {
-            watch_token.cancelled().await;
-        });
-        let mut handle = ServerHandle::listener(task, shutdown_token, http.notification_fanout());
-        handle.endpoint_path = Some(endpoint_path);
-        Ok(EmbeddedHttpServer { router, handle })
-    }
-}
-
-/// Return the externally reachable HTTP endpoint address.
-#[cfg(feature = "http")]
-fn endpoint_addr(bound_addr: &str, endpoint_path: &str) -> String {
-    let endpoint_path = normalize_endpoint_path(endpoint_path);
-    if endpoint_path == "/" {
-        bound_addr.to_string()
-    } else {
-        format!("{bound_addr}{endpoint_path}")
-    }
-}
-
-/// Return an embedded router mounted at the configured endpoint path.
-#[cfg(feature = "http")]
-fn mount_embedded_router(endpoint_path: &str, mcp_router: Router, aux_routes: Router) -> Router {
-    let endpoint_path = normalize_endpoint_path(endpoint_path);
-    if endpoint_path == "/" {
-        mcp_router.merge(aux_routes)
-    } else {
-        Router::new()
-            .nest(&endpoint_path, mcp_router)
-            .merge(aux_routes)
-    }
 }
 
 /// Handle for controlling a running MCP server instance
@@ -447,7 +260,6 @@ pub struct ServerHandle {
     /// `None` for stdio and stream transports, which have no socket address.
     pub bound_addr: Option<String>,
     /// Public HTTP endpoint path, when the server is exposed over HTTP.
-    #[cfg(feature = "http")]
     endpoint_path: Option<String>,
     /// Notification fan-out override used by multi-session (HTTP) listeners.
     ///
@@ -694,7 +506,6 @@ impl ServerHandle {
             notification_tx: notification_tx_handle,
             shutdown_token,
             bound_addr: None,
-            #[cfg(feature = "http")]
             endpoint_path: None,
             fanout: None,
         })
@@ -705,8 +516,10 @@ impl ServerHandle {
     /// `task` keeps the listener alive for `join`; `shutdown_token` stops the
     /// listener and all of its sessions; `fanout` delivers server
     /// notifications to every active session.
-    #[cfg(feature = "http")]
-    pub(crate) fn listener(
+    ///
+    /// A hook for the HTTP transport of `tmcp-http`. Not a stable API.
+    #[doc(hidden)]
+    pub fn listener(
         task: JoinHandle<()>,
         shutdown_token: CancellationToken,
         fanout: NotificationFanout,
@@ -725,9 +538,23 @@ impl ServerHandle {
     }
 
     /// Signal the server loop to stop without consuming the handle.
-    #[cfg(feature = "http")]
-    pub(crate) fn signal_stop(&self) {
+    ///
+    /// A hook for the HTTP transport of `tmcp-http`. Not a stable API.
+    #[doc(hidden)]
+    pub fn signal_stop(&self) {
         self.shutdown_token.cancel();
+    }
+
+    /// Record the HTTP endpoint of a listener: its bound address, when it
+    /// listens itself, and its normalized endpoint path.
+    ///
+    /// A hook for the HTTP transport of `tmcp-http`. Not a stable API.
+    #[doc(hidden)]
+    pub fn set_http_endpoint(&mut self, bound_addr: Option<String>, endpoint_path: String) {
+        if bound_addr.is_some() {
+            self.bound_addr = bound_addr;
+        }
+        self.endpoint_path = Some(endpoint_path);
     }
 
     /// Create a ServerHandle using generic AsyncRead and AsyncWrite streams
@@ -767,12 +594,13 @@ impl ServerHandle {
 
     /// Return the externally reachable endpoint address, including any HTTP
     /// path.
-    #[cfg(feature = "http")]
     #[must_use]
     pub fn endpoint_addr(&self) -> Option<String> {
         let bound_addr = self.bound_addr.as_deref()?;
-        let endpoint_path = self.endpoint_path.as_deref().unwrap_or("/");
-        Some(endpoint_addr(bound_addr, endpoint_path))
+        match self.endpoint_path.as_deref() {
+            None | Some("/") => Some(bound_addr.to_string()),
+            Some(endpoint_path) => Some(format!("{bound_addr}{endpoint_path}")),
+        }
     }
 
     /// Send a server notification to connected clients.

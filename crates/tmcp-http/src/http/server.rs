@@ -36,6 +36,10 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures::{Sink, SinkExt, Stream, StreamExt, channel::mpsc};
+use tmcp::{
+    Error, HandlerFactory, NotificationFanout, Result, Server, ServerHandle,
+    transport::{IncomingMessage, Transport, TransportStream},
+};
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time::interval};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
@@ -46,30 +50,19 @@ use super::validation::{
     parse_jsonrpc_body, read_json_body, validate_json_content_type, validate_origin,
     validate_protocol_version,
 };
-#[cfg(feature = "auth")]
-use crate::auth::server::AuthInfo;
 use crate::{
-    error::{Error, Result},
+    auth::server::AuthInfo,
     schema::{
         JSONRPCMessage, JSONRPCNotification, JSONRPCResponse, ProtocolVersion, RequestId,
         SupportedProtocolVersions,
     },
-    server::{HandlerFactory, NotificationFanout, Server, ServerHandle},
-    transport::{IncomingMessage, Transport, TransportStream},
 };
 
 /// Extract the authenticated subject recorded by the auth middleware, if any.
-#[cfg(feature = "auth")]
 fn auth_subject(extensions: &http::Extensions) -> Option<String> {
     extensions
         .get::<AuthInfo>()
         .map(|info| info.subject.clone())
-}
-
-/// Without the `auth` feature no middleware records a subject.
-#[cfg(not(feature = "auth"))]
-fn auth_subject(_extensions: &http::Extensions) -> Option<String> {
-    None
 }
 
 /// Session inactivity timeout (1 hour).
@@ -685,7 +678,7 @@ async fn handle_initialize_post(
         session_id: session_id.clone(),
     };
     let server = Server::from_factory(state.factory.clone(), state.protocol_versions.clone());
-    let handle = match ServerHandle::new(server, Box::new(transport)).await {
+    let handle = match ServerHandle::from_transport(server, Box::new(transport)).await {
         Ok(handle) => handle,
         Err(error) => {
             error!("Failed to start HTTP session connection: {}", error);
@@ -841,8 +834,9 @@ async fn handle_delete(State(state): State<HttpServerState>, request: Request) -
 
 #[cfg(test)]
 mod tests {
+    use tmcp::schema::{JSONRPC_VERSION, JSONRPCResult, JSONRPCResultResponse, Notification};
+
     use super::*;
-    use crate::schema::{JSONRPC_VERSION, JSONRPCResult, JSONRPCResultResponse, Notification};
 
     fn notification(method: &str) -> JSONRPCMessage {
         JSONRPCMessage::Notification(JSONRPCNotification {

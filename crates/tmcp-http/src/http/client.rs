@@ -19,6 +19,10 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use eventsource_stream::Eventsource;
 use futures::{Sink, Stream, StreamExt, channel::mpsc};
 use reqwest::Client as HttpClient;
+use tmcp::{
+    Error, Result,
+    transport::{IncomingMessage, Transport, TransportStream},
+};
 use tokio::{
     sync::{Mutex, Notify, Semaphore},
     task::JoinHandle,
@@ -27,16 +31,13 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
-#[cfg(feature = "auth")]
-use crate::auth::{OAuth2Client, util::bearer_header};
 use crate::{
-    error::{Error, Result},
+    auth::{OAuth2Client, util::bearer_header},
     http::is_loopback_http_url,
     schema::{
         AUTHORIZATION_FAILED, ErrorObject, INTERNAL_ERROR, JSONRPC_VERSION, JSONRPCErrorResponse,
         JSONRPCMessage, JSONRPCResponse, ProtocolVersion,
     },
-    transport::{IncomingMessage, Transport, TransportStream},
 };
 
 /// Idle read timeout between response chunks; SSE keep-alives reset it, so
@@ -78,7 +79,6 @@ pub struct HttpClientTransport {
     /// Cancellation token stopping background tasks.
     shutdown: CancellationToken,
     /// OAuth client for attaching bearer tokens.
-    #[cfg(feature = "auth")]
     oauth_client: Option<Arc<OAuth2Client>>,
 }
 
@@ -100,7 +100,6 @@ struct OutboundContext {
     /// Protocol version negotiated for the active session.
     protocol_version: Arc<Mutex<Option<ProtocolVersion>>>,
     /// OAuth client for attaching bearer tokens.
-    #[cfg(feature = "auth")]
     oauth_client: Option<Arc<OAuth2Client>>,
     /// Channel delivering inbound messages to the connection loop.
     sender: mpsc::UnboundedSender<JSONRPCMessage>,
@@ -396,13 +395,11 @@ impl HttpClientTransport {
             sender: None,
             receiver: None,
             shutdown: CancellationToken::new(),
-            #[cfg(feature = "auth")]
             oauth_client: None,
         }
     }
 
     /// Attach an OAuth client used to fetch bearer tokens for requests.
-    #[cfg(feature = "auth")]
     pub fn with_oauth(mut self, oauth_client: Arc<OAuth2Client>) -> Self {
         self.oauth_client = Some(oauth_client);
         self
@@ -611,7 +608,6 @@ fn forward_prepare_error(ctx: &OutboundContext, msg: &JSONRPCMessage, error: &Er
 ///
 /// Returns None when no retry is possible (no OAuth configured, the token
 /// already changed, or the refresh failed).
-#[cfg(feature = "auth")]
 async fn retry_unauthorized(
     ctx: &OutboundContext,
     sent_token: Option<&str>,
@@ -634,16 +630,6 @@ async fn retry_unauthorized(
             None
         }
     }
-}
-
-/// Retrying a 401 requires the `auth` feature; without it the response stands.
-#[cfg(not(feature = "auth"))]
-async fn retry_unauthorized(
-    _ctx: &OutboundContext,
-    _sent_token: Option<&str>,
-    _msg: &JSONRPCMessage,
-) -> Option<reqwest::Result<reqwest::Response>> {
-    None
 }
 
 #[async_trait]
@@ -671,7 +657,6 @@ impl Transport for HttpClientTransport {
             last_event_id: self.last_event_id.clone(),
             static_headers: self.static_headers.clone(),
             protocol_version: self.protocol_version.clone(),
-            #[cfg(feature = "auth")]
             oauth_client: self.oauth_client.clone(),
             sender,
         };
@@ -766,7 +751,6 @@ async fn outbound_post_request(
 
 /// Attach a bearer token from the configured OAuth client, returning the token
 /// used.
-#[cfg(feature = "auth")]
 async fn attach_bearer(ctx: &OutboundContext, headers: &mut HeaderMap) -> Result<Option<String>> {
     let Some(oauth_client) = &ctx.oauth_client else {
         return Ok(None);
@@ -774,12 +758,6 @@ async fn attach_bearer(ctx: &OutboundContext, headers: &mut HeaderMap) -> Result
     let token = oauth_client.get_valid_token().await?;
     headers.insert(header::AUTHORIZATION, bearer_header(&token)?);
     Ok(Some(token))
-}
-
-/// Bearer tokens require the `auth` feature; without it no token is attached.
-#[cfg(not(feature = "auth"))]
-async fn attach_bearer(_ctx: &OutboundContext, _headers: &mut HeaderMap) -> Result<Option<String>> {
-    Ok(None)
 }
 
 /// Marks caller-supplied static headers as sensitive before attaching them.
@@ -846,9 +824,9 @@ impl TransportStream for HttpTransportStream {}
 #[cfg(test)]
 mod tests {
     use futures::SinkExt;
+    use tmcp::schema::{JSONRPCNotification, JSONRPCRequest, Notification, Request, RequestId};
 
     use super::*;
-    use crate::schema::{JSONRPCNotification, JSONRPCRequest, Notification, Request, RequestId};
 
     #[tokio::test]
     async fn test_http_client_transport_creation() {

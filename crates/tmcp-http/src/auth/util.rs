@@ -1,9 +1,10 @@
 //! Shared URL and header helpers used across the OAuth client and server code.
 
 use reqwest::header::HeaderValue;
+use tmcp::Error;
 use url::Url;
 
-use crate::{error::Error, http::is_loopback_http_url};
+use crate::http::is_loopback_http_url;
 
 /// Validate that a URL uses HTTPS, permitting plain HTTP only for loopback
 /// hosts.

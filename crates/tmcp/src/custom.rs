@@ -3,11 +3,7 @@ use std::{io, time::Duration};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::{
-    error::{Error, Result},
-    jsonrpc::request_params,
-    schema::Request,
-};
+use crate::{Error, Result, jsonrpc::request_params, schema::Request};
 
 /// Default payload limit of a custom request, in bytes of JSON: 1 MiB.
 ///

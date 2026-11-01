@@ -9,8 +9,8 @@ mod tests {
 
     use async_trait::async_trait;
     use tmcp::{
-        Error, McpApiRefreshState, Result, ServerCtx, ServerHandler, inspect_client,
-        inspect_server,
+        Error, McpApiRefreshState, McpApiRenderOptions, Result, ServerCtx, ServerHandler,
+        inspect_client, inspect_server, render_mcp_api,
         schema::{
             ClientCapabilities, Cursor, Implementation, InitializeResult, ListPromptsResult,
             ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt,
@@ -18,8 +18,6 @@ mod tests {
         },
         testutils::{connected_client_and_server, shutdown_client_and_server},
     };
-    #[cfg(feature = "render")]
-    use tmcp::{McpApiRenderOptions, render_mcp_api};
 
     /// Server used to exercise each inspected MCP API list.
     struct ApiServer;
@@ -313,7 +311,6 @@ mod tests {
     }
 
     /// The public renderer formats inspected APIs as human-readable text.
-    #[cfg(feature = "render")]
     #[tokio::test]
     async fn render_mcp_api_formats_inspected_api() {
         let api = inspect_server(&ApiServer).await.expect("inspect server");

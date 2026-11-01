@@ -9,6 +9,7 @@ mod tests {
 
     use async_trait::async_trait;
     use tmcp::{Client, Result, Server, ServerCtx, ServerHandler, schema::*, testutils::*};
+    use tmcp_http::{ClientHttpExt, ServerHttpExt};
     use tokio::{
         net::TcpListener,
         sync::Mutex,

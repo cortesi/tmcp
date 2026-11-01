@@ -15,10 +15,10 @@ mod tests {
     };
     use reqwest::Client as HttpClient;
     use serde_json::{Value, json};
-    use tmcp::{
-        Arguments, Result, Server, ServerCtx, ServerHandler,
+    use tmcp::{Arguments, Result, Server, ServerCtx, ServerHandler, schema::*};
+    use tmcp_http::{
+        ServerHttpExt,
         auth::server::{AuthConfig, AuthInfo, JwtValidator},
-        schema::*,
     };
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
@@ -310,7 +310,7 @@ mod tests {
             .into_router()
             .await
             .unwrap();
-        let tmcp::EmbeddedHttpServer { router, handle } = embedded;
+        let tmcp_http::EmbeddedHttpServer { router, handle } = embedded;
 
         let shutdown = CancellationToken::new();
         let shutdown_task = shutdown.clone();

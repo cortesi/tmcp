@@ -7,10 +7,10 @@ use axum::{
     http::{HeaderMap, StatusCode, header, uri::Authority},
     response::{IntoResponse, Response},
 };
+use tmcp::schema::{JSONRPCMessage, ProtocolVersion};
 use url::Url;
 
 use super::CorsPolicy;
-use crate::schema::{JSONRPCMessage, ProtocolVersion};
 
 /// Maximum accepted HTTP request body size.
 const MAX_HTTP_BODY_SIZE: usize = 2 * 1024 * 1024;

@@ -21,12 +21,15 @@ use std::{result::Result as StdResult, sync::Arc};
 use async_trait::async_trait;
 use tmcp::{
     Arguments, Result, Server, ServerCtx, ServerHandler,
-    auth::server::{AuthConfig, AuthError, AuthInfo, TokenValidator},
     schema::{
         CallToolResponse, CallToolResult, ClientCapabilities, Cursor, Implementation,
         InitializeResult, ListToolsResult, ProtocolVersion, ServerCapabilities, TaskMetadata, Tool,
         ToolSchema,
     },
+};
+use tmcp_http::{
+    ServerHttpExt,
+    auth::server::{AuthConfig, AuthError, AuthInfo, TokenValidator},
 };
 use tracing_subscriber::fmt;
 

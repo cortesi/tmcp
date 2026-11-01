@@ -3,7 +3,7 @@
 use std::error::Error;
 
 use clap::Parser;
-use tmcp::auth::{ClientMetadata, DynamicRegistrationClient, OAuth2Config};
+use tmcp_http::auth::{ClientMetadata, DynamicRegistrationClient, OAuth2Config};
 use tracing::{Level, info, subscriber};
 use tracing_subscriber::FmtSubscriber;
 

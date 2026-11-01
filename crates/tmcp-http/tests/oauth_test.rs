@@ -8,7 +8,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use tmcp::auth::{
+    use tmcp_http::auth::{
         ClientMetadata, DynamicRegistrationConfig, OAuth2CallbackServer, OAuth2Client,
         OAuth2Config, OAuth2Token, TokenStore, TokenStoreGuard,
     };

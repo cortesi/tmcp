@@ -22,8 +22,7 @@ use tokio::{
 };
 
 use crate::{
-    Client, ClientCtx, ClientHandler, Server, ServerCtx, ServerHandle, ServerHandler,
-    error::Result,
+    Client, ClientCtx, ClientHandler, Result, Server, ServerCtx, ServerHandle, ServerHandler,
     schema::{ClientNotification, ServerNotification},
 };
 

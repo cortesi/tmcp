@@ -16,6 +16,7 @@
 
 use clap::{Parser, Subcommand};
 use tmcp::{Result, Server, ToolResult, mcp_server, tool_params, tool_result};
+use tmcp_http::ServerHttpExt;
 use tokio::signal::ctrl_c;
 use tracing::info;
 use tracing_subscriber::fmt;

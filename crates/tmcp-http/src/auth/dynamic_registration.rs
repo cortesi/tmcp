@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
+use tmcp::Error;
 
 use super::{discovery::AuthorizationDiscoveryClient, util::bearer_header};
-use crate::{error::Error, http::is_loopback_http_url};
+use crate::http::is_loopback_http_url;
 
 /// Client metadata for dynamic registration as per RFC7591
 #[derive(Debug, Clone, Serialize, Deserialize)]

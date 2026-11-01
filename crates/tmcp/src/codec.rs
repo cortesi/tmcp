@@ -2,10 +2,7 @@ use bytes::{BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::{debug, error};
 
-use crate::{
-    error::{Error, Result},
-    schema::JSONRPCMessage,
-};
+use crate::{Error, Result, schema::JSONRPCMessage};
 
 /// Maximum frame length in bytes, in either direction.
 ///

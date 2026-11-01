@@ -16,8 +16,8 @@ use tokio_util::codec::Framed;
 use tracing::info;
 
 use crate::{
+    Error, Result,
     codec::{Frame, JsonRpcCodec},
-    error::{Error, Result},
     schema::JSONRPCMessage,
 };
 
@@ -289,6 +289,7 @@ where
 #[cfg(test)]
 pub use test_transport::TestTransport;
 
+/// An in-memory transport pair for the unit tests of the crate.
 #[cfg(test)]
 pub mod test_transport {
     use std::{

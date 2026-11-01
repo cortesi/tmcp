@@ -5,10 +5,9 @@ use serde::Serialize;
 use tracing::info;
 
 use crate::{
-    Error, Result,
+    Error, Result, ToolError,
     context::{ClientCtx, ServerCtx},
     custom::CUSTOM_PAYLOAD_LIMIT,
-    error::ToolError,
     schema::{
         self, CallToolResponse, CallToolResult, ClientRequest, Cursor, ElicitRequestParams,
         ElicitResult, GetPromptResult, InitializeResult, ListPromptsResult,

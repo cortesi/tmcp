@@ -11,15 +11,11 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-#[cfg(feature = "auth")]
-use crate::auth::OAuth2Client;
-#[cfg(feature = "http")]
-use crate::http::HttpClientTransport;
 use crate::{
+    Error, Result,
     connection::ClientHandler,
     context::ClientCtx,
     custom::{check_payload, is_server_request_method},
-    error::{Error, Result},
     jsonrpc::{
         create_jsonrpc_notification, jsonrpc_response, params_object, parse_typed_notification,
         parse_typed_request,
@@ -213,8 +209,9 @@ where
         self
     }
 
-    /// Connect using the provided transport
-    pub(crate) async fn connect(&mut self, mut transport: Box<dyn Transport>) -> Result<()> {
+    /// Connect using the provided transport, without the initialization
+    /// handshake. Call [`Self::init`] next.
+    pub async fn connect(&mut self, mut transport: Box<dyn Transport>) -> Result<()> {
         self.context = None;
         self.on_connect_called = false;
         transport.connect().await?;
@@ -287,72 +284,6 @@ where
     /// connects to the server, and performs the initialization handshake.
     pub async fn connect_stdio(&mut self) -> Result<InitializeResult> {
         let transport = Box::new(StdioTransport);
-        self.connect(transport).await?;
-        self.init().await
-    }
-
-    /// Connect via HTTP/HTTPS and initialize the connection
-    ///
-    /// This is a convenience method that creates an HTTP transport,
-    /// connects to the server, and performs the initialization handshake.
-    /// Both HTTP and HTTPS protocols are supported.
-    ///
-    /// # Arguments
-    /// * `endpoint` - Server URL including protocol and path (e.g., "http://localhost:3000", "<https://api.example.com/mcp>")
-    #[cfg(feature = "http")]
-    pub async fn connect_http(&mut self, endpoint: impl Into<String>) -> Result<InitializeResult> {
-        let transport = Box::new(HttpClientTransport::new(endpoint));
-        self.connect(transport).await?;
-        self.init().await
-    }
-
-    /// Connect via HTTP/HTTPS with static headers and initialize the
-    /// connection.
-    #[cfg(feature = "http")]
-    pub async fn connect_http_with_headers(
-        &mut self,
-        endpoint: impl Into<String>,
-        headers: ::http::HeaderMap,
-    ) -> Result<InitializeResult> {
-        let transport = Box::new(HttpClientTransport::new(endpoint).with_static_headers(headers));
-        self.connect(transport).await?;
-        self.init().await
-    }
-
-    /// Connect via HTTP/HTTPS with OAuth authentication and initialize the
-    /// connection
-    ///
-    /// This method creates an HTTP transport with OAuth authentication support.
-    /// The OAuth client should be pre-configured with valid tokens or ready to
-    /// perform the OAuth flow.
-    ///
-    /// # Arguments
-    /// * `endpoint` - Server URL including protocol and path
-    /// * `oauth_client` - Pre-configured OAuth2Client instance
-    #[cfg(feature = "auth")]
-    pub async fn connect_http_with_oauth(
-        &mut self,
-        endpoint: impl Into<String>,
-        oauth_client: Arc<OAuth2Client>,
-    ) -> Result<InitializeResult> {
-        let transport = Box::new(HttpClientTransport::new(endpoint).with_oauth(oauth_client));
-        self.connect(transport).await?;
-        self.init().await
-    }
-
-    /// Connect via HTTP/HTTPS with OAuth authentication plus static headers.
-    #[cfg(feature = "auth")]
-    pub async fn connect_http_with_oauth_and_headers(
-        &mut self,
-        endpoint: impl Into<String>,
-        oauth_client: Arc<OAuth2Client>,
-        headers: ::http::HeaderMap,
-    ) -> Result<InitializeResult> {
-        let transport = Box::new(
-            HttpClientTransport::new(endpoint)
-                .with_static_headers(headers)
-                .with_oauth(oauth_client),
-        );
         self.connect(transport).await?;
         self.init().await
     }

@@ -3,8 +3,9 @@
 use std::{error::Error, sync::Arc};
 
 use clap::Parser;
-use tmcp::{
-    Client,
+use tmcp::Client;
+use tmcp_http::{
+    ClientHttpExt,
     auth::{OAuth2CallbackServer, OAuth2Client, OAuth2Config},
 };
 use tracing::{Level, info, subscriber};

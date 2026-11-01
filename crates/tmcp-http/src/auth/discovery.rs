@@ -7,10 +7,11 @@ use http::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use tmcp::Error;
 use url::Url;
 
 use super::dynamic_registration::ClientMetadata;
-use crate::{error::Error, http::is_loopback_http_url};
+use crate::http::is_loopback_http_url;
 
 /// Well-known path segment for protected resource metadata discovery.
 const WELL_KNOWN_PROTECTED_RESOURCE: &str = "oauth-protected-resource";

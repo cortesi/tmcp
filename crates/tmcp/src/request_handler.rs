@@ -24,7 +24,7 @@ use tokio::{
 };
 
 use crate::{
-    error::{Error, Result},
+    Error, Result,
     jsonrpc::request_params,
     schema::{
         AUTHORIZATION_FAILED, ClientRequest, INVALID_PARAMS, JSONRPC_VERSION, JSONRPCMessage,

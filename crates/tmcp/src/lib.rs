@@ -21,18 +21,16 @@
 //! ## Transport Options
 //!
 //! - **TCP**: `server.listen_tcp("127.0.0.1:3000")`
-//! - **HTTP**: `server.listen_http("127.0.0.1:3000")` with the `http` feature
 //! - **Stdio**: `server.listen_stdio()` for subprocess integration
+//! - **HTTP**: the `tmcp-http` crate, which also adds OAuth
 //!
-//! The default feature set is `runtime`, which provides the Tokio clients,
-//! servers, connections, and transports. Without `runtime`, the crate provides
-//! only the protocol data types: [`schema`], [`Arguments`], [`Error`], and the
-//! [`McpApi`] snapshot types. That configuration compiles for
-//! `wasm32-unknown-unknown`, with or without `schema-validation` and `render`.
+//! ## Crates
 //!
-//! Enable `http`, `auth`, `render`, `schema-validation`, or `testutils` only
-//! where those optional capabilities are necessary. The `auth` feature enables
-//! `http`, and the `http` and `testutils` features enable `runtime`.
+//! The crates have no features. `tmcp-core` holds the protocol types:
+//! [`schema`], [`Arguments`], [`Error`], and the [`McpApi`] snapshots. It has
+//! no runtime and compiles for `wasm32-unknown-unknown`. This crate builds the
+//! Tokio clients, servers, connections, and transports on it, and re-exports
+//! it. `tmcp-http` adds the streamable HTTP transport and OAuth.
 //!
 //! ## Building Servers: Macro vs Trait
 //!
@@ -104,100 +102,58 @@
 
 #![warn(missing_docs)]
 
-/// Argument envelope used by tool calls and prompt arguments.
-mod arguments;
 /// Client implementation and transport orchestration.
-#[cfg(feature = "runtime")]
 mod client;
 /// JSON-RPC codec for stream framing.
-#[cfg(feature = "runtime")]
 mod codec;
 /// Connection traits for clients and servers.
-#[cfg(feature = "runtime")]
 mod connection;
 /// Client/server context types.
-#[cfg(feature = "runtime")]
 mod context;
 /// Custom requests from a server to its client.
-#[cfg(feature = "runtime")]
 mod custom;
-/// Error types and Result alias.
-mod error;
-/// HTTP transport implementation.
-#[cfg(feature = "http")]
-mod http;
 /// JSON-RPC message definitions.
-#[cfg(feature = "runtime")]
 mod jsonrpc;
-/// Serializable snapshots of a server's MCP API.
-mod mcp_api;
 /// Inspection of MCP APIs from server handlers and connected clients.
-#[cfg(feature = "runtime")]
 mod mcp_api_inspect;
-/// Human-oriented rendering for MCP API snapshots.
-#[cfg(feature = "render")]
-mod mcp_api_render;
 /// Request/response routing and tracking.
-#[cfg(feature = "runtime")]
 mod request_handler;
 /// Server implementation and handle types.
-#[cfg(feature = "runtime")]
 mod server;
+/// Test utilities for building tmcp integration tests.
+pub mod testutils;
 /// Tool registration and progressive discovery support.
-#[cfg(feature = "runtime")]
 mod toolset;
 /// Transport traits and adapters.
-#[cfg(feature = "runtime")]
-mod transport;
+pub mod transport;
 
-/// OAuth and authorization helpers.
-#[cfg(feature = "auth")]
-pub mod auth;
-/// Public schema types for MCP messages.
-pub mod schema;
-/// Test utilities for building tmcp integration tests.
-#[cfg(feature = "testutils")]
-pub mod testutils;
-
-pub use arguments::Arguments;
-#[cfg(feature = "runtime")]
 pub use client::{Client, ClientRequestHandle, SpawnedServer};
-#[cfg(feature = "runtime")]
 pub use connection::{ClientHandler, ServerHandler};
-#[cfg(feature = "runtime")]
 pub use context::{ClientCtx, ServerCtx};
-#[cfg(feature = "runtime")]
 pub use custom::{CUSTOM_PAYLOAD_LIMIT, CustomRequest};
-pub use error::{
-    Error, Result, TOOL_ERROR_INTERNAL, TOOL_ERROR_INVALID_INPUT, TOOL_ERROR_NOT_FOUND,
-    TOOL_ERROR_TIMEOUT, ToolError, ToolResult,
-};
-#[cfg(feature = "http")]
-pub use http::CorsPolicy;
-pub use mcp_api::{McpApi, McpApiOptions, McpApiRefreshSnapshot, McpApiRefreshState};
-#[cfg(feature = "runtime")]
 pub use mcp_api_inspect::{
     collect_client_prompts, collect_client_resource_templates, collect_client_resources,
     collect_client_tools, inspect_client, inspect_server, inspect_server_with,
 };
-#[cfg(feature = "render")]
-pub use mcp_api_render::{McpApiRenderOptions, render_mcp_api};
-pub use schema::ToolResponse;
-#[cfg(feature = "http")]
-pub use server::{EmbeddedHttpServer, HttpBuilder};
-#[cfg(feature = "runtime")]
+#[doc(hidden)]
+pub use server::{HandlerFactory, NotificationFanout};
 pub use server::{Server, ServerHandle, TcpServerHandle, handle_request};
-#[cfg(feature = "runtime")]
-pub use tmcp_macros::{Group, delegate_server_handler, group, mcp_server, tool, tool_group};
-pub use tmcp_macros::{ToolResponse, tool_params, tool_result};
-#[cfg(feature = "runtime")]
+pub use tmcp_core::{
+    Arguments, Error, McpApi, McpApiOptions, McpApiRefreshSnapshot, McpApiRefreshState,
+    McpApiRenderOptions, Result, TOOL_ERROR_INTERNAL, TOOL_ERROR_INVALID_INPUT,
+    TOOL_ERROR_NOT_FOUND, TOOL_ERROR_TIMEOUT, ToolError, ToolResponse, ToolResult, render_mcp_api,
+    schema,
+};
+pub use tmcp_macros::{
+    Group, ToolResponse, delegate_server_handler, group, mcp_server, tool, tool_group, tool_params,
+    tool_result,
+};
 pub use toolset::{
     ActivationHook, Group, GroupConfig, GroupInfo, ToolCallFuture, ToolFuture, ToolSet,
     ToolSetView, Visibility,
 };
 
 /// Static schema and dispatch contract for a generated delegated-tool group.
-#[cfg(feature = "runtime")]
 pub trait ToolGroup {
     /// Shared state resolved by the enclosing server for each tool call.
     type State: Send + Sync + 'static;
@@ -220,15 +176,8 @@ pub trait ToolGroup {
         task: Option<schema::TaskMetadata>,
     ) -> ToolCallFuture<'a>;
 }
-#[cfg(feature = "runtime")]
 #[doc(hidden)]
 pub use toolset::{GroupDispatch, GroupRegistration};
-
-// Keep the full macros module available for internal use
-/// Re-exported macros module for internal use.
-mod macros {
-    pub use ::tmcp_macros::*;
-}
 
 /// Crates re-exported for use by tmcp's generated macro code.
 ///
@@ -236,44 +185,8 @@ mod macros {
 /// stability guarantees; do not use it directly.
 #[doc(hidden)]
 pub mod __private {
-    #[cfg(feature = "runtime")]
     pub use async_trait;
     pub use schemars;
     pub use serde;
     pub use serde_json;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::schema::*;
-
-    #[test]
-    fn test_jsonrpc_request_serialization() {
-        let request = JSONRPCRequest {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: RequestId::Number(1),
-            request: Request {
-                method: "initialize".to_string(),
-                params: None,
-            },
-        };
-
-        let json = serde_json::to_string(&request).unwrap();
-        let parsed: JSONRPCRequest = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(parsed.jsonrpc, JSONRPC_VERSION);
-        assert_eq!(parsed.id, RequestId::Number(1));
-        assert_eq!(parsed.request.method, "initialize");
-    }
-
-    #[test]
-    fn test_role_serialization() {
-        let role = Role::User;
-        let json = serde_json::to_string(&role).unwrap();
-        assert_eq!(json, "\"user\"");
-
-        let role = Role::Assistant;
-        let json = serde_json::to_string(&role).unwrap();
-        assert_eq!(json, "\"assistant\"");
-    }
 }

@@ -19,10 +19,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::{
+    Error, Result,
     client::handle_server_request,
     connection::ClientHandler,
     custom::{CustomRequest, check_payload},
-    error::{Error, Result},
     request_handler::{
         CancelSender, DEFAULT_TIMEOUT_MS, NO_TIMEOUT_MS, RequestHandler, TransportSink,
         request_body, timeout_millis,

@@ -185,24 +185,20 @@ pub enum JSONRPCMessage {
     Response(JSONRPCResponse),
 }
 
-#[cfg(feature = "runtime")]
 impl JSONRPCMessage {
     /// Returns the metadata of the message for a transport log: its kind,
     /// ID, method, and error code. It never shows a payload.
-    pub(crate) fn summary(&self) -> MessageSummary<'_> {
+    pub fn summary(&self) -> MessageSummary<'_> {
         MessageSummary(self)
     }
 }
 
-#[cfg(feature = "runtime")]
 /// The longest method name or request ID that a transport log shows.
 const SUMMARY_FIELD_CHARS: usize = 64;
 
-#[cfg(feature = "runtime")]
 /// The metadata of one message for a transport log.
 pub struct MessageSummary<'a>(&'a JSONRPCMessage);
 
-#[cfg(feature = "runtime")]
 impl Display for MessageSummary<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0 {
@@ -233,11 +229,9 @@ impl Display for MessageSummary<'_> {
     }
 }
 
-#[cfg(feature = "runtime")]
 /// A peer-supplied string, cut at `SUMMARY_FIELD_CHARS` characters.
 struct Bounded<'a>(&'a str);
 
-#[cfg(feature = "runtime")]
 impl Display for Bounded<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0.char_indices().nth(SUMMARY_FIELD_CHARS) {
@@ -248,10 +242,8 @@ impl Display for Bounded<'_> {
 }
 
 /// A request ID: a number as it is, and a string through `Bounded`.
-#[cfg(feature = "runtime")]
 struct BoundedId<'a>(&'a RequestId);
 
-#[cfg(feature = "runtime")]
 impl Display for BoundedId<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0 {

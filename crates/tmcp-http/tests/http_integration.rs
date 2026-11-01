@@ -20,6 +20,7 @@ mod tests {
         ToolError,
         schema::{self, *},
     };
+    use tmcp_http::{ClientHttpExt, ServerHttpExt};
     use tokio::{
         net::TcpListener,
         sync::mpsc,
@@ -308,7 +309,7 @@ mod tests {
             .into_router()
             .await
             .unwrap();
-        let tmcp::EmbeddedHttpServer { router, handle } = embedded;
+        let tmcp_http::EmbeddedHttpServer { router, handle } = embedded;
 
         let shutdown = CancellationToken::new();
         let shutdown_task = shutdown.clone();

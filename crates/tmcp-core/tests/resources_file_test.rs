@@ -5,7 +5,7 @@ mod tests {
     use std::{env::temp_dir, fs};
 
     use base64::{Engine, engine::general_purpose::STANDARD as Base64Standard};
-    use tmcp::schema::{ReadResourceResult, Resource, ResourceContents};
+    use tmcp_core::schema::{ReadResourceResult, Resource, ResourceContents};
 
     #[test]
     fn test_read_resource_from_text_file() {

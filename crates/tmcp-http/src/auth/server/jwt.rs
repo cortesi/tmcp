@@ -11,12 +11,13 @@ use jsonwebtoken::{
 };
 use reqwest::Client;
 use serde_json::Value;
+use tmcp::Error;
 use tokio::sync::Mutex;
 
 use super::{
     AuthError, AuthInfo, DEFAULT_JWKS_CACHE_TTL, TokenValidator, extra_claims, parse_scope_set,
 };
-use crate::{auth::util::require_https_or_loopback, error::Error};
+use crate::auth::util::require_https_or_loopback;
 
 /// Validates JWT bearer tokens using a local JWK set or a remote JWKS endpoint.
 pub struct JwtValidator {

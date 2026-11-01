@@ -44,28 +44,23 @@ both client and server roles with async/await APIs.
 
 ---
 
-## Cargo features
+## Crates
 
-tmcp's default feature set is `runtime`. Core stdio and TCP clients and servers require no other
-feature. Enable only the optional capabilities an application uses:
+tmcp has three crates, and none has features. Depend on the one that holds the layer an
+application uses:
 
-- `runtime` provides the Tokio clients, servers, connections, and transports.
-- `http` provides streamable HTTP client and server transports, and enables `runtime`.
-- `auth` provides OAuth client flows and bearer-token protection, and enables `http`.
-- `render` provides human-oriented MCP API rendering.
-- `schema-validation` compiles advertised tool schemas for repeated output validation.
-- `testutils` provides integration-test harnesses and transports, and enables `runtime`.
-
-```toml
-tmcp = { version = "0.6", features = ["auth"] }
-```
-
-To use only the protocol data types, disable the default features. This configuration provides
-`tmcp::schema`, `Arguments`, `Error`, and the `McpApi` snapshot types, and compiles for
-`wasm32-unknown-unknown`:
+- `tmcp-core` holds the protocol types: `schema`, `Arguments`, `Error`, the `McpApi` snapshots,
+  their rendering, and the JSON Schema validation of tool results. It has no runtime, and compiles
+  for `wasm32-unknown-unknown`.
+- `tmcp` holds the Tokio clients, servers, connections, and the stdio, TCP, and process
+  transports, with the test harnesses. It re-exports `tmcp-core`.
+- `tmcp-http` holds the streamable HTTP client and server transports, OAuth client flows, and
+  bearer-token protection. `ServerHttpExt` and `ClientHttpExt` add the HTTP methods to
+  `tmcp::Server` and `tmcp::Client`.
 
 ```toml
-tmcp = { version = "0.6", default-features = false, features = ["schema-validation"] }
+tmcp = "0.6"
+tmcp-http = "0.6"
 ```
 
 ---
@@ -288,7 +283,7 @@ let server = tmcp::Server::new(WeatherServer::default)
 The server returns the requested version when it supports that version. Otherwise, it returns its
 latest version. The client disconnects if the returned version is not in its configured set.
 
-With the `schema-validation` feature, `PreparedToolResultContract` compiles an output schema once.
+`PreparedToolResultContract` compiles an output schema once.
 It also selects the extraction mode for each call. `Text` and `Content` modes do not validate the
 output schema.
 

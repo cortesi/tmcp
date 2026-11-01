@@ -16,6 +16,7 @@ use oauth2::{
     reqwest::Client,
 };
 use subtle::ConstantTimeEq;
+use tmcp::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -29,7 +30,7 @@ use super::{
     dynamic_registration::{ClientMetadata, DynamicRegistrationClient},
     util::require_https_or_loopback,
 };
-use crate::{error::Error, http::is_loopback_http_url};
+use crate::http::is_loopback_http_url;
 
 /// Time before expiration at which tokens are proactively refreshed.
 const TOKEN_REFRESH_LEEWAY: Duration = Duration::from_secs(30);

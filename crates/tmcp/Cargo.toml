@@ -16,73 +16,20 @@ doctest = false
 [lints]
 workspace = true
 
-[features]
-default = ["runtime"]
-# Async clients, servers, connections, and transports built on Tokio. Without
-# this feature, the crate provides only the protocol data types.
-runtime = [
-    "dep:async-trait",
-    "dep:bytes",
-    "dep:dashmap",
-    "dep:futures",
-    "dep:http",
-    "dep:tokio",
-    "dep:tokio-util",
-    "dep:tracing",
-]
-# Streamable HTTP transport (client and server) built on axum/reqwest.
-http = [
-    "runtime",
-    "dep:axum",
-    "dep:tower",
-    "dep:tower-http",
-    "dep:reqwest",
-    "dep:eventsource-stream",
-    "dep:http-body-util",
-    "dep:async-stream",
-    "dep:uuid",
-    "dep:url",
-]
-# OAuth 2.1 client flows and server-side bearer-token protection.
-auth = ["http", "dep:oauth2", "dep:jsonwebtoken", "dep:subtle"]
-# Human-oriented terminal rendering for MCP API snapshots.
-render = ["dep:owo-colors"]
-# Reusable JSON Schema validation for advertised tool outputs.
-schema-validation = ["dep:jsonschema"]
-# Test helpers for building integration tests against tmcp.
-testutils = ["runtime"]
-
 [dependencies]
-tmcp-macros = { path = "../tmcp-macros", version = "0.6.0" }
+async-trait = "0.1"
+bytes = "1.11"
+dashmap = "6.1"
+futures = "0.3"
+http = "1.4"
+schemars = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.48", features = ["io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"], optional = true }
-tokio-util = { version = "0.7", features = ["codec"], optional = true }
-futures = { version = "0.3", optional = true }
-tracing = { version = "0.1", optional = true }
-thiserror = "2.0"
-async-trait = { version = "0.1", optional = true }
-bytes = { version = "1.11", optional = true }
-schemars = "1.1"
-http = { version = "1.4", optional = true }
-dashmap = { version = "6.1", optional = true }
-mime_guess = "2.0"
-base64 = "0.22"
-sha2 = "0.11.0"
-axum = { version = "0.8", features = ["http2"], optional = true }
-tower = { version = "0.5", features = ["full"], optional = true }
-tower-http = { version = "0.7", features = ["cors", "limit"], optional = true }
-reqwest = { version = "0.13", features = ["json", "stream"], optional = true }
-eventsource-stream = { version = "0.2", optional = true }
-uuid = { version = "1.19", features = ["v4", "serde"], optional = true }
-async-stream = { version = "0.3", optional = true }
-url = { version = "2.5", optional = true }
-http-body-util = { version = "0.1.3", optional = true }
-oauth2 = { version = "5.0", features = ["reqwest"], optional = true }
-jsonwebtoken = { version = "10.3.0", features = ["rust_crypto", "pem", "simple_asn1", "use_pem"], optional = true }
-subtle = { version = "2.6.1", optional = true }
-owo-colors = { version = "4.3.0", optional = true }
-jsonschema = { version = "0.48.1", default-features = false, optional = true }
+tmcp-core = { path = "../tmcp-core", version = "0.6.0" }
+tmcp-macros = { path = "../tmcp-macros", version = "0.6.0" }
+tokio = { version = "1.48", features = ["io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
 
 [dev-dependencies]
 rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", branch = "main", features = ["client", "server", "transport-worker", "transport-streamable-http-server"] }
@@ -90,99 +37,3 @@ schemars = "1.1"
 tokio = { version = "1.48", features = ["test-util"] }
 tracing-subscriber = "0.3"
 trybuild = "1.0.116"
-
-[[test]]
-name = "bidi"
-required-features = ["testutils"]
-
-[[test]]
-name = "cancellation"
-required-features = ["testutils"]
-
-[[test]]
-name = "client_server_ping"
-required-features = ["testutils"]
-
-[[test]]
-name = "compile_fail"
-required-features = ["runtime"]
-
-[[test]]
-name = "concurrent_server_requests"
-required-features = ["testutils"]
-
-[[test]]
-name = "elicit_deadline"
-required-features = ["testutils"]
-
-[[test]]
-name = "custom_requests"
-required-features = ["testutils"]
-
-[[test]]
-name = "dynamic_registration_test"
-required-features = ["auth"]
-
-[[test]]
-name = "error_handling_test"
-required-features = ["testutils"]
-
-[[test]]
-name = "golden_wire"
-required-features = ["testutils"]
-
-[[test]]
-name = "log_payloads"
-required-features = ["testutils"]
-
-[[test]]
-name = "http_auth_integration"
-required-features = ["auth"]
-
-[[test]]
-name = "http_integration"
-required-features = ["http"]
-
-[[test]]
-name = "inflight_disconnect"
-required-features = ["testutils"]
-
-[[test]]
-name = "lifecycle_tests"
-required-features = ["http", "testutils"]
-
-[[test]]
-name = "macro_derive"
-required-features = ["testutils"]
-
-[[test]]
-name = "mcp_api"
-required-features = ["testutils"]
-
-[[test]]
-name = "notification_meta"
-required-features = ["testutils"]
-
-[[test]]
-name = "notifications"
-required-features = ["testutils"]
-
-[[test]]
-name = "oauth_test"
-required-features = ["auth"]
-
-[[test]]
-name = "progress_token"
-required-features = ["testutils"]
-
-[[test]]
-name = "progressive_discovery"
-required-features = ["testutils"]
-
-[[test]]
-name = "protocol_compliance"
-required-features = ["testutils"]
-
-[[test]]
-name = "rmcp_integration"
-required-features = ["testutils"]
