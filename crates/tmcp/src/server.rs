@@ -1,3 +1,9 @@
+#[cfg(unix)]
+use std::{
+    fs, io,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+};
 use std::{
     net::SocketAddr,
     sync::{
@@ -8,6 +14,8 @@ use std::{
 
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, ToSocketAddrs},
@@ -210,25 +218,12 @@ impl Server {
                             Ok((stream, peer_addr)) => {
                                 info!("New connection from {}", peer_addr);
 
-                                // Clone the shared factory for the spawned task
-                                let factory = connection_factory.clone();
-                                let protocol_versions = protocol_versions.clone();
-
-                                // Handle each connection in a separate task
-                                tokio::spawn(async move {
-                                    // Create a new server with the shared factory
-                                    let server = Self {
-                                        connection_factory: factory,
-                                        protocol_versions,
-                                    };
-
-                                    let transport = Box::new(StreamTransport::new(stream));
-
-                                    match server.serve(transport).await {
-                                        Ok(()) => info!("Connection from {} closed", peer_addr),
-                                        Err(e) => error!("Error handling connection from {}: {}", peer_addr, e),
-                                    }
-                                });
+                                Self::spawn_connection(
+                                    connection_factory.clone(),
+                                    protocol_versions.clone(),
+                                    stream,
+                                    peer_addr.to_string(),
+                                );
                             }
                             Err(e) => {
                                 error!("Failed to accept connection: {}", e);
@@ -244,6 +239,95 @@ impl Server {
             shutdown_token,
             bound_addr,
         })
+    }
+
+    /// Serve Unix domain socket connections at `path` by accepting them in a
+    /// loop.
+    ///
+    /// The server binds a new socket file at `path`, which must not exist, and
+    /// gives it mode 0600, so that only its owner can connect. A socket in a
+    /// directory that only the owner can enter closes the window between the
+    /// bind and the mode change. The returned [`UnixServerHandle`] stops the
+    /// accept loop and removes the socket file.
+    #[cfg(unix)]
+    pub async fn serve_unix(self, path: impl AsRef<Path>) -> Result<UnixServerHandle> {
+        let path = path.as_ref().to_path_buf();
+        let listener = UnixListener::bind(&path)?;
+        if let Err(error) = fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
+            drop(listener);
+            remove_socket_file(&path)?;
+            return Err(error.into());
+        }
+        info!("MCP server listening on {}", path.display());
+
+        let connection_factory = self.connection_factory;
+        let protocol_versions = self.protocol_versions;
+        let shutdown_token = CancellationToken::new();
+        let shutdown_token_loop = shutdown_token.clone();
+        let socket_name = path.display().to_string();
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown_token_loop.cancelled() => {
+                        info!("Unix socket server shutting down");
+                        break;
+                    }
+                    result = listener.accept() => {
+                        match result {
+                            Ok((stream, _peer)) => {
+                                info!("New connection on {}", socket_name);
+                                Self::spawn_connection(
+                                    connection_factory.clone(),
+                                    protocol_versions.clone(),
+                                    stream,
+                                    socket_name.clone(),
+                                );
+                            }
+                            Err(e) => {
+                                error!("Failed to accept connection: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(UnixServerHandle {
+            handle,
+            shutdown_token,
+            path,
+        })
+    }
+
+    /// Serve one accepted connection in a task of its own.
+    fn spawn_connection<S>(
+        connection_factory: HandlerFactory,
+        protocol_versions: SupportedProtocolVersions,
+        stream: S,
+        peer: String,
+    ) where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+    {
+        tokio::spawn(async move {
+            let server = Self {
+                connection_factory,
+                protocol_versions,
+            };
+            let transport = Box::new(StreamTransport::new(stream));
+            match server.serve(transport).await {
+                Ok(()) => info!("Connection from {} closed", peer),
+                Err(e) => error!("Error handling connection from {}: {}", peer, e),
+            }
+        });
+    }
+}
+
+/// Remove a socket file, tolerating one that is already gone.
+#[cfg(unix)]
+fn remove_socket_file(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
     }
 }
 
@@ -634,6 +718,37 @@ pub struct TcpServerHandle {
     ///
     /// Always present: TCP servers are always bound to a socket address.
     pub bound_addr: SocketAddr,
+}
+
+/// Handle for controlling a running Unix domain socket MCP server
+///
+/// Like [`TcpServerHandle`], it manages an accept loop that spawns handlers
+/// for multiple connections.
+#[cfg(unix)]
+pub struct UnixServerHandle {
+    /// Join handle for the accept loop task.
+    handle: JoinHandle<()>,
+    /// Token used to signal shutdown to the accept loop.
+    shutdown_token: CancellationToken,
+    /// The path of the bound socket file.
+    pub path: PathBuf,
+}
+
+#[cfg(unix)]
+impl UnixServerHandle {
+    /// Stop accepting new connections, wait for the accept loop to finish, and
+    /// remove the socket file.
+    ///
+    /// Existing connections continue until they complete or their clients
+    /// disconnect.
+    pub async fn stop(self) -> Result<()> {
+        self.shutdown_token.cancel();
+        self.handle
+            .await
+            .map_err(|e| Error::InternalError(format!("Unix socket accept loop failed: {e}")))?;
+        remove_socket_file(&self.path)?;
+        Ok(())
+    }
 }
 
 impl TcpServerHandle {

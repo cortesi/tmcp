@@ -135,6 +135,8 @@ pub use mcp_api_inspect::{
     collect_client_prompts, collect_client_resource_templates, collect_client_resources,
     collect_client_tools, inspect_client, inspect_server, inspect_server_with,
 };
+#[cfg(unix)]
+pub use server::UnixServerHandle;
 #[doc(hidden)]
 pub use server::{HandlerFactory, NotificationFanout};
 pub use server::{Server, ServerHandle, TcpServerHandle, handle_request};

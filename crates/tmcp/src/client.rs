@@ -1,8 +1,12 @@
+#[cfg(unix)]
+use std::path::Path;
 use std::{collections::HashMap, future::Future, process::Stdio, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use serde::{Serialize, de::DeserializeOwned};
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     process::{Child, Command},
@@ -275,6 +279,15 @@ where
     pub async fn connect_tcp(&mut self, addr: impl Into<String>) -> Result<InitializeResult> {
         let transport = Box::new(TcpClientTransport::new(addr));
         self.connect(transport).await?;
+        self.init().await
+    }
+
+    /// Connect to a Unix domain socket server at `path` and initialize the
+    /// connection.
+    #[cfg(unix)]
+    pub async fn connect_unix(&mut self, path: impl AsRef<Path>) -> Result<InitializeResult> {
+        let stream = UnixStream::connect(path).await?;
+        self.connect(Box::new(StreamTransport::new(stream))).await?;
         self.init().await
     }
 
