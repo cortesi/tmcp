@@ -3,7 +3,7 @@
 // Package: tmcp-macros
 // Publish: crates.io
 // Workspace dependencies: none
-// Workspace dependents: tmcp
+// Workspace dependents: tmcp, tmcp-core
 
 //! Macros to make defining MCP servers easier
 //!

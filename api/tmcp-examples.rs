@@ -2,7 +2,7 @@
 //
 // Package: tmcp-examples
 // Publish: no
-// Workspace dependencies: tmcp
+// Workspace dependencies: tmcp, tmcp-http
 // Workspace dependents: none
 
 //! Example programs for tmcp.

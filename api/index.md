@@ -11,28 +11,48 @@ Macros to make defining MCP servers easier
 
 - Publish: crates.io
 - Workspace dependencies: none
-- Workspace dependents: tmcp
+- Workspace dependents: tmcp, tmcp-core
 - Items: 12
 - Exposes: none
+
+## tmcp-core
+
+# tmcp-core
+
+- Publish: crates.io
+- Workspace dependencies: tmcp-macros
+- Workspace dependents: tmcp
+- Items: 545
+- Exposes: base64, schemars, serde_core, serde_json
 
 ## tmcp
 
 # tmcp
 
 - Publish: crates.io
-- Declared features: auth, default, http, render, runtime, schema-validation, testutils
-- Workspace dependencies: tmcp-macros
+- Workspace dependencies: tmcp-core, tmcp-macros
+- Workspace dependents: tmcp-examples, tmcp-http
+- Unnameable: crate::request_handler::Pending
+- Items: 242
+- Exposes: futures, futures-core, futures-sink, http, serde, serde_core, serde_json, tmcp-core, tokio, tokio-util
+
+## tmcp-http
+
+# tmcp-http
+
+- Publish: crates.io
+- Workspace dependencies: tmcp
 - Workspace dependents: tmcp-examples
-- Unnameable: crate::jsonrpc::NotificationTrait, crate::request_handler::Pending, crate::request_handler::RequestMethod, crate::transport::Transport
-- Items: 725
-- Exposes: base64, futures, http, schemars, serde, serde_core, serde_json, tokio, tokio-util
+- Unnameable: crate::auth::server::middleware::BearerAuthMiddleware
+- Items: 117
+- Exposes: axum, http, jsonwebtoken, reqwest, serde_core, serde_json, tmcp, tmcp-core, tokio, tower-layer, url
 
 ## tmcp-examples
 
 Example programs for tmcp.
 
 - Publish: no
-- Workspace dependencies: tmcp
+- Workspace dependencies: tmcp, tmcp-http
 - Workspace dependents: none
 - Items: 0
 - Exposes: none
